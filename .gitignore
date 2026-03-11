@@ -1,0 +1,24 @@
+# Dependencies & build
+skyhaven/node_modules/
+skyhaven/dist/
+skyhaven/src-tauri/target/
+
+# Logs & local
+*.log
+npm-debug.log*
+.env
+.env.*
+!.env.example
+
+# OS & editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Large source files not needed in repo (GitHub 100MB limit)
+assets/PSFile/
+
+# Optional: uncomment if assets are huge and you use Git LFS elsewhere
+# assets/

@@ -1,0 +1,1410 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas } from "@react-three/fiber";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { SKYHAVEN_SPRITE_MANIFEST } from "./game/assets";
+import {
+  addTile,
+  hydrateCustomIsland,
+  hydrateIslandOverride,
+  moveTile,
+  persistCustomIsland,
+  persistIslandOverride,
+  removeTile,
+  updateTile,
+  type MoveTileResult,
+} from "./game/customIsland";
+import islandFarming from "./game/island.farming.json";
+import islandMining from "./game/island.mining.json";
+import {
+  addDebugResources,
+  canAfford,
+  grantResources,
+  hydrateInventory,
+  persistInventory,
+  resetInventoryToStarter,
+  spendResources,
+} from "./game/inventory";
+import { LEVEL_CAP, awardExp, hydrateProgression, persistProgression, xpToNextLevel } from "./game/progression";
+import { getSessionExp, getSessionRewards, getTileRecipe, scaleRewardsForLevel } from "./game/resources";
+import { advancePomodoroPhase, formatDurationHms, getRemainingMs, hydrateSession, MINI_ACTION_DURATION, persistSession, startPomodoroSession, startSession } from "./game/session";
+import { useGameClock } from "./game/useGameClock";
+import type { TileEditAnchor } from "./game/useSkyhavenLoop";
+import { IslandScene } from "./game/three/IslandScene";
+import type {
+  ActionType,
+  AssetKey,
+  FocusDuration,
+  FocusSession,
+  IslandId,
+  IslandMap,
+  ProgressionState,
+} from "./game/types";
+import { DECORATION_TILES } from "./game/types";
+import { ClockOverlay } from "./ui/ClockOverlay";
+import { DebugPanel } from "./ui/DebugPanel";
+import { Hud } from "./ui/Hud";
+import { Sidebar, type SidebarSection } from "./ui/Sidebar";
+import { StatusTag } from "./ui/StatusTag";
+import { CompactInventoryOverlay } from "./ui/CompactInventoryOverlay";
+import { ProfileOverlay } from "./ui/ProfileOverlay";
+import { WindowChrome } from "./ui/WindowChrome";
+import { useIslandMusic, MUSIC_PLAYLIST_LENGTH } from "./game/useIslandMusic";
+import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats } from "./game/actionStats";
+import { hydrateProfile, type PlayerProfile } from "./game/profile";
+import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
+import { PlannerOverlay } from "./ui/planner/PlannerOverlay";
+
+const EXPANDED_WINDOW_SIZE = { width: 960, height: 618 };
+const COMPACT_WINDOW_SIZE = { width: 520, height: 520 };
+const APP_ENTRANCE_DURATION_MS = 1500;
+const XP_GAIN_PULSE_MS = 900;
+
+type WindowMode = "expanded" | "compact";
+
+export default function App() {
+  const [customIsland, setCustomIsland] = useState<IslandMap>(() => hydrateCustomIsland());
+  const [miningIsland, setMiningIsland] = useState<IslandMap>(() => hydrateIslandOverride("mining", islandMining as IslandMap));
+  const [farmingIsland, setFarmingIsland] = useState<IslandMap>(() => hydrateIslandOverride("farming", islandFarming as IslandMap));
+  const islandsById = useMemo<Record<IslandId, IslandMap>>(
+    () => ({
+      mining: miningIsland,
+      farming: farmingIsland,
+      custom: customIsland,
+    }),
+    [customIsland, miningIsland, farmingIsland]
+  );
+  const islandOrder = useMemo<IslandId[]>(() => ["mining", "farming", "custom"], []);
+  const islandPreviewById = useMemo<Record<IslandId, string>>(
+    () => ({
+      mining: SKYHAVEN_SPRITE_MANIFEST.island.complete.src,
+      farming: "/ingame_assets/expanded/farming/farming_complete.png",
+      custom: SKYHAVEN_SPRITE_MANIFEST.island.complete.src,
+    }),
+    []
+  );
+  const islandNameById = useMemo<Record<IslandId, string>>(
+    () => ({
+      mining: "Mining",
+      farming: "Farming",
+      custom: "Meine Insel",
+    }),
+    []
+  );
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [windowMode, setWindowMode] = useState<WindowMode>("expanded");
+  const [isAppEntering, setIsAppEntering] = useState<boolean>(true);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isWindowAnimating, setIsWindowAnimating] = useState<boolean>(false);
+  const [windowResizeTarget, setWindowResizeTarget] = useState<WindowMode | null>(null);
+  const [isMinimalMode, setIsMinimalMode] = useState<boolean>(false);
+  const [isInventoryOverlayOpen, setIsInventoryOverlayOpen] = useState<boolean>(false);
+  const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
+  const [isPlannerOpen, setIsPlannerOpen] = useState<boolean>(false);
+  const [dailyQuests, setDailyQuests] = useState<DailyQuest[]>(() => hydrateQuests());
+  const [actionStats, setActionStats] = useState<ActionStats>(() => hydrateActionStats());
+  const [profile] = useState<PlayerProfile>(() => hydrateProfile());
+  const [selectedSection, setSelectedSection] = useState<SidebarSection | null>("Focus Actions");
+  const [selectedIslandId, setSelectedIslandId] = useState<IslandId>("mining");
+  const [musicEnabled, setMusicEnabled] = useState(false);
+  const [musicTrackIndex, setMusicTrackIndex] = useState(0);
+  const [masterVolume, setMasterVolume] = useState(72);
+  const [sfxVolume, setSfxVolume] = useState(78);
+  useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, sfxVolume);
+  const [selectedDuration, setSelectedDuration] = useState<FocusDuration>(30);
+  const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
+  const [inventory, setInventory] = useState(() => hydrateInventory());
+  const [progression, setProgression] = useState<ProgressionState>(() => hydrateProgression());
+  const [expGainPulse, setExpGainPulse] = useState(false);
+  const [selectedTileType, setSelectedTileType] = useState<AssetKey | null>(null);
+  const [eraseMode, setEraseMode] = useState(false);
+  const [selectedTileForEdit, setSelectedTileForEdit] = useState<{ gx: number; gy: number } | null>(null);
+  const [tileEditAnchor, setTileEditAnchor] = useState<TileEditAnchor | null>(null);
+  const [blockedTargetCell, setBlockedTargetCell] = useState<{ gx: number; gy: number } | null>(null);
+  const [noResourcesHint, setNoResourcesHint] = useState(false);
+  const noResourcesTimerRef = useRef<number | null>(null);
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugGizmoMode, setDebugGizmoMode] = useState<"translate" | "scale">("translate");
+  const [debugSelectedTileId, setDebugSelectedTileId] = useState<string | null>(null);
+  const [debugIsland, setDebugIsland] = useState<IslandMap | null>(null);
+  const debugIslandRef = useRef<IslandMap | null>(null);
+  const debugPendingRef = useRef<Map<string, { pos3d: { x: number; y: number; z: number }; scale3d: { x: number; y: number; z: number } }>>(new Map());
+  const debugUndoStackRef = useRef<IslandMap[]>([]);
+  const debugRedoStackRef = useRef<IslandMap[]>([]);
+  const [debugCanUndo, setDebugCanUndo] = useState(false);
+  const [debugCanRedo, setDebugCanRedo] = useState(false);
+
+  const debugPushUndo = useCallback(() => {
+    if (!debugIslandRef.current) return;
+    const snapshot = { ...debugIslandRef.current, tiles: debugIslandRef.current.tiles.map((t) => ({ ...t })) };
+    debugUndoStackRef.current = [...debugUndoStackRef.current.slice(-49), snapshot];
+    debugRedoStackRef.current = [];
+    setDebugCanUndo(true);
+    setDebugCanRedo(false);
+  }, []);
+
+  const handleDebugUndo = useCallback(() => {
+    const stack = debugUndoStackRef.current;
+    if (stack.length === 0 || !debugIslandRef.current) return;
+    const prev = stack[stack.length - 1];
+    debugUndoStackRef.current = stack.slice(0, -1);
+    const curSnapshot = { ...debugIslandRef.current, tiles: debugIslandRef.current.tiles.map((t) => ({ ...t })) };
+    debugRedoStackRef.current = [...debugRedoStackRef.current, curSnapshot];
+    debugIslandRef.current = prev;
+    setDebugIsland(prev);
+    setDebugCanUndo(debugUndoStackRef.current.length > 0);
+    setDebugCanRedo(true);
+  }, []);
+
+  const handleDebugRedo = useCallback(() => {
+    const stack = debugRedoStackRef.current;
+    if (stack.length === 0 || !debugIslandRef.current) return;
+    const next = stack[stack.length - 1];
+    debugRedoStackRef.current = stack.slice(0, -1);
+    const curSnapshot = { ...debugIslandRef.current, tiles: debugIslandRef.current.tiles.map((t) => ({ ...t })) };
+    debugUndoStackRef.current = [...debugUndoStackRef.current, curSnapshot];
+    debugIslandRef.current = next;
+    setDebugIsland(next);
+    setDebugCanUndo(true);
+    setDebugCanRedo(debugRedoStackRef.current.length > 0);
+  }, []);
+  const customIslandRef = useRef<IslandMap>(customIsland);
+  const selectedTileForEditRef = useRef<{ gx: number; gy: number } | null>(selectedTileForEdit);
+  const blockedTargetTimerRef = useRef<number | null>(null);
+  const expGainPulseTimerRef = useRef<number | null>(null);
+  const miniActionTileRef = useRef<{ gx: number; gy: number; originalType: AssetKey; islandId: IslandId } | null>(null);
+  const regrowTimerRef = useRef<number | null>(null);
+  const buildUndoStackRef = useRef<Array<{ island: IslandMap; inventory: Inventory }>>([]);
+  const [buildCanUndo, setBuildCanUndo] = useState(false);
+  const island = islandsById[selectedIslandId];
+
+  useEffect(() => {
+    customIslandRef.current = customIsland;
+  }, [customIsland]);
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      setIsAppEntering(false);
+    }, APP_ENTRANCE_DURATION_MS);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, []);
+
+  useEffect(() => {
+    const shell = document.querySelector(".skyhaven-app-shell");
+    if (shell) {
+      shell.classList.toggle("is-fullscreen", isFullscreen);
+    }
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    selectedTileForEditRef.current = selectedTileForEdit;
+  }, [selectedTileForEdit]);
+
+  useEffect(() => {
+    return () => {
+      if (blockedTargetTimerRef.current !== null) {
+        window.clearTimeout(blockedTargetTimerRef.current);
+      }
+      if (expGainPulseTimerRef.current !== null) {
+        window.clearTimeout(expGainPulseTimerRef.current);
+      }
+      if (noResourcesTimerRef.current !== null) {
+        window.clearTimeout(noResourcesTimerRef.current);
+      }
+    };
+  }, []);
+
+  const selectedTileForOverlay = useMemo(() => {
+    if (selectedIslandId !== "custom" || windowMode !== "expanded" || isMinimalMode || !selectedTileForEdit) {
+      return null;
+    }
+    return (
+      customIsland.tiles.find(
+        (tile) => tile.gx === selectedTileForEdit.gx && tile.gy === selectedTileForEdit.gy
+      ) ?? null
+    );
+  }, [customIsland, selectedTileForEdit, selectedIslandId, windowMode, isMinimalMode]);
+  const handlePlaceTile = useCallback(
+    (gx: number, gy: number, type: AssetKey) => {
+      if (selectedIslandId !== "custom") return;
+      const recipe = getTileRecipe(type);
+      if (!recipe || !canAfford(inventory, recipe)) {
+        if (recipe && !canAfford(inventory, recipe)) {
+          setNoResourcesHint(true);
+          if (noResourcesTimerRef.current !== null) window.clearTimeout(noResourcesTimerRef.current);
+          noResourcesTimerRef.current = window.setTimeout(() => {
+            setNoResourcesHint(false);
+            noResourcesTimerRef.current = null;
+          }, 2200);
+        }
+        return;
+      }
+      const nextInv = spendResources(inventory, recipe);
+      if (!nextInv) return;
+
+      buildUndoStackRef.current = [
+        ...buildUndoStackRef.current.slice(-49),
+        { island: customIslandRef.current, inventory },
+      ];
+      setBuildCanUndo(true);
+
+      let nextIsland: IslandMap;
+      if ((DECORATION_TILES as readonly string[]).includes(type)) {
+        nextIsland = updateTile(customIslandRef.current, gx, gy, { decoration: type });
+      } else {
+        nextIsland = addTile(customIslandRef.current, gx, gy, type);
+      }
+
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      setInventory(nextInv);
+      persistCustomIsland(nextIsland);
+      persistInventory(nextInv);
+    },
+    [selectedIslandId, inventory]
+  );
+
+  const handleRemoveTile = useCallback(
+    (gx: number, gy: number) => {
+      if (selectedIslandId !== "custom") return;
+
+      buildUndoStackRef.current = [
+        ...buildUndoStackRef.current.slice(-49),
+        { island: customIslandRef.current, inventory },
+      ];
+      setBuildCanUndo(true);
+
+      const nextIsland = removeTile(customIslandRef.current, gx, gy);
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      setSelectedTileForEdit((previous) => {
+        if (!previous) {
+          selectedTileForEditRef.current = previous;
+          return previous;
+        }
+        const next = previous.gx === gx && previous.gy === gy ? null : previous;
+        selectedTileForEditRef.current = next;
+        return next;
+      });
+      persistCustomIsland(nextIsland);
+    },
+    [selectedIslandId, inventory]
+  );
+
+  const handleBuildUndo = useCallback(() => {
+    const stack = buildUndoStackRef.current;
+    if (stack.length === 0) return;
+    const prev = stack[stack.length - 1];
+    buildUndoStackRef.current = stack.slice(0, -1);
+    setBuildCanUndo(stack.length > 1);
+    customIslandRef.current = prev.island;
+    setCustomIsland(prev.island);
+    setInventory(prev.inventory);
+    persistCustomIsland(prev.island);
+    persistInventory(prev.inventory);
+  }, []);
+
+  const handleSelectTileForEdit = useCallback(
+    (gx: number, gy: number) => {
+      if (selectedIslandId !== "custom") return;
+      selectedTileForEditRef.current = { gx, gy };
+      setSelectedTileForEdit({ gx, gy });
+    },
+    [selectedIslandId]
+  );
+
+  const handleUpdatePlacedTile = useCallback(
+    (
+      gx: number,
+      gy: number,
+      updates: {
+        layerOrder?: number;
+        anchorY?: number;
+        localYOffset?: number;
+        offsetX?: number;
+        offsetY?: number;
+      }
+    ) => {
+      if (selectedIslandId !== "custom") return;
+      const nextIsland = updateTile(customIslandRef.current, gx, gy, updates);
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    },
+    [selectedIslandId]
+  );
+
+  const handleMoveSelectedTileBy = useCallback(
+    (deltaGx: number, deltaGy: number): MoveTileResult => {
+      if (selectedIslandId !== "custom") {
+        return {
+          moved: false,
+          reason: "source_missing",
+          attemptedCoord: { gx: Number.NaN, gy: Number.NaN },
+        };
+      }
+      const current = selectedTileForEditRef.current;
+      if (!current) {
+        return {
+          moved: false,
+          reason: "source_missing",
+          attemptedCoord: { gx: Number.NaN, gy: Number.NaN },
+        };
+      }
+
+      const result = moveTile(customIslandRef.current, current, {
+        gx: current.gx + deltaGx,
+        gy: current.gy + deltaGy,
+      });
+      if (!result.moved) {
+        return result;
+      }
+
+      customIslandRef.current = result.island;
+      selectedTileForEditRef.current = result.nextCoord;
+      setCustomIsland(result.island);
+      setSelectedTileForEdit(result.nextCoord);
+      persistCustomIsland(result.island);
+      return result;
+    },
+    [selectedIslandId]
+  );
+
+  const handleTileEditAnchorChange = useCallback((anchor: TileEditAnchor) => {
+    setTileEditAnchor(anchor);
+  }, []);
+
+  const handleBlockedTarget = useCallback((target: { gx: number; gy: number } | null) => {
+    if (blockedTargetTimerRef.current !== null) {
+      window.clearTimeout(blockedTargetTimerRef.current);
+      blockedTargetTimerRef.current = null;
+    }
+    setBlockedTargetCell(target);
+    if (target) {
+      blockedTargetTimerRef.current = window.setTimeout(() => {
+        setBlockedTargetCell(null);
+        blockedTargetTimerRef.current = null;
+      }, 260);
+    }
+  }, []);
+
+  const handleDebugTileSelect = useCallback((tileId: string) => {
+    setDebugSelectedTileId(tileId);
+  }, []);
+
+  const handleDebugTileChange = useCallback(
+    (tileId: string, pos3d: { x: number; y: number; z: number }, scale3d: { x: number; y: number; z: number }, rotY?: number) => {
+      debugPendingRef.current.set(tileId, { pos3d, scale3d });
+      const src = debugIslandRef.current;
+      if (!src) return;
+      const tile = src.tiles.find((t) => t.id === tileId);
+      if (tile) {
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY });
+        debugIslandRef.current = nextIsland;
+        setDebugIsland(nextIsland);
+      }
+    },
+    [],
+  );
+
+  const handleDebugSave = useCallback(() => {
+    if (!debugIslandRef.current) return;
+    const saved = debugIslandRef.current;
+    persistIslandOverride(selectedIslandId, saved);
+    if (selectedIslandId === "custom") {
+      customIslandRef.current = saved;
+      setCustomIsland(saved);
+    } else if (selectedIslandId === "mining") {
+      setMiningIsland(saved);
+    } else if (selectedIslandId === "farming") {
+      setFarmingIsland(saved);
+    }
+    debugPendingRef.current.clear();
+  }, [selectedIslandId]);
+
+  const handleExitDebug = useCallback(() => {
+    if (debugIslandRef.current) {
+      const saved = debugIslandRef.current;
+      persistIslandOverride(selectedIslandId, saved);
+      if (selectedIslandId === "custom") {
+        customIslandRef.current = saved;
+        setCustomIsland(saved);
+      } else if (selectedIslandId === "mining") {
+        setMiningIsland(saved);
+      } else if (selectedIslandId === "farming") {
+        setFarmingIsland(saved);
+      }
+    }
+    setDebugMode(false);
+    setDebugSelectedTileId(null);
+    setDebugPlacementType(null);
+    debugIslandRef.current = null;
+    setDebugIsland(null);
+    debugPendingRef.current.clear();
+  }, [selectedIslandId]);
+
+  const handleDebugDeleteTile = useCallback(() => {
+    if (!debugSelectedTileId || !debugIslandRef.current) return;
+    const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
+    if (tile) {
+      debugPushUndo();
+      const nextIsland = removeTile(debugIslandRef.current, tile.gx, tile.gy);
+      debugIslandRef.current = nextIsland;
+      setDebugIsland(nextIsland);
+    }
+    setDebugSelectedTileId(null);
+  }, [debugSelectedTileId, debugPushUndo]);
+
+  const handleDebugRotateTile = useCallback(() => {
+    if (!debugSelectedTileId || !debugIslandRef.current) return;
+    const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
+    if (tile) {
+      debugPushUndo();
+      const currentRotY = tile.rotY ?? 0;
+      const nextRotY = currentRotY + Math.PI / 2;
+      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY });
+      debugIslandRef.current = nextIsland;
+      setDebugIsland(nextIsland);
+    }
+  }, [debugSelectedTileId, debugPushUndo]);
+
+  const handleDebugToggleBlocked = useCallback(() => {
+    if (!debugSelectedTileId || !debugIslandRef.current) return;
+    const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
+    if (tile) {
+      debugPushUndo();
+      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked });
+      debugIslandRef.current = nextIsland;
+      setDebugIsland(nextIsland);
+    }
+  }, [debugSelectedTileId, debugPushUndo]);
+
+  const [debugPlacementType, setDebugPlacementType] = useState<string | null>(null);
+  const [debugGizmoDragging, setDebugGizmoDragging] = useState(false);
+  const [debugUniformScale, setDebugUniformScale] = useState(true);
+  const [debugClipboard, setDebugClipboard] = useState<{
+    scale3d?: { x: number; y: number; z: number };
+    rotY?: number;
+  } | null>(null);
+
+  const [editGizmoMode, setEditGizmoMode] = useState<"translate" | "scale">("translate");
+  const [editSelectedTileId, setEditSelectedTileId] = useState<string | null>(null);
+  const [editUniformScale, setEditUniformScale] = useState(true);
+  const [editGizmoDragging, setEditGizmoDragging] = useState(false);
+  const [editingDecoration, setEditingDecoration] = useState(false);
+  const [editClipboard, setEditClipboard] = useState<{
+    scale3d?: { x: number; y: number; z: number };
+    rotY?: number;
+  } | null>(null);
+
+  const handleDebugDraggingChange = useCallback((dragging: boolean) => {
+    if (dragging) debugPushUndo();
+    setDebugGizmoDragging(dragging);
+  }, [debugPushUndo]);
+
+  const handleCopyTransform = useCallback(() => {
+    if (!debugSelectedTileId || !debugIslandRef.current) return;
+    const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
+    if (!tile) return;
+    setDebugClipboard({
+      scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
+      rotY: tile.rotY,
+    });
+  }, [debugSelectedTileId]);
+
+  const handlePasteTransform = useCallback(() => {
+    if (!debugClipboard || !debugSelectedTileId || !debugIslandRef.current) return;
+    const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
+    if (!tile) return;
+    debugPushUndo();
+    const updates: { scale3d?: { x: number; y: number; z: number }; rotY?: number } = {};
+    if (debugClipboard.scale3d) updates.scale3d = { ...debugClipboard.scale3d };
+    if (debugClipboard.rotY != null) updates.rotY = debugClipboard.rotY;
+    const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, updates);
+    debugIslandRef.current = nextIsland;
+    setDebugIsland(nextIsland);
+  }, [debugClipboard, debugSelectedTileId, debugPushUndo]);
+
+  const handleExportJson = useCallback(() => {
+    const island = debugIslandRef.current;
+    if (!island) return;
+    const json = JSON.stringify(island, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `island.${selectedIslandId}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [selectedIslandId]);
+
+  const handleDebugPlaceTile = useCallback(
+    (gx: number, gy: number, modelKey: string) => {
+      if (!debugIslandRef.current) return;
+      const typeMap: Record<string, AssetKey> = {
+        grass: "grass",
+        dirt: "dirt",
+        pathCross: "pathCross",
+        pathStraight: "pathStraight",
+        mine: "mineTile",
+        tree: "tree1",
+        treeMiddle: "treeMiddle",
+        farm2x2: "farm2x2",
+        poisFarming: "poisFarming",
+        grasBlumen: "grasBlumen",
+        taverne: "taverne",
+      };
+      const assetKey = typeMap[modelKey];
+      if (!assetKey) return;
+      debugPushUndo();
+      const nextIsland = addTile(debugIslandRef.current, gx, gy, assetKey);
+      debugIslandRef.current = nextIsland;
+      setDebugIsland(nextIsland);
+    },
+    [debugPushUndo],
+  );
+
+  const isCustomEditing =
+    selectedIslandId === "custom" &&
+    selectedSection === "Toolbox" &&
+    windowMode === "expanded" &&
+    !debugMode;
+
+  const handleEditTileSelect = useCallback((tileId: string) => {
+    setEditSelectedTileId(tileId || null);
+    setEditingDecoration(false);
+  }, []);
+
+  const handleEditTileChange = useCallback(
+    (tileId: string, pos3d: { x: number; y: number; z: number }, scale3d: { x: number; y: number; z: number }, rotY?: number) => {
+      const src = customIslandRef.current;
+      const tile = src.tiles.find((t) => t.id === tileId);
+      if (tile) {
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY });
+        customIslandRef.current = nextIsland;
+        setCustomIsland(nextIsland);
+        persistCustomIsland(nextIsland);
+      }
+    },
+    [],
+  );
+
+  const handleEditDecoChange = useCallback(
+    (tileId: string, decoPos3d: { x: number; y: number; z: number }, decoScale3d: { x: number; y: number; z: number }, decoRotY: number) => {
+      const src = customIslandRef.current;
+      const tile = src.tiles.find((t) => t.id === tileId);
+      if (tile) {
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { decoPos3d, decoScale3d, decoRotY });
+        customIslandRef.current = nextIsland;
+        setCustomIsland(nextIsland);
+        persistCustomIsland(nextIsland);
+      }
+    },
+    [],
+  );
+
+  const handleEditDraggingChange = useCallback((dragging: boolean) => {
+    setEditGizmoDragging(dragging);
+  }, []);
+
+  const handleEditDeleteTile = useCallback(() => {
+    if (!editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (tile) {
+      const nextIsland = removeTile(customIslandRef.current, tile.gx, tile.gy);
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    }
+    setEditSelectedTileId(null);
+  }, [editSelectedTileId]);
+
+  const handleEditRotateTile = useCallback(() => {
+    if (!editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (tile) {
+      const currentRotY = tile.rotY ?? 0;
+      const nextRotY = currentRotY + Math.PI / 2;
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY });
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    }
+  }, [editSelectedTileId]);
+
+  const handleEditToggleBlocked = useCallback(() => {
+    if (!editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (tile) {
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked });
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    }
+  }, [editSelectedTileId]);
+
+  const handleEditCopyTransform = useCallback(() => {
+    if (!editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (!tile) return;
+    setEditClipboard({
+      scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
+      rotY: tile.rotY,
+    });
+  }, [editSelectedTileId]);
+
+  const handleEditPasteTransform = useCallback(() => {
+    if (!editClipboard || !editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (!tile) return;
+    const updates: { scale3d?: { x: number; y: number; z: number }; rotY?: number } = {};
+    if (editClipboard.scale3d) updates.scale3d = { ...editClipboard.scale3d };
+    if (editClipboard.rotY != null) updates.rotY = editClipboard.rotY;
+    const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, updates);
+    customIslandRef.current = nextIsland;
+    setCustomIsland(nextIsland);
+    persistCustomIsland(nextIsland);
+  }, [editClipboard, editSelectedTileId]);
+
+  const handleDeselectTileForEdit = useCallback(() => {
+    selectedTileForEditRef.current = null;
+    setSelectedTileForEdit(null);
+    setBlockedTargetCell(null);
+    if (blockedTargetTimerRef.current !== null) {
+      window.clearTimeout(blockedTargetTimerRef.current);
+      blockedTargetTimerRef.current = null;
+    }
+  }, []);
+
+  const { nowMs } = useGameClock();
+ 
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) {
+      return;
+    }
+    if (!isMinimalMode) {
+      shell.style.setProperty("--minimal-clock-scale", "0.56");
+      shell.style.setProperty("--island-pan-x", "0px");
+      shell.style.setProperty("--island-pan-y", "0px");
+      shell.style.setProperty("--island-zoom", "1");
+      shell.style.setProperty("--minimal-clock-left", "28px");
+      shell.style.setProperty("--minimal-clock-top", "83%");
+    }
+  }, [isMinimalMode]);
+
+  useEffect(() => {
+    if (!session?.active) {
+      return;
+    }
+    if (getRemainingMs(session, nowMs) <= 0) {
+      const baseRewards = getSessionRewards(session.actionType, session.durationMin);
+      const scaledRewards = scaleRewardsForLevel(baseRewards, progression.level);
+      if (scaledRewards.length > 0) {
+        setInventory((prev) => {
+          const next = grantResources(prev, scaledRewards);
+          persistInventory(next);
+          return next;
+        });
+      }
+
+      const expGain = getSessionExp(session.durationMin);
+      if (expGain > 0) {
+        setProgression((previous) => {
+          const { next } = awardExp(previous, expGain);
+          persistProgression(next);
+          return next;
+        });
+
+        setExpGainPulse(true);
+        if (expGainPulseTimerRef.current !== null) {
+          window.clearTimeout(expGainPulseTimerRef.current);
+        }
+        expGainPulseTimerRef.current = window.setTimeout(() => {
+          setExpGainPulse(false);
+          expGainPulseTimerRef.current = null;
+        }, XP_GAIN_PULSE_MS);
+      }
+
+      setActionStats((prev) => {
+        const updated = addActionTime(prev, session.actionType, session.durationMin * 60_000);
+        persistActionStats(updated);
+        return updated;
+      });
+
+      if (
+        (session.actionType === "woodcutting" || session.actionType === "harvesting") &&
+        miniActionTileRef.current
+      ) {
+        const { gx, gy, originalType, islandId } = miniActionTileRef.current;
+        const setter =
+          islandId === "mining" ? setMiningIsland :
+          islandId === "farming" ? setFarmingIsland :
+          setCustomIsland;
+
+        setter((prev) => {
+          const next = updateTile(prev, gx, gy, { type: "dirt" });
+          if (islandId === "custom") persistCustomIsland(next);
+          else persistIslandOverride(islandId, next);
+          return next;
+        });
+
+        if (regrowTimerRef.current !== null) {
+          window.clearTimeout(regrowTimerRef.current);
+        }
+        regrowTimerRef.current = window.setTimeout(() => {
+          regrowTimerRef.current = null;
+          setter((prev) => {
+            const next = updateTile(prev, gx, gy, { type: originalType });
+            if (islandId === "custom") persistCustomIsland(next);
+            else persistIslandOverride(islandId, next);
+            return next;
+          });
+        }, 5_000);
+
+        miniActionTileRef.current = null;
+      }
+
+      if (session.pomodoroMode) {
+        const nextPhase = advancePomodoroPhase(session);
+        if (nextPhase) {
+          setSession(nextPhase);
+          persistSession(nextPhase);
+        } else {
+          setSession(null);
+          persistSession(null);
+        }
+      } else {
+        setSession(null);
+        persistSession(null);
+      }
+    }
+  }, [nowMs, session, progression.level, selectedIslandId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      let handled = false;
+      if (selectedTileForEditRef.current) {
+        selectedTileForEditRef.current = null;
+        setSelectedTileForEdit(null);
+        handled = true;
+      }
+      if (session?.active) {
+        setSession(null);
+        persistSession(null);
+        setSelectedSection("Focus Actions");
+        handled = true;
+      }
+      if (handled) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [session?.active]);
+
+  useEffect(() => {
+    if (windowMode !== "compact" && isMinimalMode) {
+      setIsMinimalMode(false);
+    }
+  }, [windowMode, isMinimalMode]);
+
+  useEffect(() => {
+    if (windowMode !== "compact" && isInventoryOverlayOpen) {
+      setIsInventoryOverlayOpen(false);
+    }
+  }, [windowMode, isInventoryOverlayOpen]);
+
+  useEffect(() => {
+    const editModeActive =
+      selectedIslandId === "custom" &&
+      windowMode === "expanded" &&
+      !isMinimalMode &&
+      selectedTileType === null &&
+      !eraseMode;
+    if (!editModeActive && selectedTileForEditRef.current) {
+      selectedTileForEditRef.current = null;
+      setSelectedTileForEdit(null);
+    }
+    if (!editModeActive) {
+      handleBlockedTarget(null);
+    }
+  }, [selectedIslandId, windowMode, isMinimalMode, selectedTileType, eraseMode, handleBlockedTarget]);
+
+  const handleToggleCompact = (): void => {
+    if (isWindowAnimating) {
+      return;
+    }
+
+    const currentMode = windowMode;
+    const nextMode: WindowMode = windowMode === "expanded" ? "compact" : "expanded";
+    const nextSize = nextMode === "compact" ? COMPACT_WINDOW_SIZE : EXPANDED_WINDOW_SIZE;
+    const appWindow = getCurrentWindow();
+    const startSize = {
+      width: Math.max(320, Math.round(window.innerWidth)),
+      height: Math.max(320, Math.round(window.innerHeight)),
+    };
+
+    setIsWindowAnimating(true);
+    setWindowResizeTarget(nextMode);
+    if (nextMode !== "compact" && isMinimalMode) {
+      setIsMinimalMode(false);
+    }
+    void appWindow
+      .unmaximize()
+      .catch(() => {
+        // no-op
+      })
+      .then(() => animateWindowResize(appWindow, startSize, nextSize, 460))
+      .then(() => {
+        setWindowMode(nextMode);
+        if (nextMode !== "compact") {
+          setIsMinimalMode(false);
+        }
+      })
+      .catch(() => {
+        console.warn("Skyhaven: failed to toggle compact window size.");
+        setWindowMode(currentMode);
+      })
+      .finally(() => {
+        setIsWindowAnimating(false);
+        setWindowResizeTarget(null);
+      });
+  };
+
+  const handleToggleMinimalMode = (): void => {
+    if (windowMode !== "compact" || isWindowAnimating) {
+      return;
+    }
+    setIsMinimalMode((previous) => {
+      const next = !previous;
+      if (next) {
+        setIsInventoryOverlayOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleFullscreen = (): void => {
+    if (isWindowAnimating) return;
+    const appWindow = getCurrentWindow();
+    const next = !isFullscreen;
+    void appWindow.setFullscreen(next).then(() => {
+      setIsFullscreen(next);
+      if (next && windowMode === "compact") {
+        setWindowMode("expanded");
+        setIsMinimalMode(false);
+      }
+    }).catch(() => {
+      console.warn("Skyhaven: fullscreen toggle failed.");
+    });
+  };
+
+  const handleMenuToggle = (): void => {
+    if (windowMode !== "compact" || isMinimalMode) {
+      return;
+    }
+    setIsInventoryOverlayOpen((prev) => !prev);
+  };
+
+  const handleTileAction = useCallback(
+    (actionType: "woodcutting" | "harvesting", tileGx: number, tileGy: number) => {
+      if (session) return;
+      const tile = island.tiles.find((t) => t.gx === tileGx && t.gy === tileGy);
+      if (!tile) return;
+      miniActionTileRef.current = { gx: tileGx, gy: tileGy, originalType: tile.type, islandId: selectedIslandId };
+      const now = Date.now();
+      const DEV_DURATION_MS = 5_000; // 5 seconds for testing
+      const newSession: FocusSession = {
+        active: true,
+        actionType,
+        startedAt: now,
+        endsAt: now + DEV_DURATION_MS,
+        durationMin: MINI_ACTION_DURATION,
+      };
+      setSession(newSession);
+      persistSession(newSession);
+    },
+    [session, island, selectedIslandId],
+  );
+
+  const handleCancelMiniAction = useCallback(() => {
+    if (!session) return;
+    if (session.actionType !== "woodcutting" && session.actionType !== "harvesting") return;
+    miniActionTileRef.current = null;
+    setSession(null);
+    persistSession(null);
+  }, [session]);
+
+  const handleSelectSection = (section: SidebarSection): void => {
+    setSelectedSection((previous) => (previous === section ? null : section));
+    setIsInventoryOverlayOpen(false);
+    setIsProfileOpen(false);
+  };
+
+  const handleCycleIsland = useCallback(
+    (direction: -1 | 1): void => {
+      selectedTileForEditRef.current = null;
+      setSelectedTileForEdit(null);
+      handleBlockedTarget(null);
+      setSelectedIslandId((previous) => {
+        const currentIndex = islandOrder.indexOf(previous);
+        if (currentIndex < 0) {
+          return islandOrder[0];
+        }
+        const nextIndex = (currentIndex + direction + islandOrder.length) % islandOrder.length;
+        return islandOrder[nextIndex];
+      });
+      setIsInventoryOverlayOpen(false);
+    },
+    [islandOrder, handleBlockedTarget]
+  );
+
+  const handleCloseWindow = (): void => {
+    void getCurrentWindow().close().catch(() => {
+      console.warn("Skyhaven: failed to close window.");
+    });
+  };
+
+  const handleStartAction = (actionType: ActionType): void => {
+    const nextSession = startSession(actionType, selectedDuration);
+    setSession(nextSession);
+    persistSession(nextSession);
+    setSelectedSection("Focus Actions");
+  };
+
+  const handleStartPomodoro = (actionType: ActionType): void => {
+    if (session?.pomodoroMode) return;
+    const nextSession = startPomodoroSession(actionType);
+    setSession(nextSession);
+    persistSession(nextSession);
+    setSelectedSection("Focus Actions");
+  };
+
+  const activeAction = session?.active ? session.actionType : null;
+  const remainingMs = session?.active ? getRemainingMs(session, nowMs) : 0;
+  const countdownText = formatDurationHms(remainingMs);
+  const pomodoroLabel = session?.pomodoroMode
+    ? session.pomodoroPhase === "work"
+      ? `POMODORO ${session.pomodoroRound}/${session.pomodoroTotalRounds}`
+      : session.pomodoroPhase === "break"
+        ? "SHORT BREAK"
+        : "LONG BREAK"
+    : null;
+  const statusText = noResourcesHint
+    ? "Not enough resources!"
+    : pomodoroLabel
+      ? `${pomodoroLabel} - ${(activeAction ?? "").toUpperCase()}`
+      : activeAction
+        ? `${activeAction.toUpperCase()}...`
+        : "IDLE";
+  const expLevel = progression.level;
+  const expIsMaxLevel = progression.level >= LEVEL_CAP;
+  const expMax = xpToNextLevel(progression.level);
+  const expCurrent = expIsMaxLevel ? expMax : progression.expInLevel;
+  const frameBackground =
+    windowMode === "compact"
+      ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBackground ?? SKYHAVEN_SPRITE_MANIFEST.ui.background
+      : SKYHAVEN_SPRITE_MANIFEST.ui.background;
+  const frameBorder =
+    windowMode === "compact"
+      ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBorder ?? SKYHAVEN_SPRITE_MANIFEST.ui.border
+      : SKYHAVEN_SPRITE_MANIFEST.ui.border;
+
+  return (
+    <div className="skyhaven-shell" ref={shellRef}>
+      <div
+        ref={frameRef}
+        className={`skyhaven-frame ${windowMode === "compact" ? "is-compact" : "is-expanded"} ${
+          isWindowAnimating ? "is-window-animating" : ""
+        } ${windowResizeTarget ? `resize-to-${windowResizeTarget}` : ""} ${isMinimalMode ? "is-minimal" : ""} ${
+          isAppEntering ? "is-app-entering" : ""
+        } ${isFullscreen ? "is-fullscreen" : ""} ${
+          windowMode === "expanded" && selectedIslandId === "custom" && selectedSection === "Toolbox"
+            ? "is-toolbox-open"
+            : ""
+        }`}
+      >
+        <img className="frame-bg" src={frameBackground} alt="" />
+
+        <ClockOverlay timeText={countdownText} compact={windowMode === "compact"} minimal={isMinimalMode} />
+        <div
+          className="island-canvas"
+          data-no-window-drag={
+            debugMode ||
+            (selectedIslandId === "custom" &&
+              windowMode === "expanded" &&
+              !isMinimalMode &&
+              (selectedTileType !== null ||
+                eraseMode ||
+                selectedTileForEdit !== null ||
+                isCustomEditing))
+              ? "true"
+              : undefined
+          }
+          style={{ width: "100%", height: "100%" }}
+        >
+          <Canvas
+            gl={{ antialias: true, alpha: true }}
+            style={{ width: "100%", height: "100%", background: "transparent" }}
+          >
+            <IslandScene
+              island={debugMode && debugIsland ? debugIsland : island}
+              selectedIslandId={selectedIslandId}
+              buildMode={selectedIslandId === "custom" && selectedTileType !== null}
+              eraseMode={selectedIslandId === "custom" && eraseMode}
+              selectedTileType={selectedTileType}
+              selectedTileForEdit={selectedTileForEdit}
+              characterActive={true}
+              onPlaceTile={handlePlaceTile}
+              onRemoveTile={handleRemoveTile}
+              onSelectTileForEdit={handleSelectTileForEdit}
+              onClearTileForEdit={handleDeselectTileForEdit}
+              onTileEditAnchorChange={handleTileEditAnchorChange}
+              blockedTargetCell={blockedTargetCell}
+              debugMode={debugMode}
+              debugGizmoMode={debugGizmoMode}
+              onDebugTileSelect={handleDebugTileSelect}
+              debugSelectedTileId={debugSelectedTileId}
+              onDebugTileChange={handleDebugTileChange}
+              debugPlacementType={debugPlacementType}
+              onDebugPlaceTile={handleDebugPlaceTile}
+              onDebugDraggingChange={handleDebugDraggingChange}
+              debugUniformScale={debugUniformScale}
+              editMode={isCustomEditing}
+              editGizmoMode={editGizmoMode}
+              editSelectedTileId={editSelectedTileId}
+              onEditTileSelect={handleEditTileSelect}
+              onEditTileDeselect={() => setEditSelectedTileId(null)}
+              onEditTileChange={handleEditTileChange}
+              onEditDraggingChange={handleEditDraggingChange}
+              editUniformScale={editUniformScale}
+              editingDecoration={editingDecoration}
+              onEditDecoChange={handleEditDecoChange}
+              onTileAction={handleTileAction}
+              onCancelMiniAction={handleCancelMiniAction}
+              isMiniActionActive={session?.actionType === "woodcutting" || session?.actionType === "harvesting"}
+              showVignette={(windowMode === "expanded" || isFullscreen) && !isMinimalMode}
+            />
+          </Canvas>
+        </div>
+        {debugMode && (
+          <DebugPanel
+            selectedTile={
+              debugSelectedTileId && debugIsland
+                ? debugIsland.tiles.find((t) => t.id === debugSelectedTileId) ?? null
+                : null
+            }
+            gizmoMode={debugGizmoMode}
+            onGizmoModeChange={setDebugGizmoMode}
+            onSave={handleDebugSave}
+            onExitDebug={handleExitDebug}
+            onDeselectTile={() => setDebugSelectedTileId(null)}
+            onDeleteTile={handleDebugDeleteTile}
+            onRotateTile={handleDebugRotateTile}
+            debugPlacementType={debugPlacementType}
+            onDebugPlacementTypeChange={setDebugPlacementType}
+            isDragging={debugGizmoDragging}
+            uniformScale={debugUniformScale}
+            onUniformScaleChange={setDebugUniformScale}
+            onExportJson={handleExportJson}
+            canUndo={debugCanUndo}
+            canRedo={debugCanRedo}
+            onUndo={handleDebugUndo}
+            onRedo={handleDebugRedo}
+            onCopyTransform={handleCopyTransform}
+            onPasteTransform={handlePasteTransform}
+            hasClipboard={debugClipboard !== null}
+            onToggleBlocked={handleDebugToggleBlocked}
+          />
+        )}
+
+        {!debugMode && windowMode === "expanded" && (
+          <button
+            data-no-window-drag="true"
+            onClick={() => {
+              const snapshot = { ...islandsById[selectedIslandId], tiles: [...islandsById[selectedIslandId].tiles] };
+              debugIslandRef.current = snapshot;
+              setDebugIsland(snapshot);
+              debugUndoStackRef.current = [];
+              debugRedoStackRef.current = [];
+              setDebugCanUndo(false);
+              setDebugCanRedo(false);
+              setDebugMode(true);
+              setSelectedTileForEdit(null);
+              setSelectedTileType(null);
+              setEraseMode(false);
+            }}
+            style={{
+              position: "absolute",
+              bottom: 12,
+              right: 12,
+              zIndex: 200,
+              background: "rgba(15, 20, 30, 0.85)",
+              border: "1px solid rgba(136, 204, 255, 0.3)",
+              borderRadius: 6,
+              padding: "6px 14px",
+              color: "#88ccff",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              pointerEvents: "auto",
+              backdropFilter: "blur(6px)",
+            }}
+          >
+            Debug Mode
+          </button>
+        )}
+
+        <CompactInventoryOverlay open={windowMode === "compact" && !isMinimalMode && isInventoryOverlayOpen} />
+        <ProfileOverlay
+          open={isProfileOpen}
+          onClose={() => setIsProfileOpen(false)}
+          profile={profile}
+          progression={progression}
+          actionStats={actionStats}
+        />
+        <PlannerOverlay
+          open={isPlannerOpen}
+          onClose={() => setIsPlannerOpen(false)}
+          quests={dailyQuests}
+          onQuestsChange={(next) => { setDailyQuests(next); persistQuests(next); }}
+          onQuestCompleted={(_quest, xp) => {
+            if (xp > 0) {
+              setProgression((prev) => {
+                const { next } = awardExp(prev, xp);
+                persistProgression(next);
+                return next;
+              });
+              setExpGainPulse(true);
+              if (expGainPulseTimerRef.current !== null) {
+                window.clearTimeout(expGainPulseTimerRef.current);
+              }
+              expGainPulseTimerRef.current = window.setTimeout(() => {
+                setExpGainPulse(false);
+                expGainPulseTimerRef.current = null;
+              }, XP_GAIN_PULSE_MS);
+            }
+          }}
+        />
+
+        <Hud
+          expLevel={expLevel}
+          expCurrent={expCurrent}
+          expMax={expMax}
+          expIsMaxLevel={expIsMaxLevel}
+          expGainPulse={expGainPulse}
+        />
+
+        {!debugMode && (
+          <Sidebar
+            selectedSection={selectedSection}
+            onSelectSection={handleSelectSection}
+            selectedDuration={selectedDuration}
+            onSelectDuration={setSelectedDuration}
+            activeAction={activeAction}
+            onStartAction={handleStartAction}
+            selectedIslandId={selectedIslandId}
+            islandPreviewById={islandPreviewById}
+            islandNameById={islandNameById}
+            onCycleIsland={handleCycleIsland}
+            windowMode={windowMode}
+            inventory={inventory}
+            selectedTileType={selectedTileType}
+            onSelectTile={setSelectedTileType}
+            eraseMode={eraseMode}
+            onEraseModeChange={setEraseMode}
+            onInventoryReset={() => setInventory(resetInventoryToStarter())}
+            onDebugAddResources={() => setInventory(addDebugResources(inventory))}
+            isDragging={debugGizmoDragging || editGizmoDragging}
+            editSelectedTile={
+              editSelectedTileId && isCustomEditing
+                ? customIsland.tiles.find((t) => t.id === editSelectedTileId) ?? null
+                : null
+            }
+            editGizmoMode={editGizmoMode}
+            onEditGizmoModeChange={setEditGizmoMode}
+            onEditRotate={handleEditRotateTile}
+            onEditDelete={handleEditDeleteTile}
+            onEditToggleBlocked={handleEditToggleBlocked}
+            onEditCopyScale={handleEditCopyTransform}
+            onEditPasteScale={handleEditPasteTransform}
+            hasEditClipboard={editClipboard !== null}
+            editUniformScale={editUniformScale}
+            onEditUniformScaleChange={setEditUniformScale}
+            musicEnabled={musicEnabled}
+            onMusicEnabledChange={setMusicEnabled}
+            musicTrackIndex={musicTrackIndex}
+            onMusicPrev={() => {
+              setMusicTrackIndex((i) => (i - 1 + MUSIC_PLAYLIST_LENGTH) % MUSIC_PLAYLIST_LENGTH);
+              setMusicEnabled(true);
+            }}
+            onMusicNext={() => {
+              setMusicTrackIndex((i) => (i + 1) % MUSIC_PLAYLIST_LENGTH);
+              setMusicEnabled(true);
+            }}
+            masterVolume={masterVolume}
+            onMasterVolumeChange={setMasterVolume}
+            sfxVolume={sfxVolume}
+            onSfxVolumeChange={setSfxVolume}
+            onProfileOpen={() => { setIsProfileOpen(true); setIsInventoryOverlayOpen(false); }}
+            onStartPomodoro={handleStartPomodoro}
+            isPomodoroActive={session?.pomodoroMode === true}
+            pomodoroRound={session?.pomodoroRound}
+            pomodoroTotalRounds={session?.pomodoroTotalRounds}
+            pomodoroPhase={session?.pomodoroPhase}
+            onDailyQuestsOpen={() => { setIsPlannerOpen(true); setIsInventoryOverlayOpen(false); }}
+            onBuildUndo={handleBuildUndo}
+            buildCanUndo={buildCanUndo}
+            editingDecoration={editingDecoration}
+            onEditingDecorationChange={setEditingDecoration}
+          />
+        )}
+
+        <StatusTag text={statusText} />
+        <WindowChrome
+          onToggleCompact={handleToggleCompact}
+          onToggleMinimal={handleToggleMinimalMode}
+          onToggleFullscreen={handleToggleFullscreen}
+          onClose={handleCloseWindow}
+          onMenu={handleMenuToggle}
+          menuActive={windowMode === "compact" && !isMinimalMode && isInventoryOverlayOpen}
+          isBusy={isWindowAnimating}
+          minimalMode={isMinimalMode}
+          showMinimalToggle={windowMode === "compact" || isMinimalMode}
+          isFullscreen={isFullscreen}
+          showFullscreenToggle={windowMode === "expanded" && !isMinimalMode}
+        />
+
+        <img className="frame-border" src={frameBorder} alt="" />
+      </div>
+    </div>
+  );
+}
+
+async function animateWindowResize(
+  appWindow: ReturnType<typeof getCurrentWindow>,
+  from: { width: number; height: number },
+  to: { width: number; height: number },
+  durationMs: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const startedAtMs = performance.now();
+    let running = true;
+    let settled = false;
+    let frameHandle = 0;
+    let lastApplied = { width: from.width, height: from.height };
+    let pendingSize: { width: number; height: number } | null = null;
+    let inFlight = false;
+    let finalRequested = false;
+    let lastPushAt = startedAtMs - 34;
+    const pushIntervalMs = 1000 / 30;
+
+    const fail = (error: unknown): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      running = false;
+      window.cancelAnimationFrame(frameHandle);
+      reject(error);
+    };
+
+    const maybeResolve = (): void => {
+      if (!finalRequested || inFlight || pendingSize || settled) {
+        return;
+      }
+      settled = true;
+      resolve();
+    };
+
+    const flushPendingSize = (): void => {
+      if (!running || settled || inFlight || !pendingSize) {
+        maybeResolve();
+        return;
+      }
+      const next = pendingSize;
+      pendingSize = null;
+      if (!next) {
+        maybeResolve();
+        return;
+      }
+      if (next.width === lastApplied.width && next.height === lastApplied.height) {
+        flushPendingSize();
+        return;
+      }
+      inFlight = true;
+      void appWindow
+        .setSize(new LogicalSize(next.width, next.height))
+        .then(() => {
+          lastApplied = next;
+        })
+        .catch((error) => {
+          fail(error);
+        })
+        .finally(() => {
+          inFlight = false;
+          flushPendingSize();
+        });
+    };
+
+    const enqueueSize = (width: number, height: number, force = false): void => {
+      if (!force && width === lastApplied.width && height === lastApplied.height) {
+        return;
+      }
+      pendingSize = { width, height };
+      flushPendingSize();
+    };
+
+    const step = (): void => {
+      if (!running || settled) {
+        return;
+      }
+
+      const now = performance.now();
+      const elapsed = now - startedAtMs;
+      const t = Math.min(1, elapsed / durationMs);
+      const eased = easeInOutQuint(t);
+      const width = Math.round(lerp(from.width, to.width, eased));
+      const height = Math.round(lerp(from.height, to.height, eased));
+
+      if (now - lastPushAt >= pushIntervalMs || t >= 1) {
+        lastPushAt = now;
+        enqueueSize(width, height);
+      }
+
+      if (t < 1) {
+        frameHandle = window.requestAnimationFrame(step);
+        return;
+      }
+
+      finalRequested = true;
+      enqueueSize(to.width, to.height, true);
+      running = false;
+      maybeResolve();
+    };
+
+    frameHandle = window.requestAnimationFrame(step);
+  });
+}
+
+function lerp(start: number, end: number, t: number): number {
+  return start + (end - start) * t;
+}
+
+function easeInOutQuint(t: number): number {
+  return t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2;
+}
+

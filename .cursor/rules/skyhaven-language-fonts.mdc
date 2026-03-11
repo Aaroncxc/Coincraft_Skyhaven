@@ -1,0 +1,21 @@
+---
+description: Skyhaven UI language and font conventions
+globs: skyhaven/src/**/*.tsx, skyhaven/src/**/*.ts, skyhaven/src/**/*.css
+---
+
+# Skyhaven Language & Font Conventions
+
+## Game UI: English Only
+
+**All user-facing text in the game must be in English.** This includes:
+- Button labels, menu items, section titles
+- Tooltips, error messages, hints
+- Tile names, resource labels, status text
+- Any string visible to the player in the UI
+
+Use English for consistency and broader reach. Code comments and internal variable names may use any language.
+
+## Fonts
+
+- **Koulen** (`Koulen-Regular.ttf`): Used for buttons (duration pills, action items, generic items, settings chips)
+- **Jersey10** (`Jersey10-Regular.ttf`): Used for the Toolbox panel and related UI (tile palette, edit block, resource display)

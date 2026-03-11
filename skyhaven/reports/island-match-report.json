@@ -1,0 +1,479 @@
+﻿{
+    "generatedAt":  "2026-02-24T01:30:08.4597195+01:00",
+    "strategy":  "auto-match-v2-center-patch-comparison",
+    "source":  "mining_complete.png + tile variants",
+    "calibration":  {
+                        "sceneScale":  4.55,
+                        "tileW":  800.8,
+                        "tileH":  400.4,
+                        "originX":  2080,
+                        "originY":  1611.2,
+                        "score":  0.156526,
+                        "alphaBounds":  {
+                                            "minX":  14,
+                                            "minY":  503,
+                                            "maxX":  4444,
+                                            "maxY":  3453,
+                                            "centerX":  2229,
+                                            "centerY":  1978
+                                        }
+                    },
+    "unresolved":  [
+
+                   ],
+    "tiles":  [
+                  {
+                      "id":  "t-0-0",
+                      "gx":  0,
+                      "gy":  0,
+                      "family":  "tree2",
+                      "original":  "tree2V0",
+                      "selected":  "tree2V0",
+                      "confidence":  0.6,
+                      "bestScore":  0.218574,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  0
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "tree2V1",
+                                             "score":  0.218574,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "tree2V0",
+                                             "score":  0.219155,
+                                             "deltaToBest":  0.000581
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-1-0",
+                      "gx":  1,
+                      "gy":  0,
+                      "family":  "base",
+                      "original":  "baseV7",
+                      "selected":  "baseV7",
+                      "confidence":  0.6,
+                      "bestScore":  0.248258,
+                      "bestJitter":  {
+                                         "y":  -12,
+                                         "x":  -12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "baseV4",
+                                             "score":  0.248258,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "baseV7",
+                                             "score":  0.252202,
+                                             "deltaToBest":  0.003944
+                                         },
+                                         {
+                                             "key":  "baseV2",
+                                             "score":  0.259337,
+                                             "deltaToBest":  0.011079
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-2-0",
+                      "gx":  2,
+                      "gy":  0,
+                      "family":  "base",
+                      "original":  "baseV2",
+                      "selected":  "baseV2",
+                      "confidence":  0.6,
+                      "bestScore":  0.195642,
+                      "bestJitter":  {
+                                         "y":  0,
+                                         "x":  0
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "baseV4",
+                                             "score":  0.195642,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "baseV7",
+                                             "score":  0.196284,
+                                             "deltaToBest":  0.000642
+                                         },
+                                         {
+                                             "key":  "baseV2",
+                                             "score":  0.205408,
+                                             "deltaToBest":  0.009766
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-3-0",
+                      "gx":  3,
+                      "gy":  0,
+                      "family":  "mineTile",
+                      "original":  "mineTileV2",
+                      "selected":  "mineTileV2",
+                      "confidence":  1,
+                      "bestScore":  0.139239,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "auto-match",
+                      "status":  "auto-matched",
+                      "candidates":  [
+                                         {
+                                             "key":  "mineTileV2",
+                                             "score":  0.139239,
+                                             "deltaToBest":  0
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-0-1",
+                      "gx":  0,
+                      "gy":  1,
+                      "family":  "base",
+                      "original":  "baseV4",
+                      "selected":  "baseV4",
+                      "confidence":  0.6,
+                      "bestScore":  0.132338,
+                      "bestJitter":  {
+                                         "y":  -12,
+                                         "x":  -12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "baseV4",
+                                             "score":  0.132338,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "baseV7",
+                                             "score":  0.135335,
+                                             "deltaToBest":  0.002997
+                                         },
+                                         {
+                                             "key":  "baseV2",
+                                             "score":  0.144156,
+                                             "deltaToBest":  0.011818
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-1-1",
+                      "gx":  1,
+                      "gy":  1,
+                      "family":  "pathCross",
+                      "original":  "pathCrossV2",
+                      "selected":  "pathCrossV2",
+                      "confidence":  1,
+                      "bestScore":  0.172703,
+                      "bestJitter":  {
+                                         "y":  -12,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "auto-match",
+                      "status":  "auto-matched",
+                      "candidates":  [
+                                         {
+                                             "key":  "pathCrossV2",
+                                             "score":  0.172703,
+                                             "deltaToBest":  0
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-2-1",
+                      "gx":  2,
+                      "gy":  1,
+                      "family":  "pathStraightAlt",
+                      "original":  "pathStraightAltV5",
+                      "selected":  "pathStraightAltV5",
+                      "confidence":  0.6,
+                      "bestScore":  0.159246,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  0
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "pathStraightAltV4",
+                                             "score":  0.159246,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "pathStraightAltV5",
+                                             "score":  0.162028,
+                                             "deltaToBest":  0.002782
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-3-1",
+                      "gx":  3,
+                      "gy":  1,
+                      "family":  "tree2",
+                      "original":  "tree2V1",
+                      "selected":  "tree2V1",
+                      "confidence":  0.6,
+                      "bestScore":  0.090184,
+                      "bestJitter":  {
+                                         "y":  0,
+                                         "x":  -12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "tree2V0",
+                                             "score":  0.090184,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "tree2V1",
+                                             "score":  0.094327,
+                                             "deltaToBest":  0.004143
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-0-2",
+                      "gx":  0,
+                      "gy":  2,
+                      "family":  "tree1",
+                      "original":  "tree1V3",
+                      "selected":  "tree1V3",
+                      "confidence":  1,
+                      "bestScore":  0.094231,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  0
+                                     },
+                      "resolvedBy":  "auto-match",
+                      "status":  "auto-matched",
+                      "candidates":  [
+                                         {
+                                             "key":  "tree1V3",
+                                             "score":  0.094231,
+                                             "deltaToBest":  0
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-1-2",
+                      "gx":  1,
+                      "gy":  2,
+                      "family":  "pathStraight",
+                      "original":  "pathStraightV5",
+                      "selected":  "pathStraightV5",
+                      "confidence":  0.6,
+                      "bestScore":  0.138381,
+                      "bestJitter":  {
+                                         "y":  0,
+                                         "x":  -12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "pathStraightV4",
+                                             "score":  0.138381,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "pathStraightV6",
+                                             "score":  0.142096,
+                                             "deltaToBest":  0.003715
+                                         },
+                                         {
+                                             "key":  "pathStraightV5",
+                                             "score":  0.142398,
+                                             "deltaToBest":  0.004017
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-2-2",
+                      "gx":  2,
+                      "gy":  2,
+                      "family":  "pathCross",
+                      "original":  "pathCrossV2",
+                      "selected":  "pathCrossV2",
+                      "confidence":  1,
+                      "bestScore":  0.159388,
+                      "bestJitter":  {
+                                         "y":  0,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "auto-match",
+                      "status":  "auto-matched",
+                      "candidates":  [
+                                         {
+                                             "key":  "pathCrossV2",
+                                             "score":  0.159388,
+                                             "deltaToBest":  0
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-3-2",
+                      "gx":  3,
+                      "gy":  2,
+                      "family":  "tree2",
+                      "original":  "tree2V0",
+                      "selected":  "tree2V0",
+                      "confidence":  0.6,
+                      "bestScore":  0.107354,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "tree2V1",
+                                             "score":  0.107354,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "tree2V0",
+                                             "score":  0.108761,
+                                             "deltaToBest":  0.001407
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-0-3",
+                      "gx":  0,
+                      "gy":  3,
+                      "family":  "pathStraightAlt",
+                      "original":  "pathStraightAltV4",
+                      "selected":  "pathStraightAltV4",
+                      "confidence":  0.6,
+                      "bestScore":  0.105241,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "pathStraightAltV4",
+                                             "score":  0.105241,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "pathStraightAltV5",
+                                             "score":  0.106629,
+                                             "deltaToBest":  0.001388
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-1-3",
+                      "gx":  1,
+                      "gy":  3,
+                      "family":  "grass",
+                      "original":  "grassV4",
+                      "selected":  "grassV4",
+                      "confidence":  0.6,
+                      "bestScore":  0.147914,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  -12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "grassV2",
+                                             "score":  0.147914,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "grassV4",
+                                             "score":  0.150568,
+                                             "deltaToBest":  0.002654
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-2-3",
+                      "gx":  2,
+                      "gy":  3,
+                      "family":  "grass",
+                      "original":  "grassV2",
+                      "selected":  "grassV2",
+                      "confidence":  0.6,
+                      "bestScore":  0.192186,
+                      "bestJitter":  {
+                                         "y":  12,
+                                         "x":  12
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "grassV2",
+                                             "score":  0.192186,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "grassV4",
+                                             "score":  0.196725,
+                                             "deltaToBest":  0.004539
+                                         }
+                                     ]
+                  },
+                  {
+                      "id":  "t-3-3",
+                      "gx":  3,
+                      "gy":  3,
+                      "family":  "base",
+                      "original":  "baseV4",
+                      "selected":  "baseV4",
+                      "confidence":  0.6,
+                      "bestScore":  0.077754,
+                      "bestJitter":  {
+                                         "y":  -12,
+                                         "x":  0
+                                     },
+                      "resolvedBy":  "manual-override",
+                      "status":  "manual-override",
+                      "candidates":  [
+                                         {
+                                             "key":  "baseV7",
+                                             "score":  0.077754,
+                                             "deltaToBest":  0
+                                         },
+                                         {
+                                             "key":  "baseV2",
+                                             "score":  0.079257,
+                                             "deltaToBest":  0.001503
+                                         },
+                                         {
+                                             "key":  "baseV4",
+                                             "score":  0.08411,
+                                             "deltaToBest":  0.006356
+                                         }
+                                     ]
+                  }
+              ]
+}

@@ -1,0 +1,48 @@
+---
+description: Skyhaven Tile-System und Island-Bau: Datenbank, Layer-Prioritäten, Draw Order, Island-JSON
+globs: skyhaven/src/game/**/*.ts, skyhaven/src/game/**/*.json
+---
+
+# Skyhaven Tile-System & Island-Bau
+
+## Tile-Datenbank (assets.ts)
+
+Jeder Tile-Typ im `SKYHAVEN_SPRITE_MANIFEST.tile` definiert:
+- **drawW**, **drawH**: Zeichengröße in Pixeln
+- **anchorX**, **anchorY**: Pivot-Punkt (meist 0.5, 0.71; alle Tiles inkl. Farming nutzen 0.71 für einheitliche Höhe; große POIs 0.8)
+- **layerOrder**: Draw-Layer für Tiefensortierung (0=ground, 100=path, 200=prop, 300=poi)
+- **localYOffset**: Zusätzlicher Offset für Tiefensortierung; höhere Tiles (Bäume, Mine) nutzen positive Werte (~45–80), damit sie korrekt vor anderen Tiles gezeichnet werden
+- **gridSpan**: Optional `{ w: 2, h: 2 }` für Multi-Zell-POIs (z.B. farmPoi); Tile wird zentriert über die Zellen gezeichnet, doppelte Größe
+
+## Layer-Reihenfolge (Draw Order)
+
+| Layer | layerOrder | Tile-Typen |
+|-------|------------|------------|
+| ground | 0 | base, baseV2, baseV4, baseV7, grass, grassV2, grassV4, farmEmpty, farmSlot, farmHalf, farmFull |
+| path | 100 | pathCross, pathCrossV2, pathStraight*, pathStraightAlt*, farmPath, farmPathCross, farmPathStraight, farmPathUp, farmPathDown |
+| prop | 200 | tree1, tree1V3, tree2, tree2V0, tree2V1 (mit localYOffset 45–55) |
+| poi | 300 | mineTile, mineTileV2, farmPoi (mit localYOffset 80) |
+
+## Island-JSON-Struktur
+
+- **tileW**: 176, **tileH**: 88 (konstant)
+- **tiles**: Array von `{ id, gx, gy, type }` – `type` muss ein gültiger AssetKey aus `types.ts` sein
+- **poi**: Array von `{ id, gx, gy, kind, interactRadius }` (kind z.B. "mine")
+- **spawn**: `{ gx, gy }` – Spawn-Punkt
+
+## Neuen Tile-Typ hinzufügen
+
+1. **AssetKey** in `types.ts` ergänzen
+2. **assets.ts**: Eintrag unter `manifest.tile` mit src, drawW, drawH, anchorX, anchorY, layerOrder, optional localYOffset
+3. **render.ts**: Bei Fallback-Rendering `FALLBACK_TILE_PALETTES` ergänzen (falls Assets fehlen)
+4. **assetLoader.ts**: Lädt automatisch alle Tile-Sources aus dem Manifest
+
+## SortKey-Formel (iso.ts)
+
+```
+sortKey = (gx + gy) * 1000 + layerOrder + localYOffset
+```
+
+- Kleinerer sortKey = weiter hinten, wird zuerst gezeichnet
+- Größerer sortKey = weiter vorne, wird später gezeichnet (überdeckt andere)
+- Bäume und POIs haben höheren sortKey durch layerOrder + localYOffset
