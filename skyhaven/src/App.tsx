@@ -5,14 +5,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SKYHAVEN_SPRITE_MANIFEST } from "./game/assets";
 import {
   addTile,
+  canDirectionalCloneTile,
+  createVisualCloneTemplate,
+  getDirectionalCloneDisabledReason,
+  getDirectionalClonePreview,
   hydrateCustomIsland,
   hydrateIslandOverride,
-  moveTile,
+  instantiateVisualCloneTile,
   persistCustomIsland,
   persistIslandOverride,
   removeTile,
   updateTile,
-  type MoveTileResult,
 } from "./game/customIsland";
 import islandFarming from "./game/island.farming.json";
 import islandMining from "./game/island.mining.json";
@@ -24,6 +27,7 @@ import {
   persistInventory,
   resetInventoryToStarter,
   spendResources,
+  type Inventory,
 } from "./game/inventory";
 import { LEVEL_CAP, awardExp, hydrateProgression, persistProgression, xpToNextLevel } from "./game/progression";
 import { getSessionExp, getSessionRewards, getTileRecipe, scaleRewardsForLevel } from "./game/resources";
@@ -34,11 +38,15 @@ import { IslandScene } from "./game/three/IslandScene";
 import type {
   ActionType,
   AssetKey,
+  CloneDirection,
+  CloneLineState,
   FocusDuration,
   FocusSession,
   IslandId,
   IslandMap,
   ProgressionState,
+  ResourceAmount,
+  TileDef,
 } from "./game/types";
 import { DECORATION_TILES } from "./game/types";
 import { ClockOverlay } from "./ui/ClockOverlay";
@@ -54,6 +62,13 @@ import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
 import { PlannerOverlay } from "./ui/planner/PlannerOverlay";
+import {
+  hydrateEquipment,
+  moveEquipmentItem,
+  persistEquipment,
+  type EquipmentSlotRef,
+  type EquipmentState,
+} from "./game/equipment";
 
 const EXPANDED_WINDOW_SIZE = { width: 960, height: 618 };
 const COMPACT_WINDOW_SIZE = { width: 520, height: 520 };
@@ -115,13 +130,17 @@ export default function App() {
   const [selectedDuration, setSelectedDuration] = useState<FocusDuration>(30);
   const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
   const [inventory, setInventory] = useState(() => hydrateInventory());
+  const [equipment, setEquipment] = useState<EquipmentState>(() => hydrateEquipment());
   const [progression, setProgression] = useState<ProgressionState>(() => hydrateProgression());
   const [expGainPulse, setExpGainPulse] = useState(false);
   const [selectedTileType, setSelectedTileType] = useState<AssetKey | null>(null);
   const [eraseMode, setEraseMode] = useState(false);
   const [selectedTileForEdit, setSelectedTileForEdit] = useState<{ gx: number; gy: number } | null>(null);
-  const [tileEditAnchor, setTileEditAnchor] = useState<TileEditAnchor | null>(null);
+  const [, setTileEditAnchor] = useState<TileEditAnchor | null>(null);
   const [blockedTargetCell, setBlockedTargetCell] = useState<{ gx: number; gy: number } | null>(null);
+  const [cloneState, setCloneState] = useState<CloneLineState | null>(null);
+  const [clonePreviewCells, setClonePreviewCells] = useState<Array<{ gx: number; gy: number }>>([]);
+  const [cloneBlockedCell, setCloneBlockedCell] = useState<{ gx: number; gy: number } | null>(null);
   const [noResourcesHint, setNoResourcesHint] = useState(false);
   const noResourcesTimerRef = useRef<number | null>(null);
   const [debugMode, setDebugMode] = useState(false);
@@ -218,28 +237,34 @@ export default function App() {
     };
   }, []);
 
-  const selectedTileForOverlay = useMemo(() => {
-    if (selectedIslandId !== "custom" || windowMode !== "expanded" || isMinimalMode || !selectedTileForEdit) {
-      return null;
+  const triggerNoResourcesHint = useCallback(() => {
+    setNoResourcesHint(true);
+    if (noResourcesTimerRef.current !== null) {
+      window.clearTimeout(noResourcesTimerRef.current);
     }
-    return (
-      customIsland.tiles.find(
-        (tile) => tile.gx === selectedTileForEdit.gx && tile.gy === selectedTileForEdit.gy
-      ) ?? null
-    );
-  }, [customIsland, selectedTileForEdit, selectedIslandId, windowMode, isMinimalMode]);
+    noResourcesTimerRef.current = window.setTimeout(() => {
+      setNoResourcesHint(false);
+      noResourcesTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  const clearClonePreview = useCallback(() => {
+    setClonePreviewCells([]);
+    setCloneBlockedCell(null);
+  }, []);
+
+  const cancelDirectionalClone = useCallback(() => {
+    setCloneState(null);
+    clearClonePreview();
+  }, [clearClonePreview]);
+
   const handlePlaceTile = useCallback(
     (gx: number, gy: number, type: AssetKey) => {
       if (selectedIslandId !== "custom") return;
       const recipe = getTileRecipe(type);
       if (!recipe || !canAfford(inventory, recipe)) {
         if (recipe && !canAfford(inventory, recipe)) {
-          setNoResourcesHint(true);
-          if (noResourcesTimerRef.current !== null) window.clearTimeout(noResourcesTimerRef.current);
-          noResourcesTimerRef.current = window.setTimeout(() => {
-            setNoResourcesHint(false);
-            noResourcesTimerRef.current = null;
-          }, 2200);
+          triggerNoResourcesHint();
         }
         return;
       }
@@ -265,7 +290,7 @@ export default function App() {
       persistCustomIsland(nextIsland);
       persistInventory(nextInv);
     },
-    [selectedIslandId, inventory]
+    [selectedIslandId, inventory, triggerNoResourcesHint]
   );
 
   const handleRemoveTile = useCallback(
@@ -313,63 +338,6 @@ export default function App() {
       if (selectedIslandId !== "custom") return;
       selectedTileForEditRef.current = { gx, gy };
       setSelectedTileForEdit({ gx, gy });
-    },
-    [selectedIslandId]
-  );
-
-  const handleUpdatePlacedTile = useCallback(
-    (
-      gx: number,
-      gy: number,
-      updates: {
-        layerOrder?: number;
-        anchorY?: number;
-        localYOffset?: number;
-        offsetX?: number;
-        offsetY?: number;
-      }
-    ) => {
-      if (selectedIslandId !== "custom") return;
-      const nextIsland = updateTile(customIslandRef.current, gx, gy, updates);
-      customIslandRef.current = nextIsland;
-      setCustomIsland(nextIsland);
-      persistCustomIsland(nextIsland);
-    },
-    [selectedIslandId]
-  );
-
-  const handleMoveSelectedTileBy = useCallback(
-    (deltaGx: number, deltaGy: number): MoveTileResult => {
-      if (selectedIslandId !== "custom") {
-        return {
-          moved: false,
-          reason: "source_missing",
-          attemptedCoord: { gx: Number.NaN, gy: Number.NaN },
-        };
-      }
-      const current = selectedTileForEditRef.current;
-      if (!current) {
-        return {
-          moved: false,
-          reason: "source_missing",
-          attemptedCoord: { gx: Number.NaN, gy: Number.NaN },
-        };
-      }
-
-      const result = moveTile(customIslandRef.current, current, {
-        gx: current.gx + deltaGx,
-        gy: current.gy + deltaGy,
-      });
-      if (!result.moved) {
-        return result;
-      }
-
-      customIslandRef.current = result.island;
-      selectedTileForEditRef.current = result.nextCoord;
-      setCustomIsland(result.island);
-      setSelectedTileForEdit(result.nextCoord);
-      persistCustomIsland(result.island);
-      return result;
     },
     [selectedIslandId]
   );
@@ -552,6 +520,9 @@ export default function App() {
         dirt: "dirt",
         pathCross: "pathCross",
         pathStraight: "pathStraight",
+        ancientStone: "ancientStone",
+        ancientStoneWall: "ancientStoneWall",
+        ancientCornerWall: "ancientCornerWall",
         mine: "mineTile",
         tree: "tree1",
         treeMiddle: "treeMiddle",
@@ -576,10 +547,28 @@ export default function App() {
     windowMode === "expanded" &&
     !debugMode;
 
+  const activeEditTile = useMemo<TileDef | null>(() => {
+    if (!editSelectedTileId || !isCustomEditing) {
+      return null;
+    }
+    return customIsland.tiles.find((tile) => tile.id === editSelectedTileId) ?? null;
+  }, [customIsland, editSelectedTileId, isCustomEditing]);
+
+  const cloneDisabledReason = useMemo(
+    () => getDirectionalCloneDisabledReason(activeEditTile),
+    [activeEditTile]
+  );
+  const cloneEligible = activeEditTile !== null && cloneDisabledReason === null;
+
   const handleEditTileSelect = useCallback((tileId: string) => {
     setEditSelectedTileId(tileId || null);
     setEditingDecoration(false);
   }, []);
+
+  const handleEditTileDeselect = useCallback(() => {
+    setEditSelectedTileId(null);
+    cancelDirectionalClone();
+  }, [cancelDirectionalClone]);
 
   const handleEditTileChange = useCallback(
     (tileId: string, pos3d: { x: number; y: number; z: number }, scale3d: { x: number; y: number; z: number }, rotY?: number) => {
@@ -671,6 +660,95 @@ export default function App() {
     setCustomIsland(nextIsland);
     persistCustomIsland(nextIsland);
   }, [editClipboard, editSelectedTileId]);
+
+  const handleStartDirectionalClone = useCallback(
+    (direction: CloneDirection) => {
+      if (!activeEditTile || !canDirectionalCloneTile(activeEditTile)) {
+        return;
+      }
+      setCloneState({
+        sourceTileId: activeEditTile.id,
+        direction,
+      });
+      clearClonePreview();
+    },
+    [activeEditTile, clearClonePreview]
+  );
+
+  const handleCloneHoverChange = useCallback(
+    (cell: { gx: number; gy: number } | null) => {
+      if (!cloneState) {
+        clearClonePreview();
+        return;
+      }
+
+      const sourceTile = customIslandRef.current.tiles.find((tile) => tile.id === cloneState.sourceTileId) ?? null;
+      const preview = getDirectionalClonePreview(customIslandRef.current, sourceTile, cloneState.direction, cell);
+      setClonePreviewCells(preview.validTarget ? preview.cells : []);
+      setCloneBlockedCell(preview.blockedCell);
+    },
+    [cloneState, clearClonePreview]
+  );
+
+  const handleConfirmDirectionalCloneTarget = useCallback(
+    (gx: number, gy: number) => {
+      if (!cloneState) {
+        return;
+      }
+
+      const sourceTile = customIslandRef.current.tiles.find((tile) => tile.id === cloneState.sourceTileId) ?? null;
+      const preview = getDirectionalClonePreview(
+        customIslandRef.current,
+        sourceTile,
+        cloneState.direction,
+        { gx, gy }
+      );
+
+      if (!preview.validTarget || !sourceTile) {
+        setClonePreviewCells(preview.validTarget ? preview.cells : []);
+        setCloneBlockedCell(preview.blockedCell);
+        return;
+      }
+
+      const recipe = getTileRecipe(sourceTile.type);
+      if (!recipe) {
+        return;
+      }
+
+      const totalCost = scaleResourceAmounts(recipe, preview.cells.length);
+      if (!canAfford(inventory, totalCost)) {
+        triggerNoResourcesHint();
+        return;
+      }
+
+      const nextInventory = spendResources(inventory, totalCost);
+      if (!nextInventory) {
+        triggerNoResourcesHint();
+        return;
+      }
+
+      const template = createVisualCloneTemplate(sourceTile);
+      let nextIsland = customIslandRef.current;
+      for (const cell of preview.cells) {
+        const cloneTile = instantiateVisualCloneTile(template, cell.gx, cell.gy);
+        nextIsland = addTile(nextIsland, cell.gx, cell.gy, template.type, cloneTile);
+      }
+
+      buildUndoStackRef.current = [
+        ...buildUndoStackRef.current.slice(-49),
+        { island: customIslandRef.current, inventory },
+      ];
+      setBuildCanUndo(true);
+
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      setInventory(nextInventory);
+      persistCustomIsland(nextIsland);
+      persistInventory(nextInventory);
+      clearClonePreview();
+    },
+    [cloneState, inventory, triggerNoResourcesHint, clearClonePreview]
+  );
 
   const handleDeselectTileForEdit = useCallback(() => {
     selectedTileForEditRef.current = null;
@@ -793,6 +871,10 @@ export default function App() {
         return;
       }
       let handled = false;
+      if (cloneState) {
+        cancelDirectionalClone();
+        handled = true;
+      }
       if (selectedTileForEditRef.current) {
         selectedTileForEditRef.current = null;
         setSelectedTileForEdit(null);
@@ -813,7 +895,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [session?.active]);
+  }, [cancelDirectionalClone, cloneState, session?.active]);
 
   useEffect(() => {
     if (windowMode !== "compact" && isMinimalMode) {
@@ -842,6 +924,36 @@ export default function App() {
       handleBlockedTarget(null);
     }
   }, [selectedIslandId, windowMode, isMinimalMode, selectedTileType, eraseMode, handleBlockedTarget]);
+
+  useEffect(() => {
+    if (!cloneState) {
+      return;
+    }
+
+    const sourceTile = customIsland.tiles.find((tile) => tile.id === cloneState.sourceTileId) ?? null;
+    const shouldCancel =
+      !isCustomEditing ||
+      selectedIslandId !== "custom" ||
+      selectedTileType !== null ||
+      eraseMode ||
+      !editSelectedTileId ||
+      editSelectedTileId !== cloneState.sourceTileId ||
+      !sourceTile ||
+      !canDirectionalCloneTile(sourceTile);
+
+    if (shouldCancel) {
+      cancelDirectionalClone();
+    }
+  }, [
+    cancelDirectionalClone,
+    cloneState,
+    customIsland,
+    editSelectedTileId,
+    eraseMode,
+    isCustomEditing,
+    selectedIslandId,
+    selectedTileType,
+  ]);
 
   const handleToggleCompact = (): void => {
     if (isWindowAnimating) {
@@ -953,6 +1065,14 @@ export default function App() {
     setIsInventoryOverlayOpen(false);
     setIsProfileOpen(false);
   };
+
+  const handleMoveProfileItem = useCallback((from: EquipmentSlotRef, to: EquipmentSlotRef) => {
+    setEquipment((previous) => {
+      const next = moveEquipmentItem(previous, from, to);
+      persistEquipment(next);
+      return next;
+    });
+  }, []);
 
   const handleCycleIsland = useCallback(
     (direction: -1 | 1): void => {
@@ -1074,6 +1194,11 @@ export default function App() {
               onClearTileForEdit={handleDeselectTileForEdit}
               onTileEditAnchorChange={handleTileEditAnchorChange}
               blockedTargetCell={blockedTargetCell}
+              cloneState={cloneState}
+              clonePreviewCells={clonePreviewCells}
+              cloneBlockedCell={cloneBlockedCell}
+              onCloneHoverChange={handleCloneHoverChange}
+              onCloneTarget={handleConfirmDirectionalCloneTarget}
               debugMode={debugMode}
               debugGizmoMode={debugGizmoMode}
               onDebugTileSelect={handleDebugTileSelect}
@@ -1087,7 +1212,7 @@ export default function App() {
               editGizmoMode={editGizmoMode}
               editSelectedTileId={editSelectedTileId}
               onEditTileSelect={handleEditTileSelect}
-              onEditTileDeselect={() => setEditSelectedTileId(null)}
+              onEditTileDeselect={handleEditTileDeselect}
               onEditTileChange={handleEditTileChange}
               onEditDraggingChange={handleEditDraggingChange}
               editUniformScale={editUniformScale}
@@ -1175,6 +1300,9 @@ export default function App() {
           profile={profile}
           progression={progression}
           actionStats={actionStats}
+          inventory={inventory}
+          equipmentState={equipment}
+          onMoveItem={handleMoveProfileItem}
         />
         <PlannerOverlay
           open={isPlannerOpen}
@@ -1229,11 +1357,7 @@ export default function App() {
             onInventoryReset={() => setInventory(resetInventoryToStarter())}
             onDebugAddResources={() => setInventory(addDebugResources(inventory))}
             isDragging={debugGizmoDragging || editGizmoDragging}
-            editSelectedTile={
-              editSelectedTileId && isCustomEditing
-                ? customIsland.tiles.find((t) => t.id === editSelectedTileId) ?? null
-                : null
-            }
+            editSelectedTile={activeEditTile}
             editGizmoMode={editGizmoMode}
             onEditGizmoModeChange={setEditGizmoMode}
             onEditRotate={handleEditRotateTile}
@@ -1270,6 +1394,11 @@ export default function App() {
             buildCanUndo={buildCanUndo}
             editingDecoration={editingDecoration}
             onEditingDecorationChange={setEditingDecoration}
+            cloneState={cloneState}
+            cloneEligible={cloneEligible}
+            cloneDisabledReason={cloneDisabledReason}
+            onStartDirectionalClone={handleStartDirectionalClone}
+            onCancelDirectionalClone={cancelDirectionalClone}
           />
         )}
 
@@ -1292,6 +1421,17 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function scaleResourceAmounts(cost: ResourceAmount[], factor: number): ResourceAmount[] {
+  if (factor <= 0) {
+    return [];
+  }
+
+  return cost.map((entry) => ({
+    resourceId: entry.resourceId,
+    amount: entry.amount * factor,
+  }));
 }
 
 async function animateWindowResize(
@@ -1407,4 +1547,3 @@ function lerp(start: number, end: number, t: number): number {
 function easeInOutQuint(t: number): number {
   return t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2;
 }
-

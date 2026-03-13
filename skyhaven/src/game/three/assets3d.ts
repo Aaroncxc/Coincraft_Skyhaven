@@ -17,6 +17,9 @@ export const TILE_3D_MODELS: Record<string, string> = {
   floatingForge: "/ingame_assets/3d/Floating_Forge.glb",
   farmingChicken: "/ingame_assets/3d/Farming_Chicken.glb",
   bushTile: "/ingame_assets/3d/BushTile.glb",
+  ancientStone: "/ingame_assets/3d/AncientStone_Tile.glb",
+  ancientStoneWall: "/ingame_assets/3d/AncientStoneWall_Tile.glb",
+  ancientCornerWall: "/ingame_assets/3d/AncientCornerWall_Til.glb",
   statueAaron: "/ingame_assets/3d/Statue_Aaron.glb",
 };
 
@@ -39,6 +42,10 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   pathStraightAlt: "pathStraight",
   pathStraightAltV4: "pathStraight",
   pathStraightAltV5: "pathStraight",
+
+  ancientStone: "ancientStone",
+  ancientStoneWall: "ancientStoneWall",
+  ancientCornerWall: "ancientCornerWall",
 
   tree1: "tree",
   tree1V3: "tree",

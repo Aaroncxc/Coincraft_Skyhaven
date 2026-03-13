@@ -20,11 +20,6 @@ type DayTimelineProps = {
 
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6);
 
-function timeToSlot(time: string): number {
-  const [h] = time.split(":").map(Number);
-  return h - 6;
-}
-
 function timeToPercent(time: string): number {
   const [h, m] = time.split(":").map(Number);
   return ((h - 6) * 60 + m) / (18 * 60) * 100;

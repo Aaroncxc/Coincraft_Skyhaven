@@ -185,8 +185,8 @@ export function DebugTileWrapper({
   }, [onChange, defaultX, defaultZ, uniformScale, gizmoMode, initX, initY, initZ]);
 
   const selectedColor = selected ? 0xffdd44 : undefined;
-  const showTileGizmo = selected && !editingDecoration;
-  const showDecoGizmo = selected && editingDecoration && !!tile.decoration;
+  const showTileGizmo = selected && !editingDecoration && !buildMode;
+  const showDecoGizmo = selected && editingDecoration && !!tile.decoration && !buildMode;
 
   return (
     <>

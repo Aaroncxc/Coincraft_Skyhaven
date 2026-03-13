@@ -1,6 +1,36 @@
-import type { AssetKey, IslandMap, TileDef } from "./types";
+import { SKYHAVEN_SPRITE_MANIFEST } from "./assets";
+import { TILE_UNIT_SIZE } from "./three/assets3d";
+import type { AssetKey, CloneDirection, IslandMap, TileDef } from "./types";
 
 export const CUSTOM_ISLAND_STORAGE_KEY = "skyhaven.customIsland.v1";
+
+export type GridCoord = { gx: number; gy: number };
+
+export type VisualCloneTemplate = {
+  type: AssetKey;
+  layerOrder?: number;
+  localYOffset?: number;
+  anchorY?: number;
+  offsetX?: number;
+  offsetY?: number;
+  pos3dOffset?: { x: number; y: number; z: number };
+  scale3d?: { x: number; y: number; z: number };
+  rotY?: number;
+};
+
+export type DirectionalClonePreview = {
+  validTarget: boolean;
+  targetOnRay: boolean;
+  cells: GridCoord[];
+  blockedCell: GridCoord | null;
+};
+
+const CLONE_DIRECTION_STEPS: Record<CloneDirection, GridCoord> = {
+  up: { gx: -1, gy: -1 },
+  right: { gx: 1, gy: -1 },
+  down: { gx: 1, gy: 1 },
+  left: { gx: -1, gy: 1 },
+};
 
 function makeDefaultCustomIsland(): IslandMap {
   const tiles: TileDef[] = [];
@@ -86,12 +116,148 @@ export function coordKey(gx: number, gy: number): string {
   return `${gx},${gy}`;
 }
 
+export function getDirectionalCloneStep(direction: CloneDirection): GridCoord {
+  return CLONE_DIRECTION_STEPS[direction];
+}
+
+export function getDirectionalCloneDisabledReason(tile: TileDef | null | undefined): string | null {
+  if (!tile) {
+    return "Select a tile first.";
+  }
+
+  const spriteMeta = SKYHAVEN_SPRITE_MANIFEST.tile[tile.type];
+  if (spriteMeta?.gridSpan) {
+    return "2x2 tiles cannot be cloned yet.";
+  }
+
+  if (tile.decoration) {
+    return "Tiles with decoration cannot be cloned yet.";
+  }
+
+  return null;
+}
+
+export function canDirectionalCloneTile(tile: TileDef | null | undefined): boolean {
+  return getDirectionalCloneDisabledReason(tile) === null;
+}
+
+export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
+  const basePosX = tile.gx * TILE_UNIT_SIZE;
+  const basePosZ = tile.gy * TILE_UNIT_SIZE;
+
+  return {
+    type: tile.type,
+    layerOrder: tile.layerOrder,
+    localYOffset: tile.localYOffset,
+    anchorY: tile.anchorY,
+    offsetX: tile.offsetX,
+    offsetY: tile.offsetY,
+    pos3dOffset: tile.pos3d
+      ? {
+          x: tile.pos3d.x - basePosX,
+          y: tile.pos3d.y,
+          z: tile.pos3d.z - basePosZ,
+        }
+      : undefined,
+    scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
+    rotY: tile.rotY,
+  };
+}
+
+export function instantiateVisualCloneTile(
+  template: VisualCloneTemplate,
+  gx: number,
+  gy: number
+): Partial<
+  Pick<
+    TileDef,
+    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+  >
+> {
+  const nextTile: Partial<
+    Pick<
+      TileDef,
+      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+    >
+  > = {
+    type: template.type,
+    layerOrder: template.layerOrder,
+    localYOffset: template.localYOffset,
+    anchorY: template.anchorY,
+    offsetX: template.offsetX,
+    offsetY: template.offsetY,
+    scale3d: template.scale3d ? { ...template.scale3d } : undefined,
+    rotY: template.rotY,
+  };
+
+  if (template.pos3dOffset) {
+    nextTile.pos3d = {
+      x: gx * TILE_UNIT_SIZE + template.pos3dOffset.x,
+      y: template.pos3dOffset.y,
+      z: gy * TILE_UNIT_SIZE + template.pos3dOffset.z,
+    };
+  }
+
+  return nextTile;
+}
+
+export function getDirectionalClonePreview(
+  island: IslandMap,
+  sourceTile: TileDef | null | undefined,
+  direction: CloneDirection,
+  target: GridCoord | null | undefined
+): DirectionalClonePreview {
+  if (!sourceTile || !target) {
+    return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
+  }
+
+  if (!canDirectionalCloneTile(sourceTile)) {
+    return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
+  }
+
+  const step = getDirectionalCloneStep(direction);
+  const steps = getDirectionalCloneStepCount({ gx: sourceTile.gx, gy: sourceTile.gy }, target, step);
+  if (steps === null) {
+    return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
+  }
+
+  const cells: GridCoord[] = [];
+  for (let index = 1; index <= steps; index += 1) {
+    const nextCoord = {
+      gx: sourceTile.gx + step.gx * index,
+      gy: sourceTile.gy + step.gy * index,
+    };
+    const occupied = island.tiles.some((tile) => tile.gx === nextCoord.gx && tile.gy === nextCoord.gy);
+    if (occupied) {
+      return {
+        validTarget: false,
+        targetOnRay: true,
+        cells: [],
+        blockedCell: nextCoord,
+      };
+    }
+    cells.push(nextCoord);
+  }
+
+  return {
+    validTarget: cells.length > 0,
+    targetOnRay: true,
+    cells,
+    blockedCell: null,
+  };
+}
+
 export function addTile(
   island: IslandMap,
   gx: number,
   gy: number,
   type: AssetKey,
-  overrides?: Partial<Pick<TileDef, "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY">>
+  overrides?: Partial<
+    Pick<
+      TileDef,
+      "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+    >
+  >
 ): IslandMap {
   const key = coordKey(gx, gy);
   const existing = island.tiles.find((t) => coordKey(t.gx, t.gy) === key);
@@ -182,4 +348,28 @@ export function moveTile(
     island: nextIsland,
     nextCoord: { gx: to.gx, gy: to.gy },
   };
+}
+
+function getDirectionalCloneStepCount(source: GridCoord, target: GridCoord, step: GridCoord): number | null {
+  const deltaGx = target.gx - source.gx;
+  const deltaGy = target.gy - source.gy;
+
+  if (deltaGx === 0 || deltaGy === 0) {
+    return null;
+  }
+
+  if (Math.abs(deltaGx) !== Math.abs(deltaGy)) {
+    return null;
+  }
+
+  const steps = Math.abs(deltaGx);
+  if (steps < 1) {
+    return null;
+  }
+
+  if (deltaGx !== step.gx * steps || deltaGy !== step.gy * steps) {
+    return null;
+  }
+
+  return steps;
 }

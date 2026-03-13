@@ -3,11 +3,6 @@ import type { IslandId } from "./types";
 
 const MUSIC_BASE = "/ingame_assets/music";
 
-const ISLAND_MUSIC: Partial<Record<IslandId, string>> = {
-  mining: `${MUSIC_BASE}/Sinister Slink.mp3`,
-  farming: `${MUSIC_BASE}/Cool Jazz.mp3`,
-};
-
 /** Playlist for Options skip: 3 tracks (user can switch with prev/next). */
 export const MUSIC_PLAYLIST: readonly string[] = [
   `${MUSIC_BASE}/Sinister Slink.mp3`,

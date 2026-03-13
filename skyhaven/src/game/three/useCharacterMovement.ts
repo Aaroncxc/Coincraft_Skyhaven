@@ -95,10 +95,6 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
 
-function smoothstep(t: number): number {
-  return t * t * (3 - 2 * t);
-}
-
 function pickRandomTile(
   tiles: ReadonlyArray<{ gx: number; gy: number }>,
   currentGx: number,

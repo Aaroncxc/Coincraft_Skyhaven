@@ -37,7 +37,7 @@ function MouseGroundTracker({ mouseGroundRef }: { mouseGroundRef: MutableRefObje
   });
   return null;
 }
-import type { IslandMap, AssetKey, TileDef } from "../types";
+import type { IslandMap, AssetKey, CloneLineState, TileDef } from "../types";
 import type { TileEditAnchor } from "../useSkyhavenLoop";
 import { useThree, useFrame, type ThreeEvent } from "@react-three/fiber";
 
@@ -55,6 +55,11 @@ export type IslandSceneProps = {
   onClearTileForEdit?: () => void;
   onTileEditAnchorChange?: (anchor: TileEditAnchor) => void;
   blockedTargetCell?: { gx: number; gy: number } | null;
+  cloneState?: CloneLineState | null;
+  clonePreviewCells?: Array<{ gx: number; gy: number }>;
+  cloneBlockedCell?: { gx: number; gy: number } | null;
+  onCloneHoverChange?: (cell: { gx: number; gy: number } | null) => void;
+  onCloneTarget?: (gx: number, gy: number) => void;
   debugMode?: boolean;
   debugGizmoMode?: "translate" | "scale";
   onDebugTileSelect?: (tileId: string) => void;
@@ -163,8 +168,11 @@ function GroundInteraction({
   onSelectTileForEdit,
   onClearTileForEdit,
   onEditTileDeselect,
+  cloneState,
   onHoverChange,
   onGhostChange,
+  onCloneHoverChange,
+  onCloneTarget,
 }: {
   island: IslandMap;
   buildMode: boolean;
@@ -176,8 +184,11 @@ function GroundInteraction({
   onSelectTileForEdit?: (gx: number, gy: number) => void;
   onClearTileForEdit?: () => void;
   onEditTileDeselect?: () => void;
+  cloneState?: CloneLineState | null;
   onHoverChange: (tileId: string | null) => void;
   onGhostChange: (cell: { gx: number; gy: number } | null) => void;
+  onCloneHoverChange?: (cell: { gx: number; gy: number } | null) => void;
+  onCloneTarget?: (gx: number, gy: number) => void;
 }) {
   const { camera, gl } = useThree();
   const hoveredRef = useRef<string | null>(null);
@@ -217,6 +228,7 @@ function GroundInteraction({
           onHoverChange(null);
         }
         onGhostChange(null);
+        onCloneHoverChange?.(null);
         return;
       }
 
@@ -227,13 +239,17 @@ function GroundInteraction({
         onHoverChange(newId);
       }
 
-      if (buildMode && selectedTileType) {
+      if (cloneState) {
+        onCloneHoverChange?.(grid);
+        onGhostChange(null);
+      } else if (buildMode && selectedTileType) {
         onGhostChange(grid);
       } else {
         onGhostChange(null);
+        onCloneHoverChange?.(null);
       }
     },
-    [getGridFromEvent, findTile, buildMode, selectedTileType, onHoverChange, onGhostChange]
+    [getGridFromEvent, findTile, buildMode, cloneState, selectedTileType, onHoverChange, onGhostChange, onCloneHoverChange]
   );
 
   const handleClick = useCallback(
@@ -247,6 +263,13 @@ function GroundInteraction({
       if (eraseMode) {
         if (tile) onRemoveTile?.(tile.gx, tile.gy);
         if (isEmpty) onEditTileDeselect?.();
+        return;
+      }
+
+      if (cloneState) {
+        if (isEmpty) {
+          onCloneTarget?.(grid.gx, grid.gy);
+        }
         return;
       }
 
@@ -272,7 +295,7 @@ function GroundInteraction({
         }
       }
     },
-    [getGridFromEvent, findTile, buildMode, eraseMode, selectedTileType, selectedIslandId, onPlaceTile, onRemoveTile, onSelectTileForEdit, onClearTileForEdit, onEditTileDeselect]
+    [getGridFromEvent, findTile, buildMode, eraseMode, cloneState, selectedTileType, selectedIslandId, onPlaceTile, onRemoveTile, onSelectTileForEdit, onClearTileForEdit, onEditTileDeselect, onCloneTarget]
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -281,7 +304,8 @@ function GroundInteraction({
       onHoverChange(null);
     }
     onGhostChange(null);
-  }, [onHoverChange, onGhostChange]);
+    onCloneHoverChange?.(null);
+  }, [onHoverChange, onGhostChange, onCloneHoverChange]);
 
   const gridExtent = useMemo(() => getGridExtent(island), [island]);
 
@@ -414,6 +438,11 @@ export function IslandScene({
   onClearTileForEdit,
   onTileEditAnchorChange,
   blockedTargetCell,
+  cloneState = null,
+  clonePreviewCells = [],
+  cloneBlockedCell = null,
+  onCloneHoverChange,
+  onCloneTarget,
   debugMode = false,
   debugGizmoMode = "translate",
   onDebugTileSelect,
@@ -562,8 +591,11 @@ export function IslandScene({
           onRemoveTile={onRemoveTile}
           onSelectTileForEdit={onSelectTileForEdit}
           onClearTileForEdit={onClearTileForEdit}
+          cloneState={cloneState}
           onHoverChange={buildMode ? setHoveredTileIdSmooth : noopHover}
           onGhostChange={setGhostCell}
+          onCloneHoverChange={onCloneHoverChange}
+          onCloneTarget={onCloneTarget}
         />
       )}
 
@@ -579,8 +611,11 @@ export function IslandScene({
           onSelectTileForEdit={onSelectTileForEdit}
           onClearTileForEdit={onClearTileForEdit}
           onEditTileDeselect={onEditTileDeselect}
+          cloneState={cloneState}
           onHoverChange={buildMode ? setHoveredTileIdSmooth : noopHover}
           onGhostChange={setGhostCell}
+          onCloneHoverChange={onCloneHoverChange}
+          onCloneTarget={onCloneTarget}
         />
       )}
 
@@ -631,11 +666,11 @@ export function IslandScene({
                 <DebugTileWrapper
                   key={tile.id}
                   tile={tile}
-                  selected={tile.id === editSelectedTileId}
-                  gizmoMode={editGizmoMode}
-                  editingDecoration={tile.id === editSelectedTileId && editingDecoration}
-                  buildMode={buildMode}
-                  onSelect={() => onEditTileSelect?.(tile.id)}
+                selected={tile.id === editSelectedTileId}
+                gizmoMode={editGizmoMode}
+                editingDecoration={tile.id === editSelectedTileId && editingDecoration}
+                buildMode={buildMode || cloneState !== null}
+                onSelect={() => onEditTileSelect?.(tile.id)}
                   onChange={(pos3d, scale3d, rotY) =>
                     onEditTileChange?.(tile.id, pos3d, scale3d, rotY)
                   }
@@ -696,6 +731,17 @@ export function IslandScene({
           <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} tileType={selectedTileType} />
         )}
 
+        {!debugMode &&
+          clonePreviewCells.map((cell) => (
+            <TileHighlight
+              key={`clone-preview-${cell.gx}-${cell.gy}`}
+              gx={cell.gx}
+              gy={cell.gy}
+              color="#66d0ff"
+              pulse={false}
+            />
+          ))}
+
         {!debugMode && !editMode && hoveredTileId && !buildMode && !eraseMode && (() => {
           const tile = island.tiles.find((t) => t.id === hoveredTileId);
           return tile ? <TileHighlight gx={tile.gx} gy={tile.gy} color="#88ccff" /> : null;
@@ -707,6 +753,10 @@ export function IslandScene({
 
         {!debugMode && !editMode && blockedTargetCell && (
           <TileHighlight gx={blockedTargetCell.gx} gy={blockedTargetCell.gy} color="#ff4444" pulse={false} />
+        )}
+
+        {!debugMode && cloneBlockedCell && (
+          <TileHighlight gx={cloneBlockedCell.gx} gy={cloneBlockedCell.gy} color="#ff4444" pulse={false} />
         )}
 
         {!debugMode && !editMode && selectedTileForEdit && (

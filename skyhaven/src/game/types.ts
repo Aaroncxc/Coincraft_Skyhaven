@@ -30,6 +30,9 @@ export type AssetKey =
   | "pathStraightAlt"
   | "pathStraightAltV4"
   | "pathStraightAltV5"
+  | "ancientStone"
+  | "ancientStoneWall"
+  | "ancientCornerWall"
   | "tree1"
   | "tree1V3"
   | "tree2"
@@ -118,6 +121,13 @@ export type TileDef = {
   decoScale3d?: { x: number; y: number; z: number };
   /** Decoration Y-axis rotation in radians */
   decoRotY?: number;
+};
+
+export type CloneDirection = "up" | "right" | "down" | "left";
+
+export type CloneLineState = {
+  sourceTileId: string;
+  direction: CloneDirection;
 };
 
 export type PoiDef = {

@@ -1,9 +1,11 @@
 import { useGLTF, useAnimations } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef, useEffect, useMemo, type MutableRefObject } from "react";
+import { SkeletonUtils } from "three-stdlib";
 import * as THREE from "three";
 import { TILE_UNIT_SIZE, CHAR_3D_MODELS } from "./assets3d";
 import type { CharacterPose3D } from "./useCharacterMovement";
+import { EQUIPPABLE_ITEMS, type EquippableItemId, type ItemSocketTransform } from "../equipment";
 
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 
@@ -18,15 +20,77 @@ const JUMP_DURATION_DEFAULT = 0.38;
 type Props = {
   pose: CharacterPose3D;
   mouseGroundRef?: MutableRefObject<THREE.Vector3 | null>;
+  equippedRightHand?: EquippableItemId | null;
 };
 
-export function CharacterModel({ pose, mouseGroundRef }: Props) {
+function applySocketTransform(object: THREE.Object3D, transform: ItemSocketTransform): void {
+  object.position.set(transform.position[0], transform.position[1], transform.position[2]);
+  object.rotation.set(transform.rotation[0], transform.rotation[1], transform.rotation[2]);
+  object.scale.set(transform.scale[0], transform.scale[1], transform.scale[2]);
+}
+
+function disposeObject3D(root: THREE.Object3D): void {
+  const disposed = new Set<THREE.Material>();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (!material || disposed.has(material)) continue;
+      material.dispose();
+      disposed.add(material);
+    }
+  });
+}
+
+function buildWoodAxePlaceholder(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "WoodAxePlaceholder";
+
+  const handle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.09, 1.42, 10),
+    new THREE.MeshStandardMaterial({ color: 0x6e4b29, roughness: 0.9, metalness: 0.05 }),
+  );
+  handle.position.set(0, 0.72, 0);
+
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.58, 0.36, 0.08),
+    new THREE.MeshStandardMaterial({ color: 0xa5b3be, roughness: 0.35, metalness: 0.85 }),
+  );
+  blade.position.set(0.27, 1.22, 0);
+
+  const bladeCap = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.2, 0.16),
+    new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.5, metalness: 0.4 }),
+  );
+  bladeCap.position.set(0.05, 1.16, 0);
+
+  group.add(handle);
+  group.add(blade);
+  group.add(bladeCap);
+  return group;
+}
+
+function createToolObject(itemId: EquippableItemId): THREE.Object3D {
+  switch (itemId) {
+    case "wood_axe_placeholder":
+      return buildWoodAxePlaceholder();
+    default: {
+      const fallback = new THREE.Group();
+      fallback.name = "UnknownToolPlaceholder";
+      return fallback;
+    }
+  }
+}
+
+export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null }: Props) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
   const poseRef = useRef(pose);
   poseRef.current = pose;
   const prevClipRef = useRef("");
   const initDoneRef = useRef(false);
+  const toolObjectRef = useRef<THREE.Object3D | null>(null);
 
   const jumpArcTimer = useRef(0);
   const wasJumping = useRef(false);
@@ -43,8 +107,18 @@ export function CharacterModel({ pose, mouseGroundRef }: Props) {
   const spellGltf = useGLTF(CHAR_3D_MODELS.spell);
   const rollGltf = useGLTF(CHAR_3D_MODELS.roll);
 
+  const modelScene = useMemo(
+    () => SkeletonUtils.clone(idleGltf.scene) as THREE.Group,
+    [idleGltf.scene],
+  );
+  const rightHandSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+
   useMemo(() => {
-    idleGltf.scene.traverse((child) => {
+    modelScene.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       for (const mat of mats) {
@@ -61,7 +135,7 @@ export function CharacterModel({ pose, mouseGroundRef }: Props) {
         mat.needsUpdate = true;
       }
     });
-  }, [idleGltf.scene]);
+  }, [modelScene]);
 
   const allClips = useMemo(() => {
     const clips: THREE.AnimationClip[] = [];
@@ -95,6 +169,44 @@ export function CharacterModel({ pose, mouseGroundRef }: Props) {
   ]);
 
   const { actions } = useAnimations(allClips, modelRef);
+
+  useEffect(() => {
+    const modelRoot = modelRef.current;
+    if (!modelRoot) return;
+    const rightHand = modelRoot.getObjectByName("RightHand");
+    if (!rightHand) return;
+    rightHand.add(rightHandSocket);
+    return () => {
+      rightHand.remove(rightHandSocket);
+    };
+  }, [modelScene, rightHandSocket]);
+
+  useEffect(() => {
+    const previousTool = toolObjectRef.current;
+    if (previousTool) {
+      rightHandSocket.remove(previousTool);
+      disposeObject3D(previousTool);
+      toolObjectRef.current = null;
+    }
+
+    if (!equippedRightHand) return;
+
+    const itemDef = EQUIPPABLE_ITEMS[equippedRightHand];
+    if (!itemDef) return;
+
+    const toolObject = createToolObject(equippedRightHand);
+    applySocketTransform(toolObject, itemDef.rightHand);
+    rightHandSocket.add(toolObject);
+    toolObjectRef.current = toolObject;
+
+    return () => {
+      rightHandSocket.remove(toolObject);
+      disposeObject3D(toolObject);
+      if (toolObjectRef.current === toolObject) {
+        toolObjectRef.current = null;
+      }
+    };
+  }, [equippedRightHand, rightHandSocket]);
 
   useEffect(() => {
     if (initDoneRef.current) return;
@@ -148,7 +260,13 @@ export function CharacterModel({ pose, mouseGroundRef }: Props) {
     if (!nextAction) return;
 
     nextAction.reset();
-    if (pose.animState === "attack" || pose.animState === "chop" || pose.animState === "jump" || pose.animState === "spell" || pose.animState === "roll") {
+    if (
+      pose.animState === "attack" ||
+      pose.animState === "chop" ||
+      pose.animState === "jump" ||
+      pose.animState === "spell" ||
+      pose.animState === "roll"
+    ) {
       nextAction.setLoop(THREE.LoopOnce, 1);
       nextAction.clampWhenFinished = true;
     } else {
@@ -226,7 +344,7 @@ export function CharacterModel({ pose, mouseGroundRef }: Props) {
     <group ref={outerRef}>
       <group ref={modelRef}>
         <group scale={CHAR_SCALE}>
-          <primitive object={idleGltf.scene} />
+          <primitive object={modelScene} />
         </group>
       </group>
     </group>

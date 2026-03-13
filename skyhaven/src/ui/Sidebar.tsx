@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../game/assets";
 import { DURATION_OPTIONS } from "../game/session";
-import type { ActionType, AssetKey, FocusDuration, IslandId, TileDef } from "../game/types";
+import type { ActionType, AssetKey, CloneLineState, FocusDuration, IslandId, TileDef } from "../game/types";
 import type { Inventory } from "../game/inventory";
 import { BaukastenPanel } from "./BaukastenPanel";
 
@@ -58,6 +58,11 @@ type SidebarProps = {
   buildCanUndo?: boolean;
   editingDecoration?: boolean;
   onEditingDecorationChange?: (v: boolean) => void;
+  cloneState?: CloneLineState | null;
+  cloneEligible?: boolean;
+  cloneDisabledReason?: string | null;
+  onStartDirectionalClone?: (direction: "up" | "right" | "down" | "left") => void;
+  onCancelDirectionalClone?: () => void;
 };
 
 type SidebarPanelKind = "main" | "focus" | "shop" | "islands" | "options" | "toolbox";
@@ -96,9 +101,9 @@ export function Sidebar({
   onInventoryReset,
   onDebugAddResources,
   isDragging = false,
-  musicEnabled = true,
-  onMusicEnabledChange,
-  musicTrackIndex = 0,
+  musicEnabled: _musicEnabled = true,
+  onMusicEnabledChange: _onMusicEnabledChange,
+  musicTrackIndex: _musicTrackIndex = 0,
   onMusicPrev,
   onMusicNext,
   masterVolume = 72,
@@ -127,6 +132,11 @@ export function Sidebar({
   buildCanUndo = false,
   editingDecoration = false,
   onEditingDecorationChange,
+  cloneState = null,
+  cloneEligible = false,
+  cloneDisabledReason = null,
+  onStartDirectionalClone,
+  onCancelDirectionalClone,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const ui = SKYHAVEN_SPRITE_MANIFEST.ui;
@@ -193,6 +203,11 @@ export function Sidebar({
                 canUndo={buildCanUndo}
                 editingDecoration={editingDecoration}
                 onEditingDecorationChange={onEditingDecorationChange}
+                cloneState={cloneState}
+                cloneEligible={cloneEligible}
+                cloneDisabledReason={cloneDisabledReason}
+                onStartDirectionalClone={onStartDirectionalClone}
+                onCancelDirectionalClone={onCancelDirectionalClone}
               />
             </section>
           </div>
@@ -358,6 +373,11 @@ export function Sidebar({
                       canUndo={buildCanUndo}
                       editingDecoration={editingDecoration}
                       onEditingDecorationChange={onEditingDecorationChange}
+                      cloneState={cloneState}
+                      cloneEligible={cloneEligible}
+                      cloneDisabledReason={cloneDisabledReason}
+                      onStartDirectionalClone={onStartDirectionalClone}
+                      onCancelDirectionalClone={onCancelDirectionalClone}
                     />
                   ) : null}
 

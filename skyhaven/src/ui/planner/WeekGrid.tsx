@@ -55,7 +55,7 @@ export function WeekGrid({ weekStart, quests, onDayClick, onStatusChange, onDele
       </div>
 
       <div className="week-grid-body">
-        {days.map((day, i) => {
+        {days.map((day) => {
           const dateStr = formatDateStr(day);
           const dayQuests = quests.filter((q) => q.date === dateStr);
           const isToday = dateStr === today;
