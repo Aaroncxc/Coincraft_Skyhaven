@@ -33,6 +33,18 @@ body {
   font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
 }
 
+:root {
+  --ui-motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ui-motion-fast: 120ms;
+  --ui-motion-std: 170ms;
+  --ui-lift-y: -1px;
+  --ui-press-scale: 0.98;
+  --ui-shadow-rest: 0 2px 6px rgba(14, 20, 28, 0.12);
+  --ui-shadow-hover: 0 5px 14px rgba(14, 20, 28, 0.2);
+  --ui-shadow-press: 0 2px 8px rgba(14, 20, 28, 0.16);
+  --ui-focus-ring: 0 0 0 2px rgba(240, 185, 58, 0.45);
+}
+
 /* Rounded window: clip entire app to rounded corners (transparent window shows through in corners) */
 .skyhaven-app-shell {
   overflow: hidden;
@@ -660,6 +672,376 @@ body {
   z-index: 32;
   pointer-events: auto;
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.canvas-gizmo-sheet {
+  position: absolute;
+  left: 50%;
+  top: auto;
+  bottom: 2.2%;
+  transform: translate(-50%, 24%);
+  width: min(250px, 36vw);
+  z-index: 205;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 14px;
+  background:
+    linear-gradient(160deg, rgba(250, 251, 248, 0.6), rgba(216, 223, 230, 0.34)),
+    rgba(198, 206, 214, 0.5);
+  box-shadow:
+    0 8px 20px rgba(24, 33, 42, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 6px 8px;
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease;
+}
+
+.canvas-gizmo-sheet.is-visible {
+  transform: translate(-50%, 0);
+  opacity: 0.34;
+  pointer-events: auto;
+}
+
+.canvas-gizmo-sheet.is-visible:hover {
+  opacity: 1;
+}
+
+.canvas-gizmo-sheet.is-dragging {
+  opacity: 0.18;
+  pointer-events: none;
+}
+
+.canvas-gizmo-sheet-header {
+  display: none;
+}
+
+.canvas-gizmo-sheet-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f1416;
+  letter-spacing: 0.25px;
+}
+
+.canvas-gizmo-sheet-tile {
+  font-size: 10px;
+  color: #1f2a30;
+  opacity: 0.75;
+}
+
+.canvas-gizmo-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+  width: 100%;
+}
+
+.canvas-gizmo-row--icon-3,
+.canvas-gizmo-row--icon-4 {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  align-items: center;
+}
+
+.canvas-gizmo-row--icon-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.canvas-gizmo-row--icon-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.canvas-gizmo-pill,
+.canvas-gizmo-action {
+  border: 1px solid rgba(31, 38, 41, 0.18);
+  border-radius: 8px;
+  background: rgba(253, 255, 251, 0.38);
+  color: #0f1416;
+  font-family: "Jersey10", Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition:
+    background 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease,
+    opacity 130ms ease,
+    transform var(--ui-motion-fast) var(--ui-motion-ease),
+    box-shadow var(--ui-motion-fast) var(--ui-motion-ease);
+  box-shadow: var(--ui-shadow-rest);
+}
+
+.canvas-gizmo-pill {
+  flex: 1;
+}
+
+.canvas-gizmo-btn--icon {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas-gizmo-btn--icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.canvas-gizmo-pill:hover,
+.canvas-gizmo-action:hover {
+  background: rgba(253, 255, 251, 0.62);
+  border-color: rgba(31, 38, 41, 0.26);
+  transform: translateY(var(--ui-lift-y));
+  box-shadow: var(--ui-shadow-hover);
+}
+
+.canvas-gizmo-pill:active,
+.canvas-gizmo-action:active {
+  transform: scale(var(--ui-press-scale));
+  box-shadow: var(--ui-shadow-press);
+}
+
+.canvas-gizmo-pill.is-active,
+.canvas-gizmo-action.is-active {
+  background: rgba(240, 185, 58, 0.62);
+  border-color: rgba(200, 150, 40, 0.78);
+  color: #161309;
+}
+
+.canvas-gizmo-action.is-warn {
+  color: #8a5d00;
+  border-color: rgba(255, 180, 80, 0.72);
+  background: rgba(255, 215, 138, 0.62);
+}
+
+.canvas-gizmo-action.is-danger {
+  color: #8a2020;
+  border-color: rgba(255, 118, 118, 0.58);
+  background: rgba(255, 212, 212, 0.62);
+}
+
+.canvas-gizmo-action.is-disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+  transform: none;
+}
+
+.canvas-gizmo-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto 2px;
+  font-size: 10px;
+  color: #1f2a30;
+}
+
+.canvas-gizmo-checkbox input[type="checkbox"] {
+  accent-color: #88ccff;
+}
+
+.canvas-gizmo-hint {
+  display: none;
+}
+
+.canvas-gizmo-hint.is-active {
+  border-color: rgba(240, 185, 58, 0.55);
+  background: rgba(240, 185, 58, 0.24);
+  color: #4c3a11;
+}
+
+.debug-panel-btn,
+.debug-panel-collapse-tab {
+  box-shadow: var(--ui-shadow-rest);
+}
+
+.sidebar-item,
+.sidebar-collapse-tab,
+.duration-pill,
+.action-item,
+.generic-item,
+.settings-skip-btn,
+.settings-chip,
+.islands-arrow-btn,
+.baukasten-undo-btn,
+.baukasten-debug-add,
+.baukasten-reset-btn,
+.baukasten-tile-btn,
+.baukasten-clear-btn,
+.baukasten-edit-btn,
+.tile-edit-close,
+.tile-edit-mode-btn,
+.tile-gizmo-arrow,
+.tile-edit-quick-actions button,
+.canvas-gizmo-pill,
+.canvas-gizmo-action,
+.planner-tab,
+.planner-close,
+.quest-action-btn,
+.week-nav-btn,
+.month-nav-btn,
+.quick-add-submit,
+.quick-add-focus-pill,
+.chrome-btn,
+.debug-panel-btn,
+.debug-panel-collapse-tab {
+  transition:
+    transform var(--ui-motion-std) var(--ui-motion-ease),
+    box-shadow var(--ui-motion-std) var(--ui-motion-ease),
+    filter var(--ui-motion-std) var(--ui-motion-ease),
+    background var(--ui-motion-fast) ease,
+    border-color var(--ui-motion-fast) ease,
+    color var(--ui-motion-fast) ease,
+    opacity var(--ui-motion-fast) ease;
+}
+
+.sidebar-item:hover:not(:disabled):not(.is-disabled),
+.sidebar-collapse-tab:hover:not(:disabled):not(.is-disabled),
+.duration-pill:hover:not(:disabled):not(.is-disabled),
+.action-item:hover:not(:disabled):not(.is-disabled),
+.generic-item:hover:not(:disabled):not(.is-disabled),
+.settings-skip-btn:hover:not(:disabled):not(.is-disabled),
+.settings-chip:hover:not(:disabled):not(.is-disabled),
+.islands-arrow-btn:hover:not(:disabled):not(.is-disabled),
+.baukasten-undo-btn:hover:not(:disabled):not(.is-disabled),
+.baukasten-debug-add:hover:not(:disabled):not(.is-disabled),
+.baukasten-reset-btn:hover:not(:disabled):not(.is-disabled),
+.baukasten-tile-btn:hover:not(:disabled):not(.is-disabled),
+.baukasten-clear-btn:hover:not(:disabled):not(.is-disabled),
+.baukasten-edit-btn:hover:not(:disabled):not(.is-disabled),
+.tile-edit-close:hover:not(:disabled):not(.is-disabled),
+.tile-edit-mode-btn:hover:not(:disabled):not(.is-disabled),
+.tile-gizmo-arrow:hover:not(:disabled):not(.is-disabled),
+.tile-edit-quick-actions button:hover:not(:disabled):not(.is-disabled),
+.planner-tab:hover:not(:disabled):not(.is-disabled),
+.planner-close:hover:not(:disabled):not(.is-disabled),
+.quest-action-btn:hover:not(:disabled):not(.is-disabled),
+.week-nav-btn:hover:not(:disabled):not(.is-disabled),
+.month-nav-btn:hover:not(:disabled):not(.is-disabled),
+.quick-add-submit:hover:not(:disabled):not(.is-disabled),
+.quick-add-focus-pill:hover:not(:disabled):not(.is-disabled),
+.chrome-btn:hover:not(:disabled):not(.is-disabled),
+.debug-panel-btn:hover:not(:disabled):not(.is-disabled),
+.debug-panel-collapse-tab:hover:not(:disabled):not(.is-disabled) {
+  transform: translateY(var(--ui-lift-y));
+  box-shadow: var(--ui-shadow-hover);
+}
+
+.sidebar-item:active:not(:disabled):not(.is-disabled),
+.sidebar-collapse-tab:active:not(:disabled):not(.is-disabled),
+.duration-pill:active:not(:disabled):not(.is-disabled),
+.action-item:active:not(:disabled):not(.is-disabled),
+.generic-item:active:not(:disabled):not(.is-disabled),
+.settings-skip-btn:active:not(:disabled):not(.is-disabled),
+.settings-chip:active:not(:disabled):not(.is-disabled),
+.islands-arrow-btn:active:not(:disabled):not(.is-disabled),
+.baukasten-undo-btn:active:not(:disabled):not(.is-disabled),
+.baukasten-debug-add:active:not(:disabled):not(.is-disabled),
+.baukasten-reset-btn:active:not(:disabled):not(.is-disabled),
+.baukasten-tile-btn:active:not(:disabled):not(.is-disabled),
+.baukasten-clear-btn:active:not(:disabled):not(.is-disabled),
+.baukasten-edit-btn:active:not(:disabled):not(.is-disabled),
+.tile-edit-close:active:not(:disabled):not(.is-disabled),
+.tile-edit-mode-btn:active:not(:disabled):not(.is-disabled),
+.tile-gizmo-arrow:active:not(:disabled):not(.is-disabled),
+.tile-edit-quick-actions button:active:not(:disabled):not(.is-disabled),
+.planner-tab:active:not(:disabled):not(.is-disabled),
+.planner-close:active:not(:disabled):not(.is-disabled),
+.quest-action-btn:active:not(:disabled):not(.is-disabled),
+.week-nav-btn:active:not(:disabled):not(.is-disabled),
+.month-nav-btn:active:not(:disabled):not(.is-disabled),
+.quick-add-submit:active:not(:disabled):not(.is-disabled),
+.quick-add-focus-pill:active:not(:disabled):not(.is-disabled),
+.chrome-btn:active:not(:disabled):not(.is-disabled),
+.debug-panel-btn:active:not(:disabled):not(.is-disabled),
+.debug-panel-collapse-tab:active:not(:disabled):not(.is-disabled) {
+  transform: scale(var(--ui-press-scale));
+  box-shadow: var(--ui-shadow-press);
+}
+
+.sidebar-item:focus-visible,
+.sidebar-collapse-tab:focus-visible,
+.duration-pill:focus-visible,
+.action-item:focus-visible,
+.generic-item:focus-visible,
+.settings-skip-btn:focus-visible,
+.settings-chip:focus-visible,
+.islands-arrow-btn:focus-visible,
+.baukasten-undo-btn:focus-visible,
+.baukasten-debug-add:focus-visible,
+.baukasten-reset-btn:focus-visible,
+.baukasten-tile-btn:focus-visible,
+.baukasten-clear-btn:focus-visible,
+.baukasten-edit-btn:focus-visible,
+.tile-edit-close:focus-visible,
+.tile-edit-mode-btn:focus-visible,
+.tile-gizmo-arrow:focus-visible,
+.tile-edit-quick-actions button:focus-visible,
+.canvas-gizmo-pill:focus-visible,
+.canvas-gizmo-action:focus-visible,
+.planner-tab:focus-visible,
+.planner-close:focus-visible,
+.quest-action-btn:focus-visible,
+.week-nav-btn:focus-visible,
+.month-nav-btn:focus-visible,
+.quick-add-submit:focus-visible,
+.quick-add-focus-pill:focus-visible,
+.chrome-btn:focus-visible,
+.debug-panel-btn:focus-visible,
+.debug-panel-collapse-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-focus-ring), var(--ui-shadow-hover);
+}
+
+.sidebar-item:disabled,
+.sidebar-collapse-tab:disabled,
+.duration-pill:disabled,
+.action-item:disabled,
+.generic-item:disabled,
+.settings-skip-btn:disabled,
+.settings-chip:disabled,
+.islands-arrow-btn:disabled,
+.baukasten-undo-btn:disabled,
+.baukasten-debug-add:disabled,
+.baukasten-reset-btn:disabled,
+.baukasten-tile-btn:disabled,
+.baukasten-clear-btn:disabled,
+.baukasten-edit-btn:disabled,
+.tile-edit-close:disabled,
+.tile-edit-mode-btn:disabled,
+.tile-gizmo-arrow:disabled,
+.tile-edit-quick-actions button:disabled,
+.canvas-gizmo-pill:disabled,
+.canvas-gizmo-action:disabled,
+.planner-tab:disabled,
+.planner-close:disabled,
+.quest-action-btn:disabled,
+.week-nav-btn:disabled,
+.month-nav-btn:disabled,
+.quick-add-submit:disabled,
+.quick-add-focus-pill:disabled,
+.chrome-btn:disabled,
+.debug-panel-btn:disabled,
+.debug-panel-btn.is-disabled,
+.debug-panel-collapse-tab:disabled {
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .island-canvas.is-panning {
@@ -1616,6 +1998,11 @@ body {
   object-fit: contain;
   object-position: center;
   display: block;
+}
+
+/* Half-grown Crop: Bild hat mehr Rand, daher größer skalieren */
+.baukasten-tile-btn[data-tile-type="halfGrownCropTile"] .baukasten-tile-thumb {
+  transform: scale(2.1);
 }
 
 .baukasten-tile-placeholder {
@@ -2822,6 +3209,103 @@ body {
   .hud-bar-row.is-exp.is-gaining .hud-bar-fill-clip.is-exp {
     animation: none !important;
     box-shadow: 0 0 0 1px rgba(190, 255, 161, 0.2);
+  }
+
+  .sidebar-item,
+  .sidebar-collapse-tab,
+  .duration-pill,
+  .action-item,
+  .generic-item,
+  .settings-skip-btn,
+  .settings-chip,
+  .islands-arrow-btn,
+  .baukasten-undo-btn,
+  .baukasten-debug-add,
+  .baukasten-reset-btn,
+  .baukasten-tile-btn,
+  .baukasten-clear-btn,
+  .baukasten-edit-btn,
+  .tile-edit-close,
+  .tile-edit-mode-btn,
+  .tile-gizmo-arrow,
+  .tile-edit-quick-actions button,
+  .canvas-gizmo-pill,
+  .canvas-gizmo-action,
+  .planner-tab,
+  .planner-close,
+  .quest-action-btn,
+  .week-nav-btn,
+  .month-nav-btn,
+  .quick-add-submit,
+  .quick-add-focus-pill,
+  .chrome-btn,
+  .debug-panel-btn,
+  .debug-panel-collapse-tab {
+    transition: none !important;
+  }
+
+  .sidebar-item:hover,
+  .sidebar-collapse-tab:hover,
+  .duration-pill:hover,
+  .action-item:hover,
+  .generic-item:hover,
+  .settings-skip-btn:hover,
+  .settings-chip:hover,
+  .islands-arrow-btn:hover,
+  .baukasten-undo-btn:hover,
+  .baukasten-debug-add:hover,
+  .baukasten-reset-btn:hover,
+  .baukasten-tile-btn:hover,
+  .baukasten-clear-btn:hover,
+  .baukasten-edit-btn:hover,
+  .tile-edit-close:hover,
+  .tile-edit-mode-btn:hover,
+  .tile-gizmo-arrow:hover,
+  .tile-edit-quick-actions button:hover,
+  .canvas-gizmo-pill:hover,
+  .canvas-gizmo-action:hover,
+  .planner-tab:hover,
+  .planner-close:hover,
+  .quest-action-btn:hover,
+  .week-nav-btn:hover,
+  .month-nav-btn:hover,
+  .quick-add-submit:hover,
+  .quick-add-focus-pill:hover,
+  .chrome-btn:hover,
+  .debug-panel-btn:hover,
+  .debug-panel-collapse-tab:hover,
+  .sidebar-item:active,
+  .sidebar-collapse-tab:active,
+  .duration-pill:active,
+  .action-item:active,
+  .generic-item:active,
+  .settings-skip-btn:active,
+  .settings-chip:active,
+  .islands-arrow-btn:active,
+  .baukasten-undo-btn:active,
+  .baukasten-debug-add:active,
+  .baukasten-reset-btn:active,
+  .baukasten-tile-btn:active,
+  .baukasten-clear-btn:active,
+  .baukasten-edit-btn:active,
+  .tile-edit-close:active,
+  .tile-edit-mode-btn:active,
+  .tile-gizmo-arrow:active,
+  .tile-edit-quick-actions button:active,
+  .canvas-gizmo-pill:active,
+  .canvas-gizmo-action:active,
+  .planner-tab:active,
+  .planner-close:active,
+  .quest-action-btn:active,
+  .week-nav-btn:active,
+  .month-nav-btn:active,
+  .quick-add-submit:active,
+  .quick-add-focus-pill:active,
+  .chrome-btn:active,
+  .debug-panel-btn:active,
+  .debug-panel-collapse-tab:active {
+    transform: none !important;
+    box-shadow: none !important;
   }
 }
 

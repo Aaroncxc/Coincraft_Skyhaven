@@ -9,13 +9,15 @@ import { EQUIPPABLE_ITEMS, type EquippableItemId, type ItemSocketTransform } fro
 
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 
-const CROSSFADE_DURATION = 0.25;
+const CROSSFADE_DURATION = 0.14;
 const BASE_ROT_Y = -Math.PI / 4;
 
 const CHAR_SCALE = 0.294;
 const TILE_SURFACE_Y = 0.82;
-const JUMP_ARC_HEIGHT = 0.55;
+const JUMP_ARC_HEIGHT = 0.5;
 const JUMP_DURATION_DEFAULT = 0.38;
+const CHOP_DURATION_DEFAULT = 0.92;
+const SPELL_DURATION_DEFAULT = 1.05;
 
 type Props = {
   pose: CharacterPose3D;
@@ -139,9 +141,17 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
 
   const allClips = useMemo(() => {
     const clips: THREE.AnimationClip[] = [];
-    const add = (anims: THREE.AnimationClip[], name: string) => {
+    const ROOT_TRANSLATION_TRACK = /(^|\.)(armature|root|hips|mixamorighips)\.position$/i;
+    const add = (
+      anims: THREE.AnimationClip[],
+      name: string,
+      options: { stripRootTranslation?: boolean } = {},
+    ) => {
       if (anims.length > 0) {
         const c = anims[0].clone();
+        if (options.stripRootTranslation) {
+          c.tracks = c.tracks.filter((track) => !ROOT_TRANSLATION_TRACK.test(track.name));
+        }
         c.name = name;
         clips.push(c);
       }
@@ -154,7 +164,7 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
     add(alertGltf.animations, "alert");
     add(jumpGltf.animations, "jump");
     add(spellGltf.animations, "spell");
-    add(rollGltf.animations, "roll");
+    add(rollGltf.animations, "roll", { stripRootTranslation: true });
     return clips;
   }, [
     idleGltf.animations,
@@ -258,6 +268,7 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
     const nextAction = actions[target];
     const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
     if (!nextAction) return;
+    const clipDuration = nextAction.getClip().duration;
 
     nextAction.reset();
     if (
@@ -269,8 +280,24 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
     ) {
       nextAction.setLoop(THREE.LoopOnce, 1);
       nextAction.clampWhenFinished = true;
+      let desiredDuration = clipDuration;
+      if (pose.animState === "jump") {
+        desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      } else if (pose.animState === "roll") {
+        desiredDuration = clipDuration;
+      } else if (pose.animState === "chop") {
+        desiredDuration = CHOP_DURATION_DEFAULT;
+      } else if (pose.animState === "spell") {
+        desiredDuration = SPELL_DURATION_DEFAULT;
+      }
+      if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
+        nextAction.timeScale = clipDuration / desiredDuration;
+      } else {
+        nextAction.timeScale = 1;
+      }
     } else {
       nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1;
     }
 
     if (prevAction && prevAction.isRunning()) {
@@ -308,7 +335,16 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
       jumpArcTimer.current += delta;
       const dur = p.jumpDuration ?? JUMP_DURATION_DEFAULT;
       const t = Math.min(1, jumpArcTimer.current / dur);
-      arcY = JUMP_ARC_HEIGHT * 4 * t * (1 - t);
+      const ascentPortion = 0.46;
+      let arcNorm = 0;
+      if (t < ascentPortion) {
+        const u = t / ascentPortion;
+        arcNorm = Math.sin((u * Math.PI) / 2);
+      } else {
+        const u = (t - ascentPortion) / (1 - ascentPortion);
+        arcNorm = Math.cos((u * Math.PI) / 2);
+      }
+      arcY = JUMP_ARC_HEIGHT * Math.max(0, arcNorm);
     }
     pos.y = TILE_SURFACE_Y + arcY;
 

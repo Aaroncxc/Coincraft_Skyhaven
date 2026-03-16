@@ -43,6 +43,7 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   taverne: { w: 2, h: 2 },
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
+  magicTower: { w: 2, h: 2 },
 };
 
 const normCache = new Map<string, { scale: number; offsetY: number }>();

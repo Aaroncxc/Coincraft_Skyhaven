@@ -26,6 +26,10 @@ const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   floatingForge: "/ingame_assets/expanded/toolbox/thumb_floatingForge.png",
   farmingChicken: "/ingame_assets/expanded/toolbox/thumb_farmingChicken.png",
   bushTile: "/ingame_assets/expanded/toolbox/thumb_bushTile.png",
+  magicTower: "/ingame_assets/3d/Magic_Tower.png",
+  wellTile: "/ingame_assets/3d/Well_Tile_Round.png",
+  well2Tile: "/ingame_assets/3d/Well_Tile_Square.png",
+  halfGrownCropTile: "/ingame_assets/3d/Half_grown_Crop_Tile.png",
 };
 
 type BaukastenPanelProps = {
@@ -44,8 +48,6 @@ type BaukastenPanelProps = {
   onEditRotate?: () => void;
   onEditDelete?: () => void;
   onEditCopyScale?: () => void;
-  onEditPasteScale?: () => void;
-  hasEditClipboard?: boolean;
   editUniformScale?: boolean;
   onEditUniformScaleChange?: (v: boolean) => void;
   onEditToggleBlocked?: () => void;
@@ -56,15 +58,6 @@ type BaukastenPanelProps = {
   cloneState?: CloneLineState | null;
   cloneEligible?: boolean;
   cloneDisabledReason?: string | null;
-  onStartDirectionalClone?: (direction: "up" | "right" | "down" | "left") => void;
-  onCancelDirectionalClone?: () => void;
-};
-
-const CLONE_DIRECTION_LABELS: Record<CloneLineState["direction"], string> = {
-  up: "Up",
-  right: "Right",
-  down: "Down",
-  left: "Left",
 };
 
 const RESOURCE_LABELS: Record<string, string> = {
@@ -114,6 +107,10 @@ export const BAUKASTEN_TILES: Array<{ type: AssetKey; label: string }> = [
   { type: "farmingChicken", label: "Chicken" },
   { type: "bushTile", label: "Bush" },
   { type: "statueAaron", label: "Statue" },
+  { type: "magicTower", label: "Magic Tower" },
+  { type: "wellTile", label: "Well" },
+  { type: "well2Tile", label: "Well (Square)" },
+  { type: "halfGrownCropTile", label: "Half-grown Crop" },
 ];
 
 const RESOURCE_LABELS_FULL: Record<string, string> = {
@@ -134,26 +131,8 @@ export function BaukastenPanel({
   onEraseModeChange,
   selectedIslandId,
   windowMode,
-  editSelectedTile,
-  editGizmoMode,
-  onEditGizmoModeChange,
-  onEditRotate,
-  onEditDelete,
-  onEditCopyScale,
-  onEditPasteScale,
-  hasEditClipboard,
-  editUniformScale,
-  onEditUniformScaleChange,
-  onEditToggleBlocked,
   onUndo,
   canUndo = false,
-  editingDecoration = false,
-  onEditingDecorationChange,
-  cloneState = null,
-  cloneEligible = false,
-  cloneDisabledReason = null,
-  onStartDirectionalClone,
-  onCancelDirectionalClone,
 }: BaukastenPanelProps) {
   const visible = selectedIslandId === "custom" && windowMode === "expanded";
   if (!visible) {
@@ -163,7 +142,6 @@ export function BaukastenPanel({
   const totalResources = (inventory.ore ?? 0) + (inventory.wheat ?? 0) + (inventory.wood ?? 0);
   const hasNoResources = totalResources === 0;
   const resourceSummary = `O:${inventory.ore ?? 0} W:${inventory.wheat ?? 0} H:${inventory.wood ?? 0}`;
-  const cloneStatusLabel = cloneState ? CLONE_DIRECTION_LABELS[cloneState.direction] : null;
 
   return (
     <div className="baukasten-panel" data-no-window-drag="true">
@@ -210,6 +188,7 @@ export function BaukastenPanel({
             <button
               key={tileType}
               type="button"
+              data-tile-type={tileType}
               className={`baukasten-tile-btn ${isSelected ? "is-selected" : ""} ${!affordable ? "is-disabled" : ""}`}
               onClick={() => {
                 if (eraseMode) {
@@ -259,191 +238,6 @@ export function BaukastenPanel({
         </div>
       ) : null}
 
-      {editSelectedTile && (
-        <div className="baukasten-edit-section" data-no-window-drag="true">
-          <div className="baukasten-edit-header">
-            <span className="baukasten-edit-label">
-              {editSelectedTile.type} ({editSelectedTile.gx},{editSelectedTile.gy})
-            </span>
-          </div>
-
-          {editSelectedTile.decoration && (
-            <div className="baukasten-edit-row">
-              <button
-                type="button"
-                className={`baukasten-edit-btn ${!editingDecoration ? "is-active" : ""}`}
-                onClick={() => onEditingDecorationChange?.(false)}
-                title="Edit tile"
-              >
-                Tile
-              </button>
-              <button
-                type="button"
-                className={`baukasten-edit-btn baukasten-edit-btn--deco ${editingDecoration ? "is-active" : ""}`}
-                onClick={() => onEditingDecorationChange?.(true)}
-                title="Edit decoration"
-              >
-                Deko
-              </button>
-            </div>
-          )}
-
-          <div className="baukasten-edit-row">
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${editGizmoMode === "translate" ? "is-active" : ""}`}
-              onClick={() => onEditGizmoModeChange?.("translate")}
-              title="Move"
-            >
-              Move
-            </button>
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${editGizmoMode === "scale" ? "is-active" : ""}`}
-              onClick={() => onEditGizmoModeChange?.("scale")}
-              title="Scale"
-            >
-              Scale
-            </button>
-            <button
-              type="button"
-              className="baukasten-edit-btn"
-              onClick={() => onEditRotate?.()}
-              title="Rotate 90°"
-            >
-              Rot 90°
-            </button>
-          </div>
-
-          <div className="baukasten-edit-row">
-            <label className="baukasten-edit-checkbox">
-              <input
-                type="checkbox"
-                checked={editUniformScale ?? true}
-                onChange={(e) => onEditUniformScaleChange?.(e.target.checked)}
-              />
-              Uniform
-            </label>
-          </div>
-
-          <div className="baukasten-edit-row">
-            <button
-              type="button"
-              className="baukasten-edit-btn baukasten-edit-btn--copy"
-              onClick={() => onEditCopyScale?.()}
-              title="Copy scale & rotation"
-            >
-              Copy
-            </button>
-            <button
-              type="button"
-              className="baukasten-edit-btn baukasten-edit-btn--paste"
-              onClick={() => onEditPasteScale?.()}
-              disabled={!hasEditClipboard}
-              title="Paste scale & rotation"
-            >
-              Paste
-            </button>
-            <button
-              type="button"
-              className="baukasten-edit-btn baukasten-edit-btn--delete"
-              onClick={() => onEditDelete?.()}
-              title="Delete tile"
-            >
-              Del
-            </button>
-          </div>
-
-          <div className="baukasten-edit-row">
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${editSelectedTile.blocked ? "baukasten-edit-btn--unblock" : "baukasten-edit-btn--block"}`}
-              onClick={() => onEditToggleBlocked?.()}
-              title={editSelectedTile.blocked ? "Unblock tile" : "Block tile"}
-            >
-              {editSelectedTile.blocked ? "Unblock" : "Block"}
-            </button>
-          </div>
-
-          <div className="baukasten-edit-row">
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${cloneState?.direction === "up" ? "is-active" : ""}`}
-              onClick={() => onStartDirectionalClone?.("up")}
-              disabled={!cloneEligible}
-              title="Clone upward along the isometric grid"
-            >
-              Clone Up
-            </button>
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${cloneState?.direction === "right" ? "is-active" : ""}`}
-              onClick={() => onStartDirectionalClone?.("right")}
-              disabled={!cloneEligible}
-              title="Clone to the right along the isometric grid"
-            >
-              Clone Right
-            </button>
-          </div>
-
-          <div className="baukasten-edit-row">
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${cloneState?.direction === "left" ? "is-active" : ""}`}
-              onClick={() => onStartDirectionalClone?.("left")}
-              disabled={!cloneEligible}
-              title="Clone to the left along the isometric grid"
-            >
-              Clone Left
-            </button>
-            <button
-              type="button"
-              className={`baukasten-edit-btn ${cloneState?.direction === "down" ? "is-active" : ""}`}
-              onClick={() => onStartDirectionalClone?.("down")}
-              disabled={!cloneEligible}
-              title="Clone downward along the isometric grid"
-            >
-              Clone Down
-            </button>
-          </div>
-
-          {cloneState ? (
-            <div className="baukasten-clone-status">
-              Clone {cloneStatusLabel} active - click a target cell.
-            </div>
-          ) : cloneDisabledReason ? (
-            <div className="baukasten-clone-hint">{cloneDisabledReason}</div>
-          ) : (
-            <div className="baukasten-clone-hint">
-              Pick a direction, then click an empty target cell.
-            </div>
-          )}
-
-          {cloneState ? (
-            <div className="baukasten-edit-row">
-              <button
-                type="button"
-                className="baukasten-edit-btn"
-                onClick={() => onCancelDirectionalClone?.()}
-                title="Cancel directional clone"
-              >
-                Cancel Clone
-              </button>
-            </div>
-          ) : null}
-
-          {editSelectedTile.scale3d && (
-            <div className="baukasten-edit-info" title="Skalierung (X/Y/Z). 1.0 = Originalgröße, 1.5 = 150%">
-              S: {editSelectedTile.scale3d.x.toFixed(2)} / {editSelectedTile.scale3d.y.toFixed(2)} / {editSelectedTile.scale3d.z.toFixed(2)}
-            </div>
-          )}
-          {editSelectedTile.rotY != null && (
-            <div className="baukasten-edit-info">
-              Rot: {((editSelectedTile.rotY * 180) / Math.PI).toFixed(0)}°
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

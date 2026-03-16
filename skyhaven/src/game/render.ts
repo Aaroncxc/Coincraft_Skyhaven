@@ -136,6 +136,10 @@ const FALLBACK_TILE_PALETTES: Record<AssetKey, TilePalette> = {
   farmingChicken: { top: "rgba(190, 160, 80, 0.65)", stroke: "rgba(250, 230, 140, 0.75)" },
   bushTile: { top: "rgba(100, 150, 80, 0.65)", stroke: "rgba(200, 235, 170, 0.75)" },
   statueAaron: { top: "rgba(160, 160, 170, 0.65)", stroke: "rgba(200, 200, 210, 0.75)" },
+  magicTower: { top: "rgba(100, 80, 140, 0.65)", stroke: "rgba(180, 160, 220, 0.75)" },
+  wellTile: { top: "rgba(140, 150, 160, 0.65)", stroke: "rgba(200, 210, 220, 0.75)" },
+  well2Tile: { top: "rgba(140, 150, 160, 0.65)", stroke: "rgba(200, 210, 220, 0.75)" },
+  halfGrownCropTile: { top: "rgba(160, 140, 80, 0.65)", stroke: "rgba(220, 200, 130, 0.75)" },
 };
 
 const FALLBACK_PALETTE: TilePalette = {

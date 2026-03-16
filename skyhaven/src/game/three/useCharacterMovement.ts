@@ -14,6 +14,8 @@ export type CharacterPose3D = {
   isManualMove: boolean;
   /** set during jump; used by CharacterModel for arc timing */
   jumpDuration?: number;
+  /** set during roll; used by CharacterModel for clip timing */
+  rollDuration?: number;
   /** when set, overrides direction-based rotation to face this angle (radians) */
   facingAngle?: number;
 };
@@ -27,11 +29,11 @@ const PATROL_GRID_SPEED = 0.62;
 const IDLE_AUTOPATROL_DELAY_SEC = 7;
 const PATROL_PAUSE_MIN = 2;
 const PATROL_PAUSE_MAX = 5;
-const JUMP_DURATION = 0.38;
+const JUMP_DURATION = 0.52;
 const JUMP_DISTANCE_MIN = 0.35;
 const JUMP_DISTANCE_MAX = 2.0;
-const JUMP_DISTANCE_KEYBOARD = 0.9;
-const ROLL_DURATION = 0.42;
+const JUMP_DISTANCE_KEYBOARD = 0.85;
+const ROLL_DURATION = 0.96;
 const ROLL_DISTANCE = 1.05;
 
 function resolveSpawn(island: IslandMap): { gx: number; gy: number } {
@@ -54,6 +56,29 @@ function buildTileSet(island: IslandMap): Set<string> {
 
 function hasTileAt(tileSet: Set<string>, gx: number, gy: number): boolean {
   return tileSet.has(`${Math.round(gx)},${Math.round(gy)}`);
+}
+
+function resolveReachableTarget(
+  tileSet: Set<string>,
+  startGx: number,
+  startGy: number,
+  targetGx: number,
+  targetGy: number,
+  samples = 10,
+): { gx: number; gy: number } {
+  let bestGx = startGx;
+  let bestGy = startGy;
+  for (let i = 1; i <= samples; i += 1) {
+    const t = i / samples;
+    const gx = startGx + (targetGx - startGx) * t;
+    const gy = startGy + (targetGy - startGy) * t;
+    if (!hasTileAt(tileSet, gx, gy)) {
+      break;
+    }
+    bestGx = gx;
+    bestGy = gy;
+  }
+  return { gx: bestGx, gy: bestGy };
 }
 
 export function buildTileTypeMap(island: IslandMap): Map<string, AssetKey> {
@@ -272,8 +297,9 @@ export function useCharacterMovement(
             const targetGx = startGx + dirX * jumpDist;
             const targetGy = startGy + dirY * jumpDist;
             const tiles = tileSetRef.current;
-            const landGx = hasTileAt(tiles, Math.round(targetGx), Math.round(targetGy)) ? targetGx : startGx;
-            const landGy = hasTileAt(tiles, Math.round(targetGx), Math.round(targetGy)) ? targetGy : startGy;
+            const landing = resolveReachableTarget(tiles, startGx, startGy, targetGx, targetGy, 12);
+            const landGx = landing.gx;
+            const landGy = landing.gy;
             const jumpDistActual = Math.hypot(landGx - startGx, landGy - startGy);
             jumpDurationRef.current = JUMP_DURATION * (0.75 + 0.35 * clamp(jumpDistActual / JUMP_DISTANCE_MAX, 0, 1));
             jumpStartRef.current = { gx: startGx, gy: startGy };
@@ -293,7 +319,7 @@ export function useCharacterMovement(
         lastManualInputRef.current = performance.now();
         patrolPhaseRef.current = "inactive";
         if (pressed && chopTimerRef.current <= 0) {
-          chopTimerRef.current = 1.2;
+          chopTimerRef.current = 0.92;
         }
         return;
       }
@@ -323,13 +349,22 @@ export function useCharacterMovement(
           const targetGx = startGx + (dirX / TILE_UNIT_SIZE) * ROLL_DISTANCE;
           const targetGy = startGy + (dirZ / TILE_UNIT_SIZE) * ROLL_DISTANCE;
           const tiles = tileSetRef.current;
-          const landGx = hasTileAt(tiles, Math.round(targetGx), Math.round(targetGy)) ? targetGx : startGx;
-          const landGy = hasTileAt(tiles, Math.round(targetGx), Math.round(targetGy)) ? targetGy : startGy;
+          const landing = resolveReachableTarget(tiles, startGx, startGy, targetGx, targetGy, 12);
+          const landGx = landing.gx;
+          const landGy = landing.gy;
           rollStartRef.current = { gx: startGx, gy: startGy };
           rollTargetRef.current = { gx: landGx, gy: landGy };
           rollTimerRef.current = ROLL_DURATION;
           const dir: "left" | "right" = dirX > 0 ? "right" : dirX < 0 ? "left" : pose.direction;
-          poseRef.current = { ...pose, gx: startGx, gy: startGy, direction: dir, animState: "roll", isManualMove: true };
+          poseRef.current = {
+            ...pose,
+            gx: startGx,
+            gy: startGy,
+            direction: dir,
+            animState: "roll",
+            isManualMove: true,
+            rollDuration: ROLL_DURATION,
+          };
           setRenderPose({ ...poseRef.current });
         }
         return;
@@ -355,7 +390,7 @@ export function useCharacterMovement(
             dirX = pose.direction === "right" ? 1 : -1;
             dirZ = 0;
           }
-          spellTimerRef.current = 1.4;
+          spellTimerRef.current = 1.05;
           poseRef.current = { ...pose, animState: "spell", isManualMove: true };
           setRenderPose({ ...poseRef.current });
           if (spellCastRefRef.current) {
@@ -380,7 +415,7 @@ export function useCharacterMovement(
         if (result && onTileActionRef.current) {
           const dir: "left" | "right" = result.tileGx < Math.round(pose.gx) ? "left" : "right";
           poseRef.current = { ...pose, direction: dir, isManualMove: false };
-          chopTimerRef.current = 1.2;
+          chopTimerRef.current = 0.92;
           autoChopCooldownRef.current = 2 + Math.random() * 2;
           onTileActionRef.current(result.action, result.tileGx, result.tileGy);
         } else {
@@ -430,7 +465,7 @@ export function useCharacterMovement(
       lastManualInputRef.current = performance.now();
       patrolPhaseRef.current = "inactive";
       if (chopTimerRef.current <= 0) {
-        chopTimerRef.current = 1.2;
+        chopTimerRef.current = 0.92;
       }
     };
 
@@ -456,7 +491,7 @@ export function useCharacterMovement(
     if (isMiniActionActiveRef.current && !hasInput) {
       autoChopCooldownRef.current -= dt;
       if (autoChopCooldownRef.current <= 0 && chopTimerRef.current <= 0) {
-        chopTimerRef.current = 1.2;
+        chopTimerRef.current = 0.92;
         autoChopCooldownRef.current = 2 + Math.random() * 2;
       }
     }

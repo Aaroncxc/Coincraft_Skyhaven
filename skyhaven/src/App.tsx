@@ -8,7 +8,7 @@ import {
   canDirectionalCloneTile,
   createVisualCloneTemplate,
   getDirectionalCloneDisabledReason,
-  getDirectionalClonePreview,
+  getLineClonePreview,
   hydrateCustomIsland,
   hydrateIslandOverride,
   instantiateVisualCloneTile,
@@ -38,7 +38,6 @@ import { IslandScene } from "./game/three/IslandScene";
 import type {
   ActionType,
   AssetKey,
-  CloneDirection,
   CloneLineState,
   FocusDuration,
   FocusSession,
@@ -57,6 +56,7 @@ import { StatusTag } from "./ui/StatusTag";
 import { CompactInventoryOverlay } from "./ui/CompactInventoryOverlay";
 import { ProfileOverlay } from "./ui/ProfileOverlay";
 import { WindowChrome } from "./ui/WindowChrome";
+import { CanvasGizmoSheet } from "./ui/CanvasGizmoSheet";
 import { useIslandMusic, MUSIC_PLAYLIST_LENGTH } from "./game/useIslandMusic";
 import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats } from "./game/actionStats";
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
@@ -126,6 +126,7 @@ export default function App() {
   const [musicTrackIndex, setMusicTrackIndex] = useState(0);
   const [masterVolume, setMasterVolume] = useState(72);
   const [sfxVolume, setSfxVolume] = useState(78);
+  const [menuSfxVolume, setMenuSfxVolume] = useState(74);
   useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, sfxVolume);
   const [selectedDuration, setSelectedDuration] = useState<FocusDuration>(30);
   const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
@@ -333,6 +334,14 @@ export default function App() {
     persistInventory(prev.inventory);
   }, []);
 
+  const pushBuildUndoSnapshot = useCallback(() => {
+    buildUndoStackRef.current = [
+      ...buildUndoStackRef.current.slice(-49),
+      { island: customIslandRef.current, inventory },
+    ];
+    setBuildCanUndo(true);
+  }, [inventory]);
+
   const handleSelectTileForEdit = useCallback(
     (gx: number, gy: number) => {
       if (selectedIslandId !== "custom") return;
@@ -464,10 +473,6 @@ export default function App() {
   const [editUniformScale, setEditUniformScale] = useState(true);
   const [editGizmoDragging, setEditGizmoDragging] = useState(false);
   const [editingDecoration, setEditingDecoration] = useState(false);
-  const [editClipboard, setEditClipboard] = useState<{
-    scale3d?: { x: number; y: number; z: number };
-    rotY?: number;
-  } | null>(null);
 
   const handleDebugDraggingChange = useCallback((dragging: boolean) => {
     if (dragging) debugPushUndo();
@@ -530,6 +535,12 @@ export default function App() {
         poisFarming: "poisFarming",
         grasBlumen: "grasBlumen",
         taverne: "taverne",
+        floatingForge: "floatingForge",
+        farmingChicken: "farmingChicken",
+        magicTower: "magicTower",
+        wellTile: "wellTile",
+        well2Tile: "well2Tile",
+        halfGrownCropTile: "halfGrownCropTile",
       };
       const assetKey = typeMap[modelKey];
       if (!assetKey) return;
@@ -546,6 +557,11 @@ export default function App() {
     selectedSection === "Toolbox" &&
     windowMode === "expanded" &&
     !debugMode;
+  const sceneEditMode =
+    isCustomEditing &&
+    selectedTileType === null &&
+    !eraseMode &&
+    cloneState === null;
 
   const activeEditTile = useMemo<TileDef | null>(() => {
     if (!editSelectedTileId || !isCustomEditing) {
@@ -553,6 +569,13 @@ export default function App() {
     }
     return customIsland.tiles.find((tile) => tile.id === editSelectedTileId) ?? null;
   }, [customIsland, editSelectedTileId, isCustomEditing]);
+
+  const activeDebugTile = useMemo<TileDef | null>(() => {
+    if (!debugMode || !debugSelectedTileId || !debugIsland) {
+      return null;
+    }
+    return debugIsland.tiles.find((tile) => tile.id === debugSelectedTileId) ?? null;
+  }, [debugIsland, debugMode, debugSelectedTileId]);
 
   const cloneDisabledReason = useMemo(
     () => getDirectionalCloneDisabledReason(activeEditTile),
@@ -599,25 +622,30 @@ export default function App() {
   );
 
   const handleEditDraggingChange = useCallback((dragging: boolean) => {
+    if (dragging) {
+      pushBuildUndoSnapshot();
+    }
     setEditGizmoDragging(dragging);
-  }, []);
+  }, [pushBuildUndoSnapshot]);
 
   const handleEditDeleteTile = useCallback(() => {
     if (!editSelectedTileId) return;
     const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
     if (tile) {
+      pushBuildUndoSnapshot();
       const nextIsland = removeTile(customIslandRef.current, tile.gx, tile.gy);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
     }
     setEditSelectedTileId(null);
-  }, [editSelectedTileId]);
+  }, [editSelectedTileId, pushBuildUndoSnapshot]);
 
   const handleEditRotateTile = useCallback(() => {
     if (!editSelectedTileId) return;
     const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
     if (tile) {
+      pushBuildUndoSnapshot();
       const currentRotY = tile.rotY ?? 0;
       const nextRotY = currentRotY + Math.PI / 2;
       const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY });
@@ -625,55 +653,31 @@ export default function App() {
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
     }
-  }, [editSelectedTileId]);
+  }, [editSelectedTileId, pushBuildUndoSnapshot]);
 
   const handleEditToggleBlocked = useCallback(() => {
     if (!editSelectedTileId) return;
     const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
     if (tile) {
+      pushBuildUndoSnapshot();
       const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked });
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
     }
-  }, [editSelectedTileId]);
+  }, [editSelectedTileId, pushBuildUndoSnapshot]);
 
-  const handleEditCopyTransform = useCallback(() => {
-    if (!editSelectedTileId) return;
-    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
-    if (!tile) return;
-    setEditClipboard({
-      scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
-      rotY: tile.rotY,
-    });
-  }, [editSelectedTileId]);
-
-  const handleEditPasteTransform = useCallback(() => {
-    if (!editClipboard || !editSelectedTileId) return;
-    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
-    if (!tile) return;
-    const updates: { scale3d?: { x: number; y: number; z: number }; rotY?: number } = {};
-    if (editClipboard.scale3d) updates.scale3d = { ...editClipboard.scale3d };
-    if (editClipboard.rotY != null) updates.rotY = editClipboard.rotY;
-    const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, updates);
-    customIslandRef.current = nextIsland;
-    setCustomIsland(nextIsland);
-    persistCustomIsland(nextIsland);
-  }, [editClipboard, editSelectedTileId]);
-
-  const handleStartDirectionalClone = useCallback(
-    (direction: CloneDirection) => {
-      if (!activeEditTile || !canDirectionalCloneTile(activeEditTile)) {
-        return;
-      }
-      setCloneState({
-        sourceTileId: activeEditTile.id,
-        direction,
-      });
-      clearClonePreview();
-    },
-    [activeEditTile, clearClonePreview]
-  );
+  const handleToggleLineClone = useCallback(() => {
+    if (!activeEditTile || !canDirectionalCloneTile(activeEditTile)) {
+      return;
+    }
+    setSelectedTileType(null);
+    setEraseMode(false);
+    setCloneState((previous) =>
+      previous?.sourceTileId === activeEditTile.id ? null : { sourceTileId: activeEditTile.id }
+    );
+    clearClonePreview();
+  }, [activeEditTile, clearClonePreview]);
 
   const handleCloneHoverChange = useCallback(
     (cell: { gx: number; gy: number } | null) => {
@@ -683,29 +687,24 @@ export default function App() {
       }
 
       const sourceTile = customIslandRef.current.tiles.find((tile) => tile.id === cloneState.sourceTileId) ?? null;
-      const preview = getDirectionalClonePreview(customIslandRef.current, sourceTile, cloneState.direction, cell);
-      setClonePreviewCells(preview.validTarget ? preview.cells : []);
+      const preview = getLineClonePreview(customIslandRef.current, sourceTile, cell);
+      setClonePreviewCells(preview.cells);
       setCloneBlockedCell(preview.blockedCell);
     },
     [cloneState, clearClonePreview]
   );
 
-  const handleConfirmDirectionalCloneTarget = useCallback(
+  const handleConfirmLineCloneTarget = useCallback(
     (gx: number, gy: number) => {
       if (!cloneState) {
         return;
       }
 
       const sourceTile = customIslandRef.current.tiles.find((tile) => tile.id === cloneState.sourceTileId) ?? null;
-      const preview = getDirectionalClonePreview(
-        customIslandRef.current,
-        sourceTile,
-        cloneState.direction,
-        { gx, gy }
-      );
+      const preview = getLineClonePreview(customIslandRef.current, sourceTile, { gx, gy });
 
       if (!preview.validTarget || !sourceTile) {
-        setClonePreviewCells(preview.validTarget ? preview.cells : []);
+        setClonePreviewCells(preview.cells);
         setCloneBlockedCell(preview.blockedCell);
         return;
       }
@@ -1198,7 +1197,7 @@ export default function App() {
               clonePreviewCells={clonePreviewCells}
               cloneBlockedCell={cloneBlockedCell}
               onCloneHoverChange={handleCloneHoverChange}
-              onCloneTarget={handleConfirmDirectionalCloneTarget}
+              onCloneTarget={handleConfirmLineCloneTarget}
               debugMode={debugMode}
               debugGizmoMode={debugGizmoMode}
               onDebugTileSelect={handleDebugTileSelect}
@@ -1208,7 +1207,7 @@ export default function App() {
               onDebugPlaceTile={handleDebugPlaceTile}
               onDebugDraggingChange={handleDebugDraggingChange}
               debugUniformScale={debugUniformScale}
-              editMode={isCustomEditing}
+              editMode={sceneEditMode}
               editGizmoMode={editGizmoMode}
               editSelectedTileId={editSelectedTileId}
               onEditTileSelect={handleEditTileSelect}
@@ -1225,13 +1224,29 @@ export default function App() {
             />
           </Canvas>
         </div>
+        <CanvasGizmoSheet
+          selectedTile={debugMode ? activeDebugTile : activeEditTile}
+          gizmoMode={debugMode ? debugGizmoMode : editGizmoMode}
+          onGizmoModeChange={debugMode ? setDebugGizmoMode : setEditGizmoMode}
+          onRotate={debugMode ? handleDebugRotateTile : handleEditRotateTile}
+          onCopy={debugMode ? handleCopyTransform : handleToggleLineClone}
+          onDelete={debugMode ? handleDebugDeleteTile : handleEditDeleteTile}
+          onToggleBlocked={debugMode ? handleDebugToggleBlocked : handleEditToggleBlocked}
+          onUndo={debugMode ? handleDebugUndo : handleBuildUndo}
+          canUndo={debugMode ? debugCanUndo : buildCanUndo}
+          uniformScale={debugMode ? debugUniformScale : editUniformScale}
+          onUniformScaleChange={debugMode ? setDebugUniformScale : setEditUniformScale}
+          editingDecoration={debugMode ? false : editingDecoration}
+          onEditingDecorationChange={debugMode ? undefined : setEditingDecoration}
+          cloneState={debugMode ? null : cloneState}
+          cloneEligible={debugMode ? true : cloneEligible}
+          cloneDisabledReason={debugMode ? null : cloneDisabledReason}
+          isDragging={debugMode ? debugGizmoDragging : editGizmoDragging}
+          contextLabel={debugMode ? "Debug Canvas Editor" : "Canvas Editor"}
+        />
         {debugMode && (
           <DebugPanel
-            selectedTile={
-              debugSelectedTileId && debugIsland
-                ? debugIsland.tiles.find((t) => t.id === debugSelectedTileId) ?? null
-                : null
-            }
+            selectedTile={null}
             gizmoMode={debugGizmoMode}
             onGizmoModeChange={setDebugGizmoMode}
             onSave={handleDebugSave}
@@ -1363,9 +1378,7 @@ export default function App() {
             onEditRotate={handleEditRotateTile}
             onEditDelete={handleEditDeleteTile}
             onEditToggleBlocked={handleEditToggleBlocked}
-            onEditCopyScale={handleEditCopyTransform}
-            onEditPasteScale={handleEditPasteTransform}
-            hasEditClipboard={editClipboard !== null}
+            onEditCopyScale={handleToggleLineClone}
             editUniformScale={editUniformScale}
             onEditUniformScaleChange={setEditUniformScale}
             musicEnabled={musicEnabled}
@@ -1383,6 +1396,8 @@ export default function App() {
             onMasterVolumeChange={setMasterVolume}
             sfxVolume={sfxVolume}
             onSfxVolumeChange={setSfxVolume}
+            menuSfxVolume={menuSfxVolume}
+            onMenuSfxVolumeChange={setMenuSfxVolume}
             onProfileOpen={() => { setIsProfileOpen(true); setIsInventoryOverlayOpen(false); }}
             onStartPomodoro={handleStartPomodoro}
             isPomodoroActive={session?.pomodoroMode === true}
@@ -1397,8 +1412,6 @@ export default function App() {
             cloneState={cloneState}
             cloneEligible={cloneEligible}
             cloneDisabledReason={cloneDisabledReason}
-            onStartDirectionalClone={handleStartDirectionalClone}
-            onCancelDirectionalClone={cancelDirectionalClone}
           />
         )}
 

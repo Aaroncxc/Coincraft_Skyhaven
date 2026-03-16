@@ -42,6 +42,15 @@ function getWalkableTiles(island: IslandMap): { gx: number; gy: number }[] {
   return island.tiles.filter((t) => !t.blocked).map((t) => ({ gx: t.gx, gy: t.gy }));
 }
 
+function buildWalkableCellSet(island: IslandMap): Set<string> {
+  const set = new Set<string>();
+  for (const t of island.tiles) {
+    if (t.blocked) continue;
+    set.add(`${t.gx},${t.gy}`);
+  }
+  return set;
+}
+
 function pickRandomNearby(
   tiles: { gx: number; gy: number }[],
   cx: number,
@@ -79,6 +88,7 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
 
   const mineTile = useMemo(() => findMineTile(island), [island]);
   const walkableTiles = useMemo(() => getWalkableTiles(island), [island]);
+  const walkableCells = useMemo(() => buildWalkableCellSet(island), [island]);
 
   useEffect(() => {
     if (!mineTile || walkableTiles.length === 0) return;
@@ -214,12 +224,26 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
         pauseTimerRef.current = PATROL_PAUSE_MIN + Math.random() * (PATROL_PAUSE_MAX - PATROL_PAUSE_MIN);
       } else {
         const step = (PATROL_SPEED * dt) / dist;
-        gxRef.current += dx * step;
-        gyRef.current += dy * step;
-        const wx = dx * TILE_UNIT_SIZE;
-        const wz = dy * TILE_UNIT_SIZE;
-        if (Math.abs(wx) > 1e-4 || Math.abs(wz) > 1e-4) {
-          facingAngleRef.current = Math.atan2(wx, wz);
+        const nextGx = gxRef.current + dx * step;
+        const nextGy = gyRef.current + dy * step;
+        const cellKey = `${Math.round(nextGx)},${Math.round(nextGy)}`;
+        if (!walkableCells.has(cellKey)) {
+          targetRef.current = pickRandomNearby(walkableTiles, gxRef.current, gyRef.current, 3);
+          stateRef.current = "walk";
+          playClip("walk", true);
+          const ndx = targetRef.current.gx - gxRef.current;
+          const ndy = targetRef.current.gy - gyRef.current;
+          if (Math.abs(ndx) > 1e-4 || Math.abs(ndy) > 1e-4) {
+            facingAngleRef.current = Math.atan2(ndx * TILE_UNIT_SIZE, ndy * TILE_UNIT_SIZE);
+          }
+        } else {
+          gxRef.current = nextGx;
+          gyRef.current = nextGy;
+          const wx = dx * TILE_UNIT_SIZE;
+          const wz = dy * TILE_UNIT_SIZE;
+          if (Math.abs(wx) > 1e-4 || Math.abs(wz) > 1e-4) {
+            facingAngleRef.current = Math.atan2(wx, wz);
+          }
         }
       }
 

@@ -59,7 +59,11 @@ export type AssetKey =
   | "floatingForge"
   | "farmingChicken"
   | "bushTile"
-  | "statueAaron";
+  | "statueAaron"
+  | "magicTower"
+  | "wellTile"
+  | "well2Tile"
+  | "halfGrownCropTile";
 
 export const TREE_TILES: readonly AssetKey[] = ["treeMiddle"];
 export const FARM_TILES: readonly AssetKey[] = ["farm2x2"];
@@ -69,6 +73,10 @@ export const NO_DECORATION_TILES: readonly AssetKey[] = [
   "mineTile", "mineTileV2", "farmPoi", "poisFarming",
   "farm2x2", "farmSlot", "farmHalf", "farmFull", "farmEmpty",
   "tree1", "tree1V3", "tree2", "tree2V0", "tree2V1", "treeMiddle",
+  "magicTower",
+  "wellTile",
+  "well2Tile",
+  "halfGrownCropTile",
 ];
 
 export type PomodoroPhase = "work" | "break" | "longBreak";
@@ -123,11 +131,10 @@ export type TileDef = {
   decoRotY?: number;
 };
 
-export type CloneDirection = "up" | "right" | "down" | "left";
+export type CloneDirection = "up" | "upRight" | "right" | "downRight" | "down" | "downLeft" | "left" | "upLeft";
 
 export type CloneLineState = {
   sourceTileId: string;
-  direction: CloneDirection;
 };
 
 export type PoiDef = {

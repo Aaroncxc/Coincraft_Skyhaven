@@ -16,9 +16,10 @@ export type VisualCloneTemplate = {
   pos3dOffset?: { x: number; y: number; z: number };
   scale3d?: { x: number; y: number; z: number };
   rotY?: number;
+  blocked?: boolean;
 };
 
-export type DirectionalClonePreview = {
+export type CloneLinePreview = {
   validTarget: boolean;
   targetOnRay: boolean;
   cells: GridCoord[];
@@ -26,11 +27,17 @@ export type DirectionalClonePreview = {
 };
 
 const CLONE_DIRECTION_STEPS: Record<CloneDirection, GridCoord> = {
-  up: { gx: -1, gy: -1 },
-  right: { gx: 1, gy: -1 },
-  down: { gx: 1, gy: 1 },
-  left: { gx: -1, gy: 1 },
+  up: { gx: 0, gy: -1 },
+  upRight: { gx: 1, gy: -1 },
+  right: { gx: 1, gy: 0 },
+  downRight: { gx: 1, gy: 1 },
+  down: { gx: 0, gy: 1 },
+  downLeft: { gx: -1, gy: 1 },
+  left: { gx: -1, gy: 0 },
+  upLeft: { gx: -1, gy: -1 },
 };
+
+const CLONE_DIRECTION_ENTRIES = Object.entries(CLONE_DIRECTION_STEPS) as Array<[CloneDirection, GridCoord]>;
 
 function makeDefaultCustomIsland(): IslandMap {
   const tiles: TileDef[] = [];
@@ -120,6 +127,35 @@ export function getDirectionalCloneStep(direction: CloneDirection): GridCoord {
   return CLONE_DIRECTION_STEPS[direction];
 }
 
+function getCloneDirectionForTarget(source: GridCoord, target: GridCoord): CloneDirection | null {
+  const deltaGx = target.gx - source.gx;
+  const deltaGy = target.gy - source.gy;
+
+  if (deltaGx === 0 && deltaGy === 0) {
+    return null;
+  }
+
+  const deltaLength = Math.hypot(deltaGx, deltaGy);
+  let bestDirection: CloneDirection | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const [direction, step] of CLONE_DIRECTION_ENTRIES) {
+    const dot = deltaGx * step.gx + deltaGy * step.gy;
+    if (dot <= 0) {
+      continue;
+    }
+
+    const stepLength = Math.hypot(step.gx, step.gy);
+    const score = dot / (deltaLength * stepLength);
+    if (score > bestScore) {
+      bestScore = score;
+      bestDirection = direction;
+    }
+  }
+
+  return bestDirection;
+}
+
 export function getDirectionalCloneDisabledReason(tile: TileDef | null | undefined): string | null {
   if (!tile) {
     return "Select a tile first.";
@@ -161,6 +197,7 @@ export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
       : undefined,
     scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
     rotY: tile.rotY,
+    blocked: tile.blocked,
   };
 }
 
@@ -171,13 +208,13 @@ export function instantiateVisualCloneTile(
 ): Partial<
   Pick<
     TileDef,
-    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
   >
 > {
   const nextTile: Partial<
     Pick<
       TileDef,
-      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
     >
   > = {
     type: template.type,
@@ -188,6 +225,7 @@ export function instantiateVisualCloneTile(
     offsetY: template.offsetY,
     scale3d: template.scale3d ? { ...template.scale3d } : undefined,
     rotY: template.rotY,
+    blocked: template.blocked,
   };
 
   if (template.pos3dOffset) {
@@ -201,12 +239,11 @@ export function instantiateVisualCloneTile(
   return nextTile;
 }
 
-export function getDirectionalClonePreview(
+export function getLineClonePreview(
   island: IslandMap,
   sourceTile: TileDef | null | undefined,
-  direction: CloneDirection,
   target: GridCoord | null | undefined
-): DirectionalClonePreview {
+): CloneLinePreview {
   if (!sourceTile || !target) {
     return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
   }
@@ -215,11 +252,22 @@ export function getDirectionalClonePreview(
     return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
   }
 
+  const sourceCoord = { gx: sourceTile.gx, gy: sourceTile.gy };
+  const direction = getCloneDirectionForTarget(sourceCoord, target);
+  if (!direction) {
+    return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
+  }
+
   const step = getDirectionalCloneStep(direction);
-  const steps = getDirectionalCloneStepCount({ gx: sourceTile.gx, gy: sourceTile.gy }, target, step);
+  const steps = getDirectionalCloneStepCount(sourceCoord, target, step);
   if (steps === null) {
     return { validTarget: false, targetOnRay: false, cells: [], blockedCell: null };
   }
+  const snappedTarget = {
+    gx: sourceTile.gx + step.gx * steps,
+    gy: sourceTile.gy + step.gy * steps,
+  };
+  const targetOnRay = snappedTarget.gx === target.gx && snappedTarget.gy === target.gy;
 
   const cells: GridCoord[] = [];
   for (let index = 1; index <= steps; index += 1) {
@@ -231,8 +279,8 @@ export function getDirectionalClonePreview(
     if (occupied) {
       return {
         validTarget: false,
-        targetOnRay: true,
-        cells: [],
+        targetOnRay,
+        cells,
         blockedCell: nextCoord,
       };
     }
@@ -241,7 +289,7 @@ export function getDirectionalClonePreview(
 
   return {
     validTarget: cells.length > 0,
-    targetOnRay: true,
+    targetOnRay,
     cells,
     blockedCell: null,
   };
@@ -255,7 +303,7 @@ export function addTile(
   overrides?: Partial<
     Pick<
       TileDef,
-      "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY"
+      "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
     >
   >
 ): IslandMap {
@@ -354,22 +402,15 @@ function getDirectionalCloneStepCount(source: GridCoord, target: GridCoord, step
   const deltaGx = target.gx - source.gx;
   const deltaGy = target.gy - source.gy;
 
-  if (deltaGx === 0 || deltaGy === 0) {
+  const stepLengthSq = step.gx * step.gx + step.gy * step.gy;
+  if (stepLengthSq <= 0) {
     return null;
   }
 
-  if (Math.abs(deltaGx) !== Math.abs(deltaGy)) {
+  const projectedSteps = (deltaGx * step.gx + deltaGy * step.gy) / stepLengthSq;
+  if (projectedSteps < 1) {
     return null;
   }
 
-  const steps = Math.abs(deltaGx);
-  if (steps < 1) {
-    return null;
-  }
-
-  if (deltaGx !== step.gx * steps || deltaGy !== step.gy * steps) {
-    return null;
-  }
-
-  return steps;
+  return Math.max(1, Math.round(projectedSteps));
 }

@@ -3,6 +3,7 @@ import { SKYHAVEN_SPRITE_MANIFEST } from "../game/assets";
 import { DURATION_OPTIONS } from "../game/session";
 import type { ActionType, AssetKey, CloneLineState, FocusDuration, IslandId, TileDef } from "../game/types";
 import type { Inventory } from "../game/inventory";
+import { useMenuSfx } from "../game/useMenuSfx";
 import { BaukastenPanel } from "./BaukastenPanel";
 
 export type SidebarSection = "Main Menu" | "Focus Actions" | "Shop" | "Islands" | "Options" | "Toolbox";
@@ -36,6 +37,8 @@ type SidebarProps = {
   onMasterVolumeChange?: (v: number) => void;
   sfxVolume?: number;
   onSfxVolumeChange?: (v: number) => void;
+  menuSfxVolume?: number;
+  onMenuSfxVolumeChange?: (v: number) => void;
   editSelectedTile?: TileDef | null;
   editGizmoMode?: "translate" | "scale";
   onEditGizmoModeChange?: (mode: "translate" | "scale") => void;
@@ -43,8 +46,6 @@ type SidebarProps = {
   onEditDelete?: () => void;
   onEditToggleBlocked?: () => void;
   onEditCopyScale?: () => void;
-  onEditPasteScale?: () => void;
-  hasEditClipboard?: boolean;
   editUniformScale?: boolean;
   onEditUniformScaleChange?: (v: boolean) => void;
   onProfileOpen?: () => void;
@@ -61,8 +62,6 @@ type SidebarProps = {
   cloneState?: CloneLineState | null;
   cloneEligible?: boolean;
   cloneDisabledReason?: string | null;
-  onStartDirectionalClone?: (direction: "up" | "right" | "down" | "left") => void;
-  onCancelDirectionalClone?: () => void;
 };
 
 type SidebarPanelKind = "main" | "focus" | "shop" | "islands" | "options" | "toolbox";
@@ -110,6 +109,8 @@ export function Sidebar({
   onMasterVolumeChange,
   sfxVolume = 78,
   onSfxVolumeChange,
+  menuSfxVolume = 72,
+  onMenuSfxVolumeChange,
   editSelectedTile,
   editGizmoMode,
   onEditGizmoModeChange,
@@ -117,8 +118,6 @@ export function Sidebar({
   onEditDelete,
   onEditToggleBlocked,
   onEditCopyScale,
-  onEditPasteScale,
-  hasEditClipboard,
   editUniformScale,
   onEditUniformScaleChange,
   onProfileOpen,
@@ -135,11 +134,20 @@ export function Sidebar({
   cloneState = null,
   cloneEligible = false,
   cloneDisabledReason = null,
-  onStartDirectionalClone,
-  onCancelDirectionalClone,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const menuSfx = useMenuSfx(masterVolume, menuSfxVolume);
   const ui = SKYHAVEN_SPRITE_MANIFEST.ui;
+
+  const handleCollapseToggle = () => {
+    menuSfx.playTransition();
+    setCollapsed((c) => !c);
+  };
+
+  const handleSectionClick = (section: SidebarSection) => {
+    menuSfx.playSlide();
+    onSelectSection(section);
+  };
 
   const baseSections =
     selectedSection === "Focus Actions"
@@ -159,7 +167,7 @@ export function Sidebar({
       <button
         type="button"
         className="sidebar-collapse-tab"
-        onClick={() => setCollapsed((c) => !c)}
+        onClick={handleCollapseToggle}
         title={collapsed ? "Expand Sidebar" : "Collapse Sidebar"}
       >
         {collapsed ? "▶" : "◀"}
@@ -169,7 +177,7 @@ export function Sidebar({
           <button
             type="button"
             className="sidebar-item is-selected"
-            onClick={() => onSelectSection("Main Menu")}
+            onClick={() => handleSectionClick("Main Menu")}
             title="Close Toolbox"
           >
             <div className="sidebar-item-glass-bg" />
@@ -195,8 +203,6 @@ export function Sidebar({
                 onEditDelete={onEditDelete}
                 onEditToggleBlocked={onEditToggleBlocked}
                 onEditCopyScale={onEditCopyScale}
-                onEditPasteScale={onEditPasteScale}
-                hasEditClipboard={hasEditClipboard}
                 editUniformScale={editUniformScale}
                 onEditUniformScaleChange={onEditUniformScaleChange}
                 onUndo={onBuildUndo}
@@ -206,8 +212,6 @@ export function Sidebar({
                 cloneState={cloneState}
                 cloneEligible={cloneEligible}
                 cloneDisabledReason={cloneDisabledReason}
-                onStartDirectionalClone={onStartDirectionalClone}
-                onCancelDirectionalClone={onCancelDirectionalClone}
               />
             </section>
           </div>
@@ -223,7 +227,7 @@ export function Sidebar({
             <button
               type="button"
               className={`sidebar-item ${isSelected ? "is-selected" : ""}`}
-              onClick={() => onSelectSection(section)}
+              onClick={() => handleSectionClick(section)}
             >
               <div className="sidebar-item-glass-bg" />
               {isToolboxSection ? (
@@ -250,7 +254,10 @@ export function Sidebar({
                             key={duration}
                             type="button"
                             className={`duration-pill ${selectedDuration === duration && !isPomodoroActive ? "is-selected" : ""}`}
-                            onClick={() => onSelectDuration(duration)}
+                            onClick={() => {
+                              menuSfx.playTapPrimary();
+                              onSelectDuration(duration);
+                            }}
                           >
                             {duration}m
                           </button>
@@ -258,7 +265,10 @@ export function Sidebar({
                         <button
                           type="button"
                           className={`duration-pill is-pomodoro ${isPomodoroActive ? "is-selected" : ""}`}
-                          onClick={() => onStartPomodoro?.(ACTIONS[0])}
+                          onClick={() => {
+                            menuSfx.playPopUp();
+                            onStartPomodoro?.(ACTIONS[0]);
+                          }}
                           title="Pomodoro: 25min work / 5min break x4"
                         >
                           {isPomodoroActive ? `P ${pomodoroRound}/${pomodoroTotalRounds}` : "Pomo"}
@@ -281,7 +291,11 @@ export function Sidebar({
                             key={action}
                             type="button"
                             className={`action-item ${activeAction === action ? "is-active" : ""}`}
-                            onClick={() => isPomodoroActive ? onStartPomodoro?.(action) : onStartAction(action)}
+                            onClick={() => {
+                              menuSfx.playTapSecondary();
+                              if (isPomodoroActive) onStartPomodoro?.(action);
+                              else onStartAction(action);
+                            }}
                           >
                             - {action[0].toUpperCase()}
                             {action.slice(1)}
@@ -299,9 +313,17 @@ export function Sidebar({
                           type="button"
                           className="generic-item"
                           onClick={
-                            label === "Profile" ? onProfileOpen
-                            : label === "Daily Quests" ? onDailyQuestsOpen
-                            : undefined
+                            label === "Profile"
+                              ? () => {
+                                  menuSfx.playPopUp();
+                                  onProfileOpen?.();
+                                }
+                              : label === "Daily Quests"
+                                ? () => {
+                                    menuSfx.playPopUp();
+                                    onDailyQuestsOpen?.();
+                                  }
+                                : () => menuSfx.playTapPrimary()
                           }
                         >
                           - {label}
@@ -313,7 +335,12 @@ export function Sidebar({
                   {panelKind === "shop" ? (
                     <div className="generic-list">
                       {SHOP_ITEMS.map((label) => (
-                        <button key={label} type="button" className="generic-item">
+                        <button
+                          key={label}
+                          type="button"
+                          className="generic-item"
+                          onClick={() => menuSfx.playTapPrimary()}
+                        >
                           - {label}
                         </button>
                       ))}
@@ -325,7 +352,10 @@ export function Sidebar({
                       <button
                         type="button"
                         className="islands-arrow-btn is-left"
-                        onClick={() => onCycleIsland(-1)}
+                        onClick={() => {
+                          menuSfx.playSlide();
+                          onCycleIsland(-1);
+                        }}
                         aria-label="Previous island"
                       >
                         {ui.islandsArrowLeft ? <img src={ui.islandsArrowLeft} alt="" className="islands-arrow-icon" /> : "<"}
@@ -339,7 +369,10 @@ export function Sidebar({
                       <button
                         type="button"
                         className="islands-arrow-btn is-right"
-                        onClick={() => onCycleIsland(1)}
+                        onClick={() => {
+                          menuSfx.playSlide();
+                          onCycleIsland(1);
+                        }}
                         aria-label="Next island"
                       >
                         {ui.islandsArrowRight ? <img src={ui.islandsArrowRight} alt="" className="islands-arrow-icon" /> : ">"}
@@ -365,8 +398,6 @@ export function Sidebar({
                       onEditDelete={onEditDelete}
                       onEditToggleBlocked={onEditToggleBlocked}
                       onEditCopyScale={onEditCopyScale}
-                      onEditPasteScale={onEditPasteScale}
-                      hasEditClipboard={hasEditClipboard}
                       editUniformScale={editUniformScale}
                       onEditUniformScaleChange={onEditUniformScaleChange}
                       onUndo={onBuildUndo}
@@ -376,8 +407,6 @@ export function Sidebar({
                       cloneState={cloneState}
                       cloneEligible={cloneEligible}
                       cloneDisabledReason={cloneDisabledReason}
-                      onStartDirectionalClone={onStartDirectionalClone}
-                      onCancelDirectionalClone={onCancelDirectionalClone}
                     />
                   ) : null}
 
@@ -389,7 +418,10 @@ export function Sidebar({
                           <button
                             type="button"
                             className="settings-skip-btn"
-                            onClick={onMusicPrev}
+                            onClick={() => {
+                              menuSfx.playTapPrimary();
+                              onMusicPrev?.();
+                            }}
                             title="Previous track"
                             aria-label="Previous track"
                           >
@@ -398,7 +430,10 @@ export function Sidebar({
                           <button
                             type="button"
                             className="settings-skip-btn"
-                            onClick={onMusicNext}
+                            onClick={() => {
+                              menuSfx.playTapPrimary();
+                              onMusicNext?.();
+                            }}
                             title="Next track"
                             aria-label="Next track"
                           >
@@ -417,6 +452,7 @@ export function Sidebar({
                           step={1}
                           value={masterVolume}
                           onChange={(event) => onMasterVolumeChange?.(Number(event.target.value))}
+                          onMouseDown={() => menuSfx.playTapSecondary()}
                         />
                       </label>
 
@@ -430,6 +466,21 @@ export function Sidebar({
                           step={1}
                           value={sfxVolume}
                           onChange={(event) => onSfxVolumeChange?.(Number(event.target.value))}
+                          onMouseDown={() => menuSfx.playTapSecondary()}
+                        />
+                      </label>
+
+                      <label className="settings-row">
+                        <span className="settings-label">Menu Sound</span>
+                        <input
+                          className="settings-slider"
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={menuSfxVolume}
+                          onChange={(event) => onMenuSfxVolumeChange?.(Number(event.target.value))}
+                          onMouseDown={() => menuSfx.playTapSecondary()}
                         />
                       </label>
                     </div>

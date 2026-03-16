@@ -7,6 +7,7 @@ import { TileModel } from "./TileModel";
 import { CharacterModel } from "./CharacterModel";
 import { SkullyCompanion } from "./SkullyCompanion";
 import { MiningManNPC } from "./MiningManNPC";
+import { MagicManNPC } from "./MagicManNPC";
 import { SpeechBubble } from "./SpeechBubble";
 import { useCharacterMovement, findNearbyInteractable, buildTileTypeMap, type SpellCastEvent } from "./useCharacterMovement";
 import { InteractPrompt } from "./InteractPrompt";
@@ -471,9 +472,11 @@ export function IslandScene({
   const [ghostCell, setGhostCell] = useState<{ gx: number; gy: number } | null>(null);
   const [gizmoDragging, setGizmoDragging] = useState(false);
   const [miningManTalking, setMiningManTalking] = useState(false);
+  const [magicManTalking, setMagicManTalking] = useState(false);
   const mouseGroundRef = useRef<THREE.Vector3 | null>(null);
   const spellCastRef = useRef<SpellCastEvent | null>(null);
   const npcPosRef = useRef<{ gx: number; gy: number } | null>(null);
+  const magicManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
   const npcPositionsMapRef = useRef(new Map<string, { gx: number; gy: number }>());
 
   const hasMiningTile = useMemo(
@@ -481,10 +484,18 @@ export function IslandScene({
     [island],
   );
 
+  const hasMagicTower = useMemo(
+    () => island.tiles.some((t) => t.type === "magicTower"),
+    [island],
+  );
+
   const handleNpcInteract = useCallback((npcId: string) => {
     if (npcId === "miningMan") {
       setMiningManTalking(true);
       setTimeout(() => setMiningManTalking(false), 6000);
+    } else if (npcId === "magicMan") {
+      setMagicManTalking(true);
+      setTimeout(() => setMagicManTalking(false), 6000);
     }
   }, []);
 
@@ -505,6 +516,12 @@ export function IslandScene({
     } else {
       npcPositionsMapRef.current.delete("miningMan");
     }
+    const magicPos = magicManNpcPosRef.current;
+    if (magicPos) {
+      npcPositionsMapRef.current.set("magicMan", magicPos);
+    } else {
+      npcPositionsMapRef.current.delete("magicMan");
+    }
   });
 
   const tileTypeMap = useMemo(() => buildTileTypeMap(island), [island]);
@@ -514,12 +531,27 @@ export function IslandScene({
   );
 
   const nearbyNpc = useMemo(() => {
-    if (!hasMiningTile || isMiniActionActive) return null;
-    const npcPos = npcPosRef.current;
-    if (!npcPos) return null;
-    const dist = Math.hypot(charPose.gx - npcPos.gx, charPose.gy - npcPos.gy);
-    return dist <= 1.2 ? npcPos : null;
-  }, [charPose.gx, charPose.gy, hasMiningTile, isMiniActionActive]);
+    if (isMiniActionActive) return null;
+    let best: { gx: number; gy: number } | null = null;
+    let bestDist = 1.2 + 1;
+    if (hasMiningTile && npcPosRef.current) {
+      const pos = npcPosRef.current;
+      const d = Math.hypot(charPose.gx - pos.gx, charPose.gy - pos.gy);
+      if (d <= 1.2 && d < bestDist) {
+        best = pos;
+        bestDist = d;
+      }
+    }
+    if (hasMagicTower && magicManNpcPosRef.current) {
+      const pos = magicManNpcPosRef.current;
+      const d = Math.hypot(charPose.gx - pos.gx, charPose.gy - pos.gy);
+      if (d <= 1.2 && d < bestDist) {
+        best = pos;
+        bestDist = d;
+      }
+    }
+    return best;
+  }, [charPose.gx, charPose.gy, hasMiningTile, hasMagicTower, isMiniActionActive]);
 
   const setHoveredTileIdSmooth = useCallback((id: string | null) => {
     startTransition(() => setHoveredTileId(id));
@@ -658,6 +690,15 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
+            {hasMagicTower && (
+              <MagicManNPC
+                island={island}
+                isTalking={magicManTalking}
+                npcPosRef={magicManNpcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
           </>
         ) : editMode ? (
           <>
@@ -694,6 +735,15 @@ export function IslandScene({
                   playerGy={charPose.gy}
                 />
               )}
+              {hasMagicTower && (
+                <MagicManNPC
+                  island={island}
+                  isTalking={magicManTalking}
+                  npcPosRef={magicManNpcPosRef}
+                  playerGx={charPose.gx}
+                  playerGy={charPose.gy}
+                />
+              )}
             </FloatingBob>
 
             {ghostCell && selectedTileType && (
@@ -720,6 +770,15 @@ export function IslandScene({
                 island={island}
                 isTalking={miningManTalking}
                 npcPosRef={npcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            {hasMagicTower && (
+              <MagicManNPC
+                island={island}
+                isTalking={magicManTalking}
+                npcPosRef={magicManNpcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
               />
@@ -779,7 +838,7 @@ export function IslandScene({
           <InteractPrompt tileGx={nearbyInteract.tileGx} tileGy={nearbyInteract.tileGy} />
         )}
 
-        {nearbyNpc && !nearbyInteract && !debugMode && !editMode && !miningManTalking && (
+        {nearbyNpc && !nearbyInteract && !debugMode && !editMode && !miningManTalking && !magicManTalking && (
           <InteractPrompt tileGx={nearbyNpc.gx} tileGy={nearbyNpc.gy} />
         )}
 
@@ -787,6 +846,16 @@ export function IslandScene({
           <SpeechBubble
             visible={miningManTalking}
             position={[npcPosRef.current.gx * TILE_UNIT_SIZE, 2.2, npcPosRef.current.gy * TILE_UNIT_SIZE]}
+          />
+        )}
+        {hasMagicTower && magicManNpcPosRef.current && (
+          <SpeechBubble
+            visible={magicManTalking}
+            position={[
+              magicManNpcPosRef.current.gx * TILE_UNIT_SIZE,
+              2.2,
+              magicManNpcPosRef.current.gy * TILE_UNIT_SIZE,
+            ]}
           />
         )}
 

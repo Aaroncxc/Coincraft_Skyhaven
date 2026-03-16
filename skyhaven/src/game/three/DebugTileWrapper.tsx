@@ -1,5 +1,5 @@
 import { TransformControls, useGLTF } from "@react-three/drei";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { TileDef } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
@@ -27,6 +27,7 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   taverne: { w: 2, h: 2 },
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
+  magicTower: { w: 2, h: 2 },
 };
 
 export function DebugTileWrapper({
@@ -48,6 +49,7 @@ export function DebugTileWrapper({
   const controlsRef = useRef<any>(null);
   const prevUniformRef = useRef<number | null>(null);
   const lastOnChangeRef = useRef(0);
+  const dragActiveRef = useRef(false);
 
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
@@ -68,6 +70,9 @@ export function DebugTileWrapper({
   const multi = MULTI_CELL[modelKey];
   const gridOffX = multi ? ((multi.w - 1) * TILE_UNIT_SIZE) / 2 : 0;
   const gridOffZ = multi ? ((multi.h - 1) * TILE_UNIT_SIZE) / 2 : 0;
+  const hitW = multi ? multi.w * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
+  const hitD = multi ? multi.h * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
+  const hitH = TILE_UNIT_SIZE * 0.9;
   const defaultX = tile.gx * TILE_UNIT_SIZE + gridOffX;
   const defaultZ = tile.gy * TILE_UNIT_SIZE + gridOffZ;
 
@@ -85,6 +90,7 @@ export function DebugTileWrapper({
   useEffect(() => {
     cloned.traverse((child) => {
       if (child instanceof THREE.Mesh && child.material) {
+        child.raycast = () => {};
         child.material = child.material.clone();
         if (isTree && (child.material instanceof THREE.MeshStandardMaterial || child.material instanceof THREE.MeshPhysicalMaterial)) {
           child.material.roughness = 0.98;
@@ -94,19 +100,20 @@ export function DebugTileWrapper({
     });
   }, [cloned, isTree]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!objRef.current) return;
+    if (dragActiveRef.current) return;
     objRef.current.position.set(initX, initY, initZ);
     objRef.current.scale.set(initSX, initSY, initSZ);
     objRef.current.rotation.set(0, initRotY, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tile.id]);
+  }, [tile.id, initX, initY, initZ, initSX, initSY, initSZ, initRotY]);
 
   useEffect(() => {
     const ctrl = controlsRef.current;
     if (!ctrl) return;
 
     const handleDraggingChanged = (event: { value: boolean }) => {
+      dragActiveRef.current = event.value;
       if (!event.value) {
         prevUniformRef.current = null;
         if (objRef.current) {
@@ -190,24 +197,28 @@ export function DebugTileWrapper({
 
   return (
     <>
-      <group
-        ref={objRef}
-        position={[initX, initY, initZ]}
-        scale={[initSX, initSY, initSZ]}
-        rotation={[0, initRotY, 0]}
-        onClick={(e) => {
-          if (buildMode) return;
-          e.stopPropagation();
-          onSelect();
-        }}
-      >
+      <group ref={objRef}>
+        <mesh
+          position={[0, hitH / 2, 0]}
+          onClick={
+            buildMode
+              ? undefined
+              : (e) => {
+                  e.stopPropagation();
+                  onSelect();
+                }
+          }
+        >
+          <boxGeometry args={[hitW, hitH, hitD]} />
+          <meshBasicMaterial visible={false} />
+        </mesh>
         <group position={[0, offsetY, 0]}>
           <primitive object={cloned} scale={[normScale, normScale, normScale]} />
         </group>
         {selected && (
           <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[TILE_UNIT_SIZE * 0.4, TILE_UNIT_SIZE * 0.5, 32]} />
-            <meshBasicMaterial color={selectedColor} transparent opacity={0.6} side={THREE.DoubleSide} />
+            <ringGeometry args={[TILE_UNIT_SIZE * 0.44, TILE_UNIT_SIZE * 0.56, 48]} />
+            <meshBasicMaterial color={selectedColor} transparent opacity={0.82} side={THREE.DoubleSide} />
           </mesh>
         )}
         {tile.blocked && (
@@ -232,7 +243,7 @@ export function DebugTileWrapper({
           ref={controlsRef}
           object={objRef.current}
           mode={gizmoMode}
-          size={1.6}
+          size={2.0}
           translationSnap={gizmoMode === "translate" ? 0.1 : undefined}
           scaleSnap={0.05}
           onObjectChange={handleObjectChange}
@@ -267,6 +278,7 @@ function EditableDecoration({
   const decoCtrlRef = useRef<any>(null);
   const prevUniformRef = useRef<number | null>(null);
   const lastOnChangeRef = useRef(0);
+  const decoDragActiveRef = useRef(false);
 
   const { scale: normScale, offsetY: decoOffsetY } = useMemo(() => {
     const box = new THREE.Box3().setFromObject(scene);
@@ -287,6 +299,7 @@ function EditableDecoration({
   useEffect(() => {
     cloned.traverse((child) => {
       if (child instanceof THREE.Mesh) {
+        child.raycast = () => {};
         child.castShadow = true;
         child.receiveShadow = true;
         child.frustumCulled = false;
@@ -295,19 +308,20 @@ function EditableDecoration({
     });
   }, [cloned]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!decoRef.current) return;
+    if (decoDragActiveRef.current) return;
     decoRef.current.position.set(initDX, initDY, initDZ);
     decoRef.current.scale.set(initDSX, initDSY, initDSZ);
     decoRef.current.rotation.set(0, initDRotY, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tile.id, tile.decoration]);
+  }, [tile.id, tile.decoration, initDX, initDY, initDZ, initDSX, initDSY, initDSZ, initDRotY]);
 
   useEffect(() => {
     const ctrl = decoCtrlRef.current;
     if (!ctrl) return;
 
     const handleDraggingChanged = (event: { value: boolean }) => {
+      decoDragActiveRef.current = event.value;
       if (!event.value && decoRef.current) {
         prevUniformRef.current = null;
         const p = decoRef.current.position;
@@ -389,12 +403,7 @@ function EditableDecoration({
 
   return (
     <>
-      <group
-        ref={decoRef}
-        position={[initDX, initDY, initDZ]}
-        scale={[initDSX, initDSY, initDSZ]}
-        rotation={[0, initDRotY, 0]}
-      >
+      <group ref={decoRef}>
         <primitive object={cloned} scale={[normScale, normScale, normScale]} />
       </group>
       {showGizmo && (
@@ -402,7 +411,7 @@ function EditableDecoration({
           ref={decoCtrlRef}
           object={decoRef.current}
           mode={gizmoMode}
-          size={1.2}
+          size={1.55}
           translationSnap={gizmoMode === "translate" ? 0.05 : undefined}
           scaleSnap={0.05}
           onObjectChange={handleDecoObjectChange}

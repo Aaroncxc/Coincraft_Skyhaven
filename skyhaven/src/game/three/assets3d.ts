@@ -21,6 +21,10 @@ export const TILE_3D_MODELS: Record<string, string> = {
   ancientStoneWall: "/ingame_assets/3d/AncientStoneWall_Tile.glb",
   ancientCornerWall: "/ingame_assets/3d/AncientCornerWall_Til.glb",
   statueAaron: "/ingame_assets/3d/Statue_Aaron.glb",
+  magicTower: "/ingame_assets/3d/MagicTowerTile_POI.glb",
+  wellTile: "/ingame_assets/3d/Ancient_Stone_Well_Tile.glb",
+  well2Tile: "/ingame_assets/3d/Well2_Tile.glb",
+  halfGrownCropTile: "/ingame_assets/3d/Half_grown3D_Crop_Tile.glb",
 };
 
 const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
@@ -77,6 +81,10 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   farmingChicken: "farmingChicken",
   bushTile: "bushTile",
   statueAaron: "statueAaron",
+  magicTower: "magicTower",
+  wellTile: "wellTile",
+  well2Tile: "well2Tile",
+  halfGrownCropTile: "halfGrownCropTile",
 };
 
 export function getModelKeyForAsset(assetKey: AssetKey): string {
@@ -98,6 +106,13 @@ export const MINING_MAN_MODELS = {
   walk: "/ingame_assets/3d/Mining_Man/Walking_withSkin.glb",
   attack: "/ingame_assets/3d/Mining_Man/Attack_withSkin.glb",
   talk: "/ingame_assets/3d/Mining_Man/Talk_with_Left_Hand_Raised_withSkin.glb",
+};
+
+export const MAGIC_MAN_MODELS = {
+  base: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Character_output.glb",
+  walk: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Walking_withSkin.glb",
+  idle: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Idle_11_withSkin.glb",
+  zauber: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Call_Gesture_withSkin.glb",
 };
 
 export const CHAR_3D_MODELS = {

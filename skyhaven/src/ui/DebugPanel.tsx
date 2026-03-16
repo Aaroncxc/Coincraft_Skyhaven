@@ -151,6 +151,10 @@ const PLACEABLE_TYPES = [
   { key: "taverne", label: "Taverne" },
   { key: "floatingForge", label: "Forge" },
   { key: "farmingChicken", label: "Chicken" },
+  { key: "magicTower", label: "Magic Tower" },
+  { key: "wellTile", label: "Well" },
+  { key: "well2Tile", label: "Well (Square)" },
+  { key: "halfGrownCropTile", label: "Half-grown Crop" },
 ];
 
 const tilePaletteBtnBase: React.CSSProperties = {
@@ -259,36 +263,42 @@ export function DebugPanel({
   };
 
   return (
-    <div style={wrapperStyle} data-no-window-drag="true">
+    <div className="debug-panel-shell" style={wrapperStyle} data-no-window-drag="true">
       <div
+        className="debug-panel-collapse-tab"
         style={collapseTabStyle}
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? "Expand Debug Panel" : "Collapse Debug Panel"}
       >
         {collapsed ? "◀" : "▶"}
       </div>
-      <div style={innerStyle}>
+      <div className="debug-panel-surface" style={innerStyle}>
       <div style={headerStyle}>
         <span style={titleStyle}>DEBUG MODE</span>
       </div>
 
-      <div style={btnGroupStyle}>
-        <button
-          style={gizmoMode === "translate" ? btnActive : btnInactive}
-          onClick={() => onGizmoModeChange("translate")}
-        >
-          Move
-        </button>
-        <button
-          style={gizmoMode === "scale" ? btnActive : btnInactive}
-          onClick={() => onGizmoModeChange("scale")}
-        >
-          Scale
-        </button>
-      </div>
+      {selectedTile ? (
+        <div style={btnGroupStyle}>
+          <button
+            className="debug-panel-btn"
+            style={gizmoMode === "translate" ? btnActive : btnInactive}
+            onClick={() => onGizmoModeChange("translate")}
+          >
+            Move
+          </button>
+          <button
+            className="debug-panel-btn"
+            style={gizmoMode === "scale" ? btnActive : btnInactive}
+            onClick={() => onGizmoModeChange("scale")}
+          >
+            Scale
+          </button>
+        </div>
+      ) : null}
 
       <div style={btnGroupStyle}>
         <button
+          className="debug-panel-btn"
           style={canUndo ? btnInactive : { ...btnInactive, opacity: 0.35, cursor: "default" }}
           onClick={onUndo}
           disabled={!canUndo}
@@ -296,6 +306,7 @@ export function DebugPanel({
           Undo
         </button>
         <button
+          className="debug-panel-btn"
           style={canRedo ? btnInactive : { ...btnInactive, opacity: 0.35, cursor: "default" }}
           onClick={onRedo}
           disabled={!canRedo}
@@ -304,7 +315,7 @@ export function DebugPanel({
         </button>
       </div>
 
-      {gizmoMode === "scale" && (
+      {selectedTile && gizmoMode === "scale" && (
         <label style={{
           display: "flex",
           alignItems: "center",
@@ -329,6 +340,7 @@ export function DebugPanel({
           <div style={{ ...infoRowStyle, marginBottom: 3, color: "#88ccff" }}>
             <span>Tile: {selectedTile.id}</span>
             <button
+              className="debug-panel-btn"
               onClick={onDeselectTile}
               style={{
                 background: "none",
@@ -380,6 +392,7 @@ export function DebugPanel({
           )}
           <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
             <button
+              className="debug-panel-btn"
               style={{
                 ...actionBtnStyle,
                 flex: 1,
@@ -393,6 +406,7 @@ export function DebugPanel({
               Rotate 90°
             </button>
             <button
+              className="debug-panel-btn"
               style={{
                 ...deleteBtnStyle,
                 flex: 1,
@@ -405,6 +419,7 @@ export function DebugPanel({
           </div>
           <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
             <button
+              className="debug-panel-btn"
               style={{
                 ...actionBtnStyle,
                 flex: 1,
@@ -418,6 +433,7 @@ export function DebugPanel({
               Copy Scale
             </button>
             <button
+              className="debug-panel-btn"
               style={{
                 ...actionBtnStyle,
                 flex: 1,
@@ -435,6 +451,7 @@ export function DebugPanel({
             </button>
           </div>
           <button
+            className="debug-panel-btn"
             style={{
               ...actionBtnStyle,
               marginBottom: 0,
@@ -475,6 +492,7 @@ export function DebugPanel({
           {PLACEABLE_TYPES.map((t) => (
             <button
               key={t.key}
+              className="debug-panel-btn"
               style={debugPlacementType === t.key ? tilePaletteBtnActive : tilePaletteBtnBase}
               onClick={() =>
                 onDebugPlacementTypeChange(debugPlacementType === t.key ? null : t.key)
@@ -486,15 +504,15 @@ export function DebugPanel({
         </div>
       </div>
 
-      <button style={saveBtnStyle} onClick={onSave}>
+      <button className="debug-panel-btn" style={saveBtnStyle} onClick={onSave}>
         Save Changes
       </button>
       {onExportJson && (
-        <button style={exportBtnStyle} onClick={onExportJson}>
+        <button className="debug-panel-btn" style={exportBtnStyle} onClick={onExportJson}>
           Export JSON
         </button>
       )}
-      <button style={exitBtnStyle} onClick={onExitDebug}>
+      <button className="debug-panel-btn" style={exitBtnStyle} onClick={onExitDebug}>
         Exit Debug
       </button>
       </div>
