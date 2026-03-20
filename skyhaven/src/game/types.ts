@@ -63,7 +63,10 @@ export type AssetKey =
   | "magicTower"
   | "wellTile"
   | "well2Tile"
-  | "halfGrownCropTile";
+  | "halfGrownCropTile"
+  | "cottaTile"
+  | "ancientTempleTile"
+  | "runeTile";
 
 export const TREE_TILES: readonly AssetKey[] = ["treeMiddle"];
 export const FARM_TILES: readonly AssetKey[] = ["farm2x2"];
@@ -77,6 +80,9 @@ export const NO_DECORATION_TILES: readonly AssetKey[] = [
   "wellTile",
   "well2Tile",
   "halfGrownCropTile",
+  "cottaTile",
+  "ancientTempleTile",
+  "runeTile",
 ];
 
 export type PomodoroPhase = "work" | "break" | "longBreak";
@@ -129,7 +135,15 @@ export type TileDef = {
   decoScale3d?: { x: number; y: number; z: number };
   /** Decoration Y-axis rotation in radians */
   decoRotY?: number;
+  /** If true, VFX (particles, glow) for this tile are enabled; undefined/false = disabled (default off) */
+  vfxEnabled?: boolean;
+  /**
+   * runeTile only: in-game glow/particles active (E to toggle). Requires vfxEnabled (toolbox) first.
+   */
+  runeVfxLit?: boolean;
 };
+
+export const VFX_TILE_TYPES: readonly AssetKey[] = ["wellTile", "well2Tile", "magicTower", "floatingForge", "runeTile"];
 
 export type CloneDirection = "up" | "upRight" | "right" | "downRight" | "down" | "downLeft" | "left" | "upLeft";
 

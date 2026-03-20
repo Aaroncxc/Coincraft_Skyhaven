@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { TileDef } from "../types";
 import { getModelPathForAsset, getModelKeyForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 
 type InstancedTileGroupProps = {
   tiles: TileDef[];
@@ -44,6 +46,8 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
   magicTower: { w: 2, h: 2 },
+  cottaTile: { w: 2, h: 2 },
+  ancientTempleTile: { w: 2, h: 2 },
 };
 
 const normCache = new Map<string, { scale: number; offsetY: number }>();
@@ -139,12 +143,26 @@ function InstancedMeshForGeometry({
   }, [tiles, hoveredTileId, normScale, offsetY, cellOffX, cellOffZ, tempMatrix, tempPos, tempQuat, tempScale]);
 
   const geometry = mesh.geometry;
-  const material = mesh.material;
+  const material = useMemo(() => {
+    const raw = mesh.material;
+    if (Array.isArray(raw)) {
+      return raw.map((m) => {
+        const c = m.clone();
+        stripEmbeddedEmissive(c);
+        scalePbrRoughness(c);
+        return c;
+      });
+    }
+    const c = raw.clone();
+    stripEmbeddedEmissive(c);
+    scalePbrRoughness(c);
+    return c;
+  }, [mesh]);
 
   return (
     <instancedMesh
       ref={instancedRef}
-      args={[geometry, material instanceof THREE.Material ? material : undefined, tiles.length]}
+      args={[geometry, material, tiles.length]}
       castShadow
       receiveShadow
     />

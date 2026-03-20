@@ -4,6 +4,8 @@ import * as THREE from "three";
 import type { AssetKey } from "../types";
 import { DECORATION_TILES } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 
 type GhostPreviewProps = {
   gx: number;
@@ -26,6 +28,8 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
   magicTower: { w: 2, h: 2 },
+  cottaTile: { w: 2, h: 2 },
+  ancientTempleTile: { w: 2, h: 2 },
 };
 
 export function GhostPreview({ gx, gy, tileType }: GhostPreviewProps) {
@@ -39,6 +43,8 @@ export function GhostPreview({ gx, gy, tileType }: GhostPreviewProps) {
     clone.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = (child.material as THREE.Material).clone();
+        stripEmbeddedEmissive(child.material);
+        scalePbrRoughness(child.material);
         (child.material as THREE.MeshStandardMaterial).transparent = true;
         (child.material as THREE.MeshStandardMaterial).opacity = 0.5;
         (child.material as THREE.MeshStandardMaterial).color.set("#88ff88");

@@ -157,6 +157,7 @@ export function ChopParticles({ gx, gy, isChopping }: ChopParticlesProps) {
         transparent
         opacity={0.85}
         depthWrite={false}
+        blending={THREE.AdditiveBlending}
       />
     </instancedMesh>
   );

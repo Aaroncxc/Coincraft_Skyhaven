@@ -2,11 +2,13 @@ import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useRef, useMemo } from "react";
 import * as THREE from "three";
-import { TILE_UNIT_SIZE } from "./assets3d";
+import { SKULLY_MODEL_PATH, TILE_UNIT_SIZE } from "./assets3d";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
+import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import type { CharacterPose3D } from "./useCharacterMovement";
 
-const SKULLY_PATH = "/ingame_assets/3d/Skully_Companion.glb";
-useGLTF.preload(SKULLY_PATH);
+useGLTF.preload(SKULLY_MODEL_PATH);
 
 const SKULLY_SCALE = 0.04;
 const FOLLOW_OFFSET = { x: -0.3, z: 0.3 };
@@ -27,7 +29,7 @@ type Props = {
 };
 
 export function SkullyCompanion({ pose }: Props) {
-  const gltf = useGLTF(SKULLY_PATH);
+  const gltf = useGLTF(SKULLY_MODEL_PATH);
   const groupRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
   const velocityRef = useRef(new THREE.Vector3());
@@ -39,12 +41,17 @@ export function SkullyCompanion({ pose }: Props) {
     const clone = gltf.scene.clone(true);
     clone.traverse((child) => {
       if (child instanceof THREE.Mesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
         const mats = Array.isArray(child.material) ? child.material : [child.material];
         for (const mat of mats) {
           if (!mat) continue;
           mat.side = THREE.DoubleSide;
           mat.depthWrite = true;
           mat.depthTest = true;
+          stripEmbeddedEmissive(mat);
+          tuneRigPbrForIslandLighting(mat);
+          scalePbrRoughness(mat);
           mat.needsUpdate = true;
         }
       }

@@ -141,7 +141,14 @@ export function TilePlaceParticles({ tiles }: { tiles: TileDef[] }) {
       <sphereGeometry args={[1, 6, 6]}>
         <instancedBufferAttribute attach="attributes-color" args={[colorsArr, 3]} />
       </sphereGeometry>
-      <meshBasicMaterial vertexColors toneMapped={false} transparent opacity={0.85} depthWrite={false} />
+      <meshBasicMaterial
+        vertexColors
+        toneMapped={false}
+        transparent
+        opacity={0.85}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
     </instancedMesh>
   );
 }

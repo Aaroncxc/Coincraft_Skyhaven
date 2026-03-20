@@ -1,4 +1,5 @@
-import type { CloneLineState, TileDef } from "../game/types";
+import type { AssetKey, CloneLineState, TileDef } from "../game/types";
+import { VFX_TILE_TYPES } from "../game/types";
 
 type CanvasGizmoSheetProps = {
   selectedTile: TileDef | null;
@@ -8,6 +9,7 @@ type CanvasGizmoSheetProps = {
   onCopy?: () => void;
   onDelete?: () => void;
   onToggleBlocked?: () => void;
+  onToggleVfx?: () => void;
   onUndo?: () => void;
   canUndo?: boolean;
   uniformScale?: boolean;
@@ -21,7 +23,7 @@ type CanvasGizmoSheetProps = {
   contextLabel?: string;
 };
 
-type IconName = "move" | "scale" | "rotate" | "undo" | "block" | "unblock" | "delete" | "copy";
+type IconName = "move" | "scale" | "rotate" | "undo" | "block" | "unblock" | "delete" | "copy" | "vfx";
 
 function SheetIcon({ name }: { name: IconName }) {
   if (name === "move") {
@@ -81,6 +83,16 @@ function SheetIcon({ name }: { name: IconName }) {
       </svg>
     );
   }
+  if (name === "vfx") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="8" cy="10" r="1.5" />
+        <circle cx="12" cy="8" r="1.5" />
+        <circle cx="16" cy="10" r="1.5" />
+        <circle cx="12" cy="14" r="1.5" />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="8" y="8" width="11" height="11" rx="2" ry="2" />
@@ -97,6 +109,7 @@ export function CanvasGizmoSheet({
   onCopy,
   onDelete,
   onToggleBlocked,
+  onToggleVfx,
   onUndo,
   canUndo = false,
   uniformScale = true,
@@ -114,6 +127,8 @@ export function CanvasGizmoSheet({
 
   const showDecorationToggle = !!selectedTile.decoration && !!onEditingDecorationChange;
   const showCopyHint = typeof onCopy === "function";
+  const isVfxTile = (VFX_TILE_TYPES as readonly AssetKey[]).includes(selectedTile.type);
+  const showVfxButton = isVfxTile && typeof onToggleVfx === "function";
 
   return (
     <div
@@ -187,7 +202,7 @@ export function CanvasGizmoSheet({
         </label>
       ) : null}
 
-      <div className="canvas-gizmo-row canvas-gizmo-row--icon-4">
+      <div className={`canvas-gizmo-row${showVfxButton ? " canvas-gizmo-row--icon-5" : " canvas-gizmo-row--icon-4"}`}>
         <button
           type="button"
           className={`canvas-gizmo-action canvas-gizmo-btn--icon${canUndo ? "" : " is-disabled"}`}
@@ -207,6 +222,17 @@ export function CanvasGizmoSheet({
         >
           <SheetIcon name={selectedTile.blocked ? "unblock" : "block"} />
         </button>
+        {showVfxButton ? (
+          <button
+            type="button"
+            className={`canvas-gizmo-action canvas-gizmo-btn--icon${selectedTile.vfxEnabled === true ? " is-active" : ""}`}
+            onClick={() => onToggleVfx?.()}
+            title="VFX an/aus"
+            aria-label="Toggle VFX"
+          >
+            <SheetIcon name="vfx" />
+          </button>
+        ) : null}
         <button
           type="button"
           className="canvas-gizmo-action canvas-gizmo-btn--icon is-danger"

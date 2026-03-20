@@ -352,11 +352,6 @@ body {
   align-items: center;
   justify-content: center;
   background: transparent;
-  cursor: grab;
-}
-
-.skyhaven-shell:active {
-  cursor: grabbing;
 }
 
 .skyhaven-frame {
@@ -744,7 +739,8 @@ body {
 }
 
 .canvas-gizmo-row--icon-3,
-.canvas-gizmo-row--icon-4 {
+.canvas-gizmo-row--icon-4,
+.canvas-gizmo-row--icon-5 {
   display: grid;
   gap: 4px;
   justify-items: center;
@@ -757,6 +753,10 @@ body {
 
 .canvas-gizmo-row--icon-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.canvas-gizmo-row--icon-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .canvas-gizmo-pill,

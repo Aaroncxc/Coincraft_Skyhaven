@@ -4,6 +4,9 @@ import { useRef, useEffect, useMemo, type MutableRefObject } from "react";
 import { SkeletonUtils } from "three-stdlib";
 import * as THREE from "three";
 import { TILE_UNIT_SIZE, CHAR_3D_MODELS } from "./assets3d";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import type { CharacterPose3D } from "./useCharacterMovement";
 import { EQUIPPABLE_ITEMS, type EquippableItemId, type ItemSocketTransform } from "../equipment";
 
@@ -122,6 +125,8 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
   useMemo(() => {
     modelScene.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       for (const mat of mats) {
         if (!mat) continue;
@@ -134,6 +139,9 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
             mat.transparent = false;
           }
         }
+        stripEmbeddedEmissive(mat);
+        tuneRigPbrForIslandLighting(mat);
+        scalePbrRoughness(mat);
         mat.needsUpdate = true;
       }
     });

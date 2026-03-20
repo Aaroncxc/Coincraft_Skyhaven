@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import type { IslandLightingParams } from "../game/three/islandLighting";
+import { DEFAULT_ISLAND_LIGHTING } from "../game/three/islandLighting";
 import type { TileDef } from "../game/types";
 
 export type DebugPanelProps = {
@@ -24,6 +26,8 @@ export type DebugPanelProps = {
   onPasteTransform?: () => void;
   hasClipboard?: boolean;
   onToggleBlocked?: () => void;
+  islandLighting: IslandLightingParams;
+  onIslandLightingChange: (next: IslandLightingParams) => void;
 };
 
 const panelBaseStyle: React.CSSProperties = {
@@ -155,6 +159,9 @@ const PLACEABLE_TYPES = [
   { key: "wellTile", label: "Well" },
   { key: "well2Tile", label: "Well (Square)" },
   { key: "halfGrownCropTile", label: "Half-grown Crop" },
+  { key: "cottaTile", label: "Cotta" },
+  { key: "ancientTempleTile", label: "Ancient Temple" },
+  { key: "runeTile", label: "Rune" },
 ];
 
 const tilePaletteBtnBase: React.CSSProperties = {
@@ -217,8 +224,38 @@ export function DebugPanel({
   onPasteTransform,
   hasClipboard = false,
   onToggleBlocked,
+  islandLighting,
+  onIslandLightingChange,
 }: DebugPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
+
+  const patchLighting = useCallback(
+    (key: keyof IslandLightingParams, value: number) => {
+      onIslandLightingChange({ ...islandLighting, [key]: value });
+    },
+    [islandLighting, onIslandLightingChange],
+  );
+
+  const lightingSectionStyle: React.CSSProperties = {
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottom: "1px solid rgba(136, 204, 255, 0.15)",
+  };
+
+  const sliderLabelStyle: React.CSSProperties = {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 2,
+    fontSize: 10,
+    color: "#8899aa",
+  };
+
+  const rangeStyle: React.CSSProperties = {
+    width: "100%",
+    marginBottom: 4,
+    accentColor: "#88ccff",
+  };
 
   const wrapperStyle: React.CSSProperties = {
     position: "absolute",
@@ -275,6 +312,128 @@ export function DebugPanel({
       <div className="debug-panel-surface" style={innerStyle}>
       <div style={headerStyle}>
         <span style={titleStyle}>DEBUG MODE</span>
+      </div>
+
+      <div style={lightingSectionStyle}>
+        <div style={{ ...infoRowStyle, marginBottom: 4, color: "#88ccff" }}>
+          <span>Island lighting</span>
+          <button
+            type="button"
+            className="debug-panel-btn"
+            onClick={() => onIslandLightingChange({ ...DEFAULT_ISLAND_LIGHTING })}
+            style={{
+              ...btnInactive,
+              padding: "2px 6px",
+              fontSize: 9,
+            }}
+          >
+            Reset
+          </button>
+        </div>
+        <div style={sliderLabelStyle}>
+          <span>Sun azimuth (°)</span>
+          <span style={valStyle}>{islandLighting.sunAzimuthDeg.toFixed(0)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={360}
+          step={1}
+          value={islandLighting.sunAzimuthDeg}
+          onChange={(e) => patchLighting("sunAzimuthDeg", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Sun elevation (°)</span>
+          <span style={valStyle}>{islandLighting.sunElevationDeg.toFixed(1)}</span>
+        </div>
+        <input
+          type="range"
+          min={5}
+          max={88}
+          step={0.5}
+          value={islandLighting.sunElevationDeg}
+          onChange={(e) => patchLighting("sunElevationDeg", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Sun distance</span>
+          <span style={valStyle}>{islandLighting.sunDistance.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={5}
+          max={80}
+          step={0.25}
+          value={islandLighting.sunDistance}
+          onChange={(e) => patchLighting("sunDistance", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Sun intensity</span>
+          <span style={valStyle}>{islandLighting.sunIntensity.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={6}
+          step={0.05}
+          value={islandLighting.sunIntensity}
+          onChange={(e) => patchLighting("sunIntensity", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Ambient</span>
+          <span style={valStyle}>{islandLighting.ambientIntensity.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={0.5}
+          step={0.01}
+          value={islandLighting.ambientIntensity}
+          onChange={(e) => patchLighting("ambientIntensity", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Hemisphere</span>
+          <span style={valStyle}>{islandLighting.hemisphereIntensity.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={islandLighting.hemisphereIntensity}
+          onChange={(e) => patchLighting("hemisphereIntensity", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Fill directional</span>
+          <span style={valStyle}>{islandLighting.fillIntensity.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={islandLighting.fillIntensity}
+          onChange={(e) => patchLighting("fillIntensity", Number(e.target.value))}
+          style={rangeStyle}
+        />
+        <div style={sliderLabelStyle}>
+          <span>Environment</span>
+          <span style={valStyle}>{islandLighting.environmentIntensity.toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={islandLighting.environmentIntensity}
+          onChange={(e) => patchLighting("environmentIntensity", Number(e.target.value))}
+          style={rangeStyle}
+        />
       </div>
 
       {selectedTile ? (

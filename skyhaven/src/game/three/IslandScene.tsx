@@ -1,6 +1,15 @@
-import { Preload, useGLTF } from "@react-three/drei";
-import { EffectComposer, Bloom, Vignette, FXAA } from "@react-three/postprocessing";
-import { Suspense, useCallback, useMemo, useRef, useState, startTransition, type MutableRefObject } from "react";
+import { Environment, Preload, useGLTF } from "@react-three/drei";
+import { EffectComposer, Bloom, Vignette, FXAA, Outline } from "@react-three/postprocessing";
+import {
+  Suspense,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  startTransition,
+  type MutableRefObject,
+} from "react";
 import * as THREE from "three";
 import { IslandCamera } from "./IslandCamera";
 import { TileModel } from "./TileModel";
@@ -9,27 +18,65 @@ import { SkullyCompanion } from "./SkullyCompanion";
 import { MiningManNPC } from "./MiningManNPC";
 import { MagicManNPC } from "./MagicManNPC";
 import { SpeechBubble } from "./SpeechBubble";
-import { useCharacterMovement, findNearbyInteractable, buildTileTypeMap, type SpellCastEvent } from "./useCharacterMovement";
+import {
+  useCharacterMovement,
+  findNearbyInteractable,
+  findNearbyRuneTile,
+  buildTileTypeMap,
+  type SpellCastEvent,
+  type TpsCameraState,
+} from "./useCharacterMovement";
 import { InteractPrompt } from "./InteractPrompt";
 import { GhostPreview } from "./GhostPreview";
 import { TilePlaceParticles } from "./TilePlaceParticles";
 import { AmbientParticles } from "./AmbientParticles";
 import { ChopParticles } from "./ChopParticles";
 import { SpellParticles } from "./SpellParticles";
+import { MagicTowerParticles } from "./MagicTowerParticles";
+import { WorldParticles, getParticleTileWorldXZ, BUBBLING_DEFAULT_SPAWN_Y } from "./WorldParticles";
 import { TileHighlight } from "./TileHighlight";
 import { DebugTileWrapper } from "./DebugTileWrapper";
-import { ALL_MODEL_PATHS, TILE_UNIT_SIZE } from "./assets3d";
+import { ALL_GAME_GLTF_PATHS, TILE_UNIT_SIZE } from "./assets3d";
+import { GltfEmissiveSanitize } from "./GltfEmissiveSanitize";
+import {
+  type IslandLightingParams,
+  DEFAULT_ISLAND_LIGHTING,
+  sunPositionFromAngles,
+} from "./islandLighting";
 import { MINE_TILES, DECORATION_TILES, NO_DECORATION_TILES } from "../types";
 
 const MOUSE_GROUND_Y = 0.82;
 const mouseGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -MOUSE_GROUND_Y);
 
-function MouseGroundTracker({ mouseGroundRef }: { mouseGroundRef: MutableRefObject<THREE.Vector3 | null> }) {
+/** Well tiles: brighter HDR bubbles + bloom + point fill */
+const WELL_BUBBLE_COUNT = 56;
+const WELL_BUBBLE_SIZE = 0.085;
+const WELL_BUBBLE_COLOR = 0xb8f8ff;
+const WELL_BUBBLE_LUMINANCE_BOOST = 3.6;
+/** Per-well cyan fill; placed at same XZ/Y as bubbling particles (`getParticleTileWorldXZ`, `BUBBLING_DEFAULT_SPAWN_Y`). */
+const WELL_GLOW_POINT_INTENSITY = 2.4;
+const WELL_GLOW_POINT_DISTANCE = 5.5;
+
+const RUNE_BUBBLE_COUNT = 56;
+const RUNE_BUBBLE_SIZE = 0.085;
+const RUNE_BUBBLE_LUMINANCE_BOOST = 3.4;
+const RUNE_GLOW_POINT_INTENSITY = 2.4;
+const RUNE_GLOW_POINT_DISTANCE = 5.5;
+const RUNE_BUBBLE_COLOR_CYCLE = { from: 0xffcc55, to: 0xcc2200, periodSec: 7 } as const;
+
+function MouseGroundTracker({
+  mouseGroundRef,
+  tpsCameraStateRef,
+}: {
+  mouseGroundRef: MutableRefObject<THREE.Vector3 | null>;
+  tpsCameraStateRef: MutableRefObject<TpsCameraState>;
+}) {
   const { camera } = useThree();
   const raycaster = useMemo(() => new THREE.Raycaster(), []);
   const hitVec = useRef(new THREE.Vector3());
+  const centerNdc = useMemo(() => new THREE.Vector2(0, 0), []);
   useFrame((state) => {
-    raycaster.setFromCamera(state.pointer, camera);
+    raycaster.setFromCamera(tpsCameraStateRef.current.active ? centerNdc : state.pointer, camera);
     if (raycaster.ray.intersectPlane(mouseGroundPlane, hitVec.current)) {
       mouseGroundRef.current = hitVec.current.clone();
     } else {
@@ -98,14 +145,26 @@ export type IslandSceneProps = {
   onTileAction?: (actionType: "woodcutting" | "harvesting", tileGx: number, tileGy: number) => void;
   onCancelMiniAction?: () => void;
   isMiniActionActive?: boolean;
+  onRuneVfxToggle?: (tileGx: number, tileGy: number) => void;
   /** When true, vignette is shown (expanded/fullscreen only, not compact/transparent) */
   showVignette?: boolean;
+  /** Sun + ambient/fill/env; in debug mode usually driven by sliders. */
+  islandLighting?: IslandLightingParams;
 };
 
-ALL_MODEL_PATHS.forEach((path) => useGLTF.preload(path));
+ALL_GAME_GLTF_PATHS.forEach((path) => useGLTF.preload(path));
 
 const noopHover = (_id: string | null) => {};
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+function StrongShadowRenderer() {
+  const gl = useThree((s) => s.gl);
+  useLayoutEffect(() => {
+    gl.shadowMap.enabled = true;
+    gl.shadowMap.type = THREE.BasicShadowMap;
+  }, [gl]);
+  return null;
+}
 
 function worldToGrid(worldX: number, worldZ: number): { gx: number; gy: number } {
   return {
@@ -466,14 +525,19 @@ export function IslandScene({
   onTileAction,
   onCancelMiniAction,
   isMiniActionActive = false,
+  onRuneVfxToggle,
   showVignette = false,
+  islandLighting: islandLightingProp = DEFAULT_ISLAND_LIGHTING,
 }: IslandSceneProps) {
   const [hoveredTileId, setHoveredTileId] = useState<string | null>(null);
+  const [hoveredOutlineRef, setHoveredOutlineRef] = useState<THREE.Group | null>(null);
   const [ghostCell, setGhostCell] = useState<{ gx: number; gy: number } | null>(null);
   const [gizmoDragging, setGizmoDragging] = useState(false);
   const [miningManTalking, setMiningManTalking] = useState(false);
   const [magicManTalking, setMagicManTalking] = useState(false);
   const mouseGroundRef = useRef<THREE.Vector3 | null>(null);
+  const tpsCameraStateRef = useRef<TpsCameraState>({ active: false, viewYaw: null });
+  const cameraOccludersRef = useRef<THREE.Object3D[]>([]);
   const spellCastRef = useRef<SpellCastEvent | null>(null);
   const npcPosRef = useRef<{ gx: number; gy: number } | null>(null);
   const magicManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
@@ -488,6 +552,47 @@ export function IslandScene({
     () => island.tiles.some((t) => t.type === "magicTower"),
     [island],
   );
+
+  const magicTowerTile = useMemo(() => {
+    if (!hasMagicTower) return null;
+    const t = island.tiles.find((x) => x.type === "magicTower");
+    return t && t.vfxEnabled === true ? { gx: t.gx, gy: t.gy } : null;
+  }, [island, hasMagicTower]);
+
+  const wellTiles = useMemo(
+    () =>
+      island.tiles
+        .filter((t) => (t.type === "wellTile" || t.type === "well2Tile") && t.vfxEnabled === true)
+        .map((t) => ({ gx: t.gx, gy: t.gy })),
+    [island],
+  );
+
+  const runeTiles = useMemo(
+    () =>
+      island.tiles
+        .filter((t) => t.type === "runeTile" && t.vfxEnabled === true && t.runeVfxLit === true)
+        .map((t) => ({ gx: t.gx, gy: t.gy })),
+    [island],
+  );
+
+  const forgeTiles = useMemo(
+    () =>
+      island.tiles
+        .filter((t) => t.type === "floatingForge" && t.vfxEnabled === true)
+        .map((t) => ({ gx: t.gx, gy: t.gy })),
+    [island],
+  );
+
+  const vfxForgeLightXZ = useMemo(() => {
+    if (forgeTiles.length === 0) return null;
+    let sx = 0;
+    let sz = 0;
+    for (const t of forgeTiles) {
+      sx += t.gx * TILE_UNIT_SIZE + TILE_UNIT_SIZE;
+      sz += t.gy * TILE_UNIT_SIZE + TILE_UNIT_SIZE;
+    }
+    return { x: sx / forgeTiles.length, z: sz / forgeTiles.length };
+  }, [forgeTiles]);
 
   const handleNpcInteract = useCallback((npcId: string) => {
     if (npcId === "miningMan") {
@@ -504,9 +609,11 @@ export function IslandScene({
     onCancelMiniAction,
     isMiniActionActive,
     mouseGroundRef,
+    tpsCameraStateRef,
     spellCastRef,
     onNpcInteract: handleNpcInteract,
     npcPositionsRef: npcPositionsMapRef,
+    onRuneVfxToggle,
   });
 
   useFrame(() => {
@@ -528,6 +635,11 @@ export function IslandScene({
   const nearbyInteract = useMemo(
     () => (isMiniActionActive ? null : findNearbyInteractable(charPose.gx, charPose.gy, tileTypeMap)),
     [charPose.gx, charPose.gy, tileTypeMap, isMiniActionActive],
+  );
+
+  const nearbyRune = useMemo(
+    () => (isMiniActionActive ? null : findNearbyRuneTile(charPose.gx, charPose.gy, island)),
+    [charPose.gx, charPose.gy, island, isMiniActionActive],
   );
 
   const nearbyNpc = useMemo(() => {
@@ -569,48 +681,140 @@ export function IslandScene({
 
   const gridExtent = useMemo(() => getGridExtent(island), [island]);
 
+  const islandLighting = islandLightingProp;
+
+  const sunPosition = useMemo(
+    () =>
+      sunPositionFromAngles(
+        gridExtent.planeCx,
+        0,
+        gridExtent.planeCz,
+        islandLighting.sunAzimuthDeg,
+        islandLighting.sunElevationDeg,
+        islandLighting.sunDistance,
+      ),
+    [
+      gridExtent.planeCx,
+      gridExtent.planeCz,
+      islandLighting.sunAzimuthDeg,
+      islandLighting.sunElevationDeg,
+      islandLighting.sunDistance,
+    ],
+  );
+
+  const worldScene = useThree((s) => s.scene);
+  const sunLightRef = useRef<THREE.DirectionalLight>(null);
+
+  const shadowOrthoExtent = useMemo(() => {
+    const margin = 8;
+    const base = Math.max(gridExtent.planeW, gridExtent.planeH, 14) / 2 + margin;
+    return base * 1.35;
+  }, [gridExtent.planeW, gridExtent.planeH]);
+
+  useLayoutEffect(() => {
+    const sun = sunLightRef.current;
+    if (!sun) return;
+    const tgt = sun.target;
+    if (tgt.parent !== worldScene) {
+      tgt.removeFromParent();
+      worldScene.add(tgt);
+    }
+    tgt.position.set(gridExtent.planeCx, 0, gridExtent.planeCz);
+    tgt.updateMatrixWorld();
+    const cam = sun.shadow.camera;
+    const ext = shadowOrthoExtent;
+    cam.left = -ext;
+    cam.right = ext;
+    cam.top = ext;
+    cam.bottom = -ext;
+    cam.near = 0.15;
+    cam.far = Math.max(ext * 14, 120);
+    cam.updateProjectionMatrix();
+  }, [worldScene, gridExtent.planeCx, gridExtent.planeCz, shadowOrthoExtent]);
+
   return (
     <>
-      <MouseGroundTracker mouseGroundRef={mouseGroundRef} />
+      <StrongShadowRenderer />
+      <Suspense fallback={null}>
+        <GltfEmissiveSanitize />
+        <Environment preset="apartment" environmentIntensity={islandLighting.environmentIntensity} />
+      </Suspense>
+      <MouseGroundTracker mouseGroundRef={mouseGroundRef} tpsCameraStateRef={tpsCameraStateRef} />
       <IslandCamera
         characterPose={charPose}
         followCharacter={characterActive && !debugMode && !editMode}
         orbitEnabled={!gizmoDragging}
+        tpsCameraStateRef={tpsCameraStateRef}
+        cameraOccludersRef={cameraOccludersRef}
+        tpsEnabled={
+          characterActive &&
+          !debugMode &&
+          !editMode &&
+          !buildMode &&
+          !eraseMode &&
+          !cloneState
+        }
       />
 
-      <ambientLight intensity={0.45} />
+      <hemisphereLight
+        args={["#9eb8e8", "#1a1510", islandLighting.hemisphereIntensity]}
+      />
+      <ambientLight intensity={islandLighting.ambientIntensity} />
       <directionalLight
-        position={[8, 12, 8]}
-        intensity={1.0}
+        ref={sunLightRef}
+        position={sunPosition}
+        intensity={islandLighting.sunIntensity}
+        color="#fff1dc"
         castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
+        shadow-bias={-0.00015}
+        shadow-normalBias={0.012}
+        shadow-camera-near={0.15}
+        shadow-camera-far={Math.max(shadowOrthoExtent * 14, 120)}
       />
       <directionalLight
-        position={[-4, 14, 6]}
-        intensity={1.8}
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-bias={-0.0005}
-        shadow-camera-left={-10}
-        shadow-camera-right={10}
-        shadow-camera-top={10}
-        shadow-camera-bottom={-10}
-        shadow-camera-near={0.5}
-        shadow-camera-far={40}
+        position={[-10, 6, -12]}
+        intensity={islandLighting.fillIntensity}
+        color="#b4c6ff"
       />
 
-      {/* Grid hidden */}
-
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[gridExtent.planeCx, -0.03, gridExtent.planeCz]}
-        receiveShadow
-      >
-        <planeGeometry args={[gridExtent.planeW, gridExtent.planeH]} />
-        <shadowMaterial transparent opacity={0.35} />
-      </mesh>
+      {wellTiles.map((w) => {
+        const { x, z } = getParticleTileWorldXZ(w.gx, w.gy, 1);
+        return (
+          <pointLight
+            key={`well-vfx-light-${w.gx}-${w.gy}`}
+            position={[x, BUBBLING_DEFAULT_SPAWN_Y, z]}
+            color={0x88e8ff}
+            intensity={WELL_GLOW_POINT_INTENSITY}
+            distance={WELL_GLOW_POINT_DISTANCE}
+            decay={2}
+          />
+        );
+      })}
+      {runeTiles.map((r) => {
+        const { x, z } = getParticleTileWorldXZ(r.gx, r.gy, 1);
+        return (
+          <pointLight
+            key={`rune-vfx-light-${r.gx}-${r.gy}`}
+            position={[x, BUBBLING_DEFAULT_SPAWN_Y, z]}
+            color={0xff5533}
+            intensity={RUNE_GLOW_POINT_INTENSITY}
+            distance={RUNE_GLOW_POINT_DISTANCE}
+            decay={2}
+          />
+        );
+      })}
+      {vfxForgeLightXZ && (
+        <pointLight
+          position={[vfxForgeLightXZ.x, 1.45, vfxForgeLightXZ.z]}
+          color={0xffaa66}
+          intensity={0.9}
+          distance={7}
+          decay={2}
+        />
+      )}
+      {/* Grid hidden — no shadow-catcher plane (shadows only on tiles / props) */}
 
       {!debugMode && !editMode && (
         <GroundInteraction
@@ -679,8 +883,49 @@ export function IslandScene({
             ))}
             <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
             <SkullyCompanion pose={charPose} />
-            <ChopParticles gx={charPose.gx} gy={charPose.gy} isChopping={charPose.animState === "chop"} />
+            <ChopParticles
+              gx={charPose.gx}
+              gy={charPose.gy}
+              isChopping={charPose.animState === "chop"}
+            />
             <SpellParticles spellCastRef={spellCastRef} />
+            {hasMagicTower && magicTowerTile && (
+              <MagicTowerParticles magicTowerTile={magicTowerTile} />
+            )}
+            {wellTiles.length > 0 && (
+              <WorldParticles
+                positions={wellTiles}
+                style="bubbling"
+                color={WELL_BUBBLE_COLOR}
+                count={WELL_BUBBLE_COUNT}
+                size={WELL_BUBBLE_SIZE}
+                luminanceBoost={WELL_BUBBLE_LUMINANCE_BOOST}
+              />
+            )}
+            {runeTiles.length > 0 && (
+              <WorldParticles
+                positions={runeTiles}
+                style="bubbling"
+                color={RUNE_BUBBLE_COLOR_CYCLE.from}
+                count={RUNE_BUBBLE_COUNT}
+                size={RUNE_BUBBLE_SIZE}
+                luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
+                bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+              />
+            )}
+            {forgeTiles.length > 0 && (
+              <WorldParticles
+                positions={forgeTiles}
+                style="smoke"
+                color={0x999999}
+                count={14}
+                size={0.04}
+                tileSize={2}
+                offsetY={1.6}
+                offsetX={-0.80}
+                offsetZ={-0.35}
+              />
+            )}
             {hasMiningTile && (
               <MiningManNPC
                 island={island}
@@ -707,11 +952,19 @@ export function IslandScene({
                 <DebugTileWrapper
                   key={tile.id}
                   tile={tile}
-                selected={tile.id === editSelectedTileId}
-                gizmoMode={editGizmoMode}
-                editingDecoration={tile.id === editSelectedTileId && editingDecoration}
-                buildMode={buildMode || cloneState !== null}
-                onSelect={() => onEditTileSelect?.(tile.id)}
+                  selected={tile.id === editSelectedTileId}
+                  gizmoMode={editGizmoMode}
+                  editingDecoration={tile.id === editSelectedTileId && editingDecoration}
+                  buildMode={buildMode || cloneState !== null}
+                  onSelect={() => onEditTileSelect?.(tile.id)}
+                  onHoverEnter={(ref) => {
+                    setHoveredTileIdSmooth(tile.id);
+                    setHoveredOutlineRef(ref ?? null);
+                  }}
+                  onHoverLeave={() => {
+                    setHoveredTileIdSmooth(null);
+                    setHoveredOutlineRef(null);
+                  }}
                   onChange={(pos3d, scale3d, rotY) =>
                     onEditTileChange?.(tile.id, pos3d, scale3d, rotY)
                   }
@@ -724,8 +977,49 @@ export function IslandScene({
               ))}
               <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
               <SkullyCompanion pose={charPose} />
-              <ChopParticles gx={charPose.gx} gy={charPose.gy} isChopping={charPose.animState === "chop"} />
+              <ChopParticles
+                gx={charPose.gx}
+                gy={charPose.gy}
+                isChopping={charPose.animState === "chop"}
+              />
               <SpellParticles spellCastRef={spellCastRef} />
+              {hasMagicTower && magicTowerTile && (
+                <MagicTowerParticles magicTowerTile={magicTowerTile} />
+              )}
+              {wellTiles.length > 0 && (
+                <WorldParticles
+                  positions={wellTiles}
+                  style="bubbling"
+                  color={WELL_BUBBLE_COLOR}
+                  count={WELL_BUBBLE_COUNT}
+                  size={WELL_BUBBLE_SIZE}
+                  luminanceBoost={WELL_BUBBLE_LUMINANCE_BOOST}
+                />
+              )}
+              {runeTiles.length > 0 && (
+                <WorldParticles
+                  positions={runeTiles}
+                  style="bubbling"
+                  color={RUNE_BUBBLE_COLOR_CYCLE.from}
+                  count={RUNE_BUBBLE_COUNT}
+                  size={RUNE_BUBBLE_SIZE}
+                  luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
+                  bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+                />
+              )}
+              {forgeTiles.length > 0 && (
+                <WorldParticles
+                  positions={forgeTiles}
+                  style="smoke"
+                  color={0x999999}
+                  count={14}
+                  size={0.04}
+                  tileSize={2}
+                  offsetY={1.6}
+                  offsetX={-0.80}
+                  offsetZ={-0.35}
+                />
+              )}
               {hasMiningTile && (
                 <MiningManNPC
                   island={island}
@@ -759,12 +1053,54 @@ export function IslandScene({
                 hovered={tile.id === hoveredTileId}
                 onHoverEnter={() => setHoveredTileIdSmooth(tile.id)}
                 onHoverLeave={() => setHoveredTileIdSmooth(null)}
+                cameraOccludersRef={cameraOccludersRef}
               />
             ))}
             <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
             <SkullyCompanion pose={charPose} />
-            <ChopParticles gx={charPose.gx} gy={charPose.gy} isChopping={charPose.animState === "chop"} />
+            <ChopParticles
+              gx={charPose.gx}
+              gy={charPose.gy}
+              isChopping={charPose.animState === "chop"}
+            />
             <SpellParticles spellCastRef={spellCastRef} />
+            {hasMagicTower && magicTowerTile && (
+              <MagicTowerParticles magicTowerTile={magicTowerTile} />
+            )}
+            {wellTiles.length > 0 && (
+              <WorldParticles
+                positions={wellTiles}
+                style="bubbling"
+                color={WELL_BUBBLE_COLOR}
+                count={WELL_BUBBLE_COUNT}
+                size={WELL_BUBBLE_SIZE}
+                luminanceBoost={WELL_BUBBLE_LUMINANCE_BOOST}
+              />
+            )}
+            {runeTiles.length > 0 && (
+              <WorldParticles
+                positions={runeTiles}
+                style="bubbling"
+                color={RUNE_BUBBLE_COLOR_CYCLE.from}
+                count={RUNE_BUBBLE_COUNT}
+                size={RUNE_BUBBLE_SIZE}
+                luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
+                bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+              />
+            )}
+            {forgeTiles.length > 0 && (
+              <WorldParticles
+                positions={forgeTiles}
+                style="smoke"
+                color={0x999999}
+                count={14}
+                size={0.04}
+                tileSize={2}
+                offsetY={1.6}
+                offsetX={-0.80}
+                offsetZ={-0.35}
+              />
+            )}
             {hasMiningTile && (
               <MiningManNPC
                 island={island}
@@ -838,7 +1174,17 @@ export function IslandScene({
           <InteractPrompt tileGx={nearbyInteract.tileGx} tileGy={nearbyInteract.tileGy} />
         )}
 
-        {nearbyNpc && !nearbyInteract && !debugMode && !editMode && !miningManTalking && !magicManTalking && (
+        {nearbyRune && !nearbyInteract && !debugMode && !editMode && (
+          <InteractPrompt tileGx={nearbyRune.gx} tileGy={nearbyRune.gy} />
+        )}
+
+        {nearbyNpc &&
+          !nearbyInteract &&
+          !nearbyRune &&
+          !debugMode &&
+          !editMode &&
+          !miningManTalking &&
+          !magicManTalking && (
           <InteractPrompt tileGx={nearbyNpc.gx} tileGy={nearbyNpc.gy} />
         )}
 
@@ -863,8 +1209,16 @@ export function IslandScene({
       </Suspense>
 
       <EffectComposer>
-        <Bloom intensity={0.35} luminanceThreshold={0.9} luminanceSmoothing={0.025} />
+        <Bloom intensity={0.55} luminanceThreshold={0.72} luminanceSmoothing={0.08} mipmapBlur />
         <Vignette offset={0.3} darkness={0.9} opacity={showVignette ? 1 : 0} />
+        <Outline
+          selection={hoveredOutlineRef ? [hoveredOutlineRef] : []}
+          visibleEdgeColor={0x88ccff}
+          hiddenEdgeColor={0x224466}
+          edgeStrength={4}
+          blur={false}
+          xRay={false}
+        />
         <FXAA />
       </EffectComposer>
     </>

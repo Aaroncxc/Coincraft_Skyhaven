@@ -25,6 +25,9 @@ export const TILE_3D_MODELS: Record<string, string> = {
   wellTile: "/ingame_assets/3d/Ancient_Stone_Well_Tile.glb",
   well2Tile: "/ingame_assets/3d/Well2_Tile.glb",
   halfGrownCropTile: "/ingame_assets/3d/Half_grown3D_Crop_Tile.glb",
+  cottaTile: "/ingame_assets/3d/Cotta_Tile.glb",
+  ancientTempleTile: "/ingame_assets/3d/ancientTemple_Tile.glb",
+  runeTile: "/ingame_assets/3d/Rune_tile.glb",
 };
 
 const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
@@ -85,6 +88,9 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   wellTile: "wellTile",
   well2Tile: "well2Tile",
   halfGrownCropTile: "halfGrownCropTile",
+  cottaTile: "cottaTile",
+  ancientTempleTile: "ancientTempleTile",
+  runeTile: "runeTile",
 };
 
 export function getModelKeyForAsset(assetKey: AssetKey): string {
@@ -100,6 +106,9 @@ export function getModelPathForAsset(assetKey: AssetKey): string {
 }
 
 export const ALL_MODEL_PATHS = Object.values(TILE_3D_MODELS);
+
+/** Skully companion (not in TILE_3D_MODELS). */
+export const SKULLY_MODEL_PATH = "/ingame_assets/3d/Skully_Companion.glb";
 
 export const MINING_MAN_MODELS = {
   base: "/ingame_assets/3d/Mining_Man/Meshy_AI_Character_output.glb",
@@ -127,3 +136,14 @@ export const CHAR_3D_MODELS = {
   spell: "/ingame_assets/3d/Main_Char/Meshy_AI_Animation_Charged_Spell_Cast_2_withSkin.glb",
   roll: "/ingame_assets/3d/Main_Char/Meshy_AI_Animation_Roll_Dodge_1_withSkin.glb",
 };
+
+/** Every .glb used in the main island Canvas (tiles, player, NPCs, Skully). */
+export const ALL_GAME_GLTF_PATHS = Array.from(
+  new Set([
+    ...ALL_MODEL_PATHS,
+    ...Object.values(MINING_MAN_MODELS),
+    ...Object.values(MAGIC_MAN_MODELS),
+    ...Object.values(CHAR_3D_MODELS),
+    SKULLY_MODEL_PATH,
+  ]),
+);

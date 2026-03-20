@@ -3,6 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import * as THREE from "three";
 import type { TileDef } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 
 export type DebugTileWrapperProps = {
   tile: TileDef;
@@ -12,6 +14,8 @@ export type DebugTileWrapperProps = {
   editingDecoration?: boolean;
   buildMode?: boolean;
   onSelect: () => void;
+  onHoverEnter?: (ref?: THREE.Group) => void;
+  onHoverLeave?: () => void;
   onChange: (pos3d: { x: number; y: number; z: number }, scale3d: { x: number; y: number; z: number }, rotY: number) => void;
   onDecoChange?: (decoPos3d: { x: number; y: number; z: number }, decoScale3d: { x: number; y: number; z: number }, decoRotY: number) => void;
   onDraggingChange?: (dragging: boolean) => void;
@@ -28,6 +32,8 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
   magicTower: { w: 2, h: 2 },
+  cottaTile: { w: 2, h: 2 },
+  ancientTempleTile: { w: 2, h: 2 },
 };
 
 export function DebugTileWrapper({
@@ -41,6 +47,8 @@ export function DebugTileWrapper({
   uniformScale = false,
   editingDecoration = false,
   buildMode = false,
+  onHoverEnter,
+  onHoverLeave,
 }: DebugTileWrapperProps) {
   const modelKey = getModelKeyForAsset(tile.type);
   const modelPath = getModelPathForAsset(tile.type);
@@ -91,9 +99,12 @@ export function DebugTileWrapper({
     cloned.traverse((child) => {
       if (child instanceof THREE.Mesh && child.material) {
         child.raycast = () => {};
+        child.castShadow = true;
+        child.receiveShadow = true;
         child.material = child.material.clone();
+        stripEmbeddedEmissive(child.material);
+        scalePbrRoughness(child.material);
         if (isTree && (child.material instanceof THREE.MeshStandardMaterial || child.material instanceof THREE.MeshPhysicalMaterial)) {
-          child.material.roughness = 0.98;
           child.material.metalness = 0;
         }
       }
@@ -208,6 +219,8 @@ export function DebugTileWrapper({
                   onSelect();
                 }
           }
+          onPointerOver={onHoverEnter ? (e) => { e.stopPropagation(); onHoverEnter(objRef.current); } : undefined}
+          onPointerOut={onHoverLeave ? (e) => { e.stopPropagation(); onHoverLeave(); } : undefined}
         >
           <boxGeometry args={[hitW, hitH, hitD]} />
           <meshBasicMaterial visible={false} />
@@ -303,7 +316,11 @@ function EditableDecoration({
         child.castShadow = true;
         child.receiveShadow = true;
         child.frustumCulled = false;
-        if (child.material) child.material = child.material.clone();
+        if (child.material) {
+          child.material = child.material.clone();
+          stripEmbeddedEmissive(child.material);
+          scalePbrRoughness(child.material);
+        }
       }
     });
   }, [cloned]);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
+import * as THREE from "three";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SKYHAVEN_SPRITE_MANIFEST } from "./game/assets";
@@ -35,6 +36,7 @@ import { advancePomodoroPhase, formatDurationHms, getRemainingMs, hydrateSession
 import { useGameClock } from "./game/useGameClock";
 import type { TileEditAnchor } from "./game/useSkyhavenLoop";
 import { IslandScene } from "./game/three/IslandScene";
+import { DEFAULT_ISLAND_LIGHTING, type IslandLightingParams } from "./game/three/islandLighting";
 import type {
   ActionType,
   AssetKey,
@@ -62,6 +64,7 @@ import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
 import { PlannerOverlay } from "./ui/planner/PlannerOverlay";
+import { isSkyhavenWidgetRuntime } from "./runtime/isWidgetRuntime";
 import {
   hydrateEquipment,
   moveEquipmentItem,
@@ -124,9 +127,9 @@ export default function App() {
   const [selectedIslandId, setSelectedIslandId] = useState<IslandId>("mining");
   const [musicEnabled, setMusicEnabled] = useState(false);
   const [musicTrackIndex, setMusicTrackIndex] = useState(0);
-  const [masterVolume, setMasterVolume] = useState(72);
-  const [sfxVolume, setSfxVolume] = useState(78);
-  const [menuSfxVolume, setMenuSfxVolume] = useState(74);
+  const [masterVolume, setMasterVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 72 : 0));
+  const [sfxVolume, setSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 78 : 0));
+  const [menuSfxVolume, setMenuSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 74 : 0));
   useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, sfxVolume);
   const [selectedDuration, setSelectedDuration] = useState<FocusDuration>(30);
   const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
@@ -145,6 +148,9 @@ export default function App() {
   const [noResourcesHint, setNoResourcesHint] = useState(false);
   const noResourcesTimerRef = useRef<number | null>(null);
   const [debugMode, setDebugMode] = useState(false);
+  const [debugIslandLighting, setDebugIslandLighting] = useState<IslandLightingParams>(() => ({
+    ...DEFAULT_ISLAND_LIGHTING,
+  }));
   const [debugGizmoMode, setDebugGizmoMode] = useState<"translate" | "scale">("translate");
   const [debugSelectedTileId, setDebugSelectedTileId] = useState<string | null>(null);
   const [debugIsland, setDebugIsland] = useState<IslandMap | null>(null);
@@ -541,6 +547,9 @@ export default function App() {
         wellTile: "wellTile",
         well2Tile: "well2Tile",
         halfGrownCropTile: "halfGrownCropTile",
+        cottaTile: "cottaTile",
+        ancientTempleTile: "ancientTempleTile",
+        runeTile: "runeTile",
       };
       const assetKey = typeMap[modelKey];
       if (!assetKey) return;
@@ -666,6 +675,37 @@ export default function App() {
       persistCustomIsland(nextIsland);
     }
   }, [editSelectedTileId, pushBuildUndoSnapshot]);
+
+  const handleEditToggleVfx = useCallback(() => {
+    if (!editSelectedTileId) return;
+    const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
+    if (tile) {
+      pushBuildUndoSnapshot();
+      const nextVfxEnabled = !tile.vfxEnabled;
+      const updates: { vfxEnabled: boolean; runeVfxLit?: boolean } = { vfxEnabled: nextVfxEnabled };
+      if (tile.type === "runeTile") {
+        updates.runeVfxLit = false;
+      }
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, updates);
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    }
+  }, [editSelectedTileId, pushBuildUndoSnapshot]);
+
+  const handleRuneVfxToggle = useCallback(
+    (gx: number, gy: number) => {
+      if (selectedIslandId !== "custom") return;
+      const src = customIslandRef.current;
+      const tile = src.tiles.find((t) => t.gx === gx && t.gy === gy && t.type === "runeTile");
+      if (!tile || tile.vfxEnabled !== true) return;
+      const nextIsland = updateTile(src, gx, gy, { runeVfxLit: !tile.runeVfxLit });
+      customIslandRef.current = nextIsland;
+      setCustomIsland(nextIsland);
+      persistCustomIsland(nextIsland);
+    },
+    [selectedIslandId],
+  );
 
   const handleToggleLineClone = useCallback(() => {
     if (!activeEditTile || !canDirectionalCloneTile(activeEditTile)) {
@@ -866,25 +906,41 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") {
-        return;
-      }
       let handled = false;
-      if (cloneState) {
-        cancelDirectionalClone();
-        handled = true;
+
+      if (event.key === "Escape") {
+        if (cloneState) {
+          cancelDirectionalClone();
+          handled = true;
+        }
+        if (selectedTileForEditRef.current) {
+          selectedTileForEditRef.current = null;
+          setSelectedTileForEdit(null);
+          handled = true;
+        }
+        if (session?.active) {
+          setSession(null);
+          persistSession(null);
+          setSelectedSection("Focus Actions");
+          handled = true;
+        }
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        const target = event.target as HTMLElement | null;
+        const isInputFocused =
+          target?.tagName === "INPUT" ||
+          target?.tagName === "TEXTAREA" ||
+          (target?.isContentEditable ?? false);
+        if (!isInputFocused) {
+          if (debugMode && debugSelectedTileId) {
+            handleDebugDeleteTile();
+            handled = true;
+          } else if (!debugMode && editSelectedTileId && isCustomEditing) {
+            handleEditDeleteTile();
+            handled = true;
+          }
+        }
       }
-      if (selectedTileForEditRef.current) {
-        selectedTileForEditRef.current = null;
-        setSelectedTileForEdit(null);
-        handled = true;
-      }
-      if (session?.active) {
-        setSession(null);
-        persistSession(null);
-        setSelectedSection("Focus Actions");
-        handled = true;
-      }
+
       if (handled) {
         event.preventDefault();
       }
@@ -894,7 +950,17 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [cancelDirectionalClone, cloneState, session?.active]);
+  }, [
+    cancelDirectionalClone,
+    cloneState,
+    debugMode,
+    debugSelectedTileId,
+    editSelectedTileId,
+    handleDebugDeleteTile,
+    handleEditDeleteTile,
+    isCustomEditing,
+    session?.active,
+  ]);
 
   useEffect(() => {
     if (windowMode !== "compact" && isMinimalMode) {
@@ -1176,11 +1242,17 @@ export default function App() {
           style={{ width: "100%", height: "100%" }}
         >
           <Canvas
+            shadows
             gl={{ antialias: true, alpha: true }}
+            onCreated={(state) => {
+              state.gl.shadowMap.enabled = true;
+              state.gl.shadowMap.type = THREE.BasicShadowMap;
+            }}
             style={{ width: "100%", height: "100%", background: "transparent" }}
           >
             <IslandScene
               island={debugMode && debugIsland ? debugIsland : island}
+              islandLighting={debugMode ? debugIslandLighting : DEFAULT_ISLAND_LIGHTING}
               selectedIslandId={selectedIslandId}
               buildMode={selectedIslandId === "custom" && selectedTileType !== null}
               eraseMode={selectedIslandId === "custom" && eraseMode}
@@ -1220,6 +1292,7 @@ export default function App() {
               onTileAction={handleTileAction}
               onCancelMiniAction={handleCancelMiniAction}
               isMiniActionActive={session?.actionType === "woodcutting" || session?.actionType === "harvesting"}
+              onRuneVfxToggle={handleRuneVfxToggle}
               showVignette={(windowMode === "expanded" || isFullscreen) && !isMinimalMode}
             />
           </Canvas>
@@ -1232,6 +1305,7 @@ export default function App() {
           onCopy={debugMode ? handleCopyTransform : handleToggleLineClone}
           onDelete={debugMode ? handleDebugDeleteTile : handleEditDeleteTile}
           onToggleBlocked={debugMode ? handleDebugToggleBlocked : handleEditToggleBlocked}
+          onToggleVfx={debugMode ? undefined : handleEditToggleVfx}
           onUndo={debugMode ? handleDebugUndo : handleBuildUndo}
           canUndo={debugMode ? debugCanUndo : buildCanUndo}
           uniformScale={debugMode ? debugUniformScale : editUniformScale}
@@ -1268,6 +1342,8 @@ export default function App() {
             onPasteTransform={handlePasteTransform}
             hasClipboard={debugClipboard !== null}
             onToggleBlocked={handleDebugToggleBlocked}
+            islandLighting={debugIslandLighting}
+            onIslandLightingChange={setDebugIslandLighting}
           />
         )}
 

@@ -30,6 +30,9 @@ const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   wellTile: "/ingame_assets/3d/Well_Tile_Round.png",
   well2Tile: "/ingame_assets/3d/Well_Tile_Square.png",
   halfGrownCropTile: "/ingame_assets/3d/Half_grown_Crop_Tile.png",
+  cottaTile: "/ingame_assets/3d/Cottn_Tile.png",
+  ancientTempleTile: "/ingame_assets/3d/Temple_Tile.png",
+  runeTile: "/ingame_assets/3d/Rune_Tile.png",
 };
 
 type BaukastenPanelProps = {
@@ -111,6 +114,9 @@ export const BAUKASTEN_TILES: Array<{ type: AssetKey; label: string }> = [
   { type: "wellTile", label: "Well" },
   { type: "well2Tile", label: "Well (Square)" },
   { type: "halfGrownCropTile", label: "Half-grown Crop" },
+  { type: "cottaTile", label: "Cotta" },
+  { type: "ancientTempleTile", label: "Ancient Temple" },
+  { type: "runeTile", label: "Rune" },
 ];
 
 const RESOURCE_LABELS_FULL: Record<string, string> = {

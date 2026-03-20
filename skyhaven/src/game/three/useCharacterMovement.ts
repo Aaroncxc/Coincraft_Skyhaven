@@ -116,6 +116,32 @@ export function findNearbyInteractable(
   return null;
 }
 
+/** Adjacent rune tile with toolbox VFX armed (vfxEnabled); E toggles runeVfxLit in-game. */
+export function findNearbyRuneTile(
+  gx: number,
+  gy: number,
+  island: IslandMap,
+): { gx: number; gy: number } | null {
+  const cx = Math.round(gx);
+  const cy = Math.round(gy);
+  const offsets = [
+    [0, 0],
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  for (const [dx, dy] of offsets) {
+    const tx = cx + dx;
+    const ty = cy + dy;
+    const t = island.tiles.find((x) => x.gx === tx && x.gy === ty && x.type === "runeTile");
+    if (t?.vfxEnabled === true) {
+      return { gx: t.gx, gy: t.gy };
+    }
+  }
+  return null;
+}
+
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
@@ -140,16 +166,41 @@ export type SpellCastEvent = {
   dirZ: number;
 };
 
+export type TpsCameraState = {
+  active: boolean;
+  viewYaw: number | null;
+};
+
+function getBasisFromYaw(yaw: number): {
+  forwardX: number;
+  forwardZ: number;
+  leftX: number;
+  leftZ: number;
+} {
+  const forwardX = Math.sin(yaw);
+  const forwardZ = Math.cos(yaw);
+  return {
+    forwardX,
+    forwardZ,
+    leftX: -forwardZ,
+    leftZ: forwardX,
+  };
+}
+
 export type CharacterMovementOptions = {
   onTileAction?: (actionType: "woodcutting" | "harvesting", tileGx: number, tileGy: number) => void;
   onCancelMiniAction?: () => void;
   isMiniActionActive?: boolean;
   /** Ref to mouse ground hit (world x,z). When set, W/S/A/D move relative to look direction. */
   mouseGroundRef?: MutableRefObject<THREE.Vector3 | null>;
+  /** Shared TPS camera state. When active, movement/facing follow the camera view yaw. */
+  tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
   /** Ref to receive spell cast events (pos + direction) when C is pressed */
   spellCastRef?: MutableRefObject<SpellCastEvent | null>;
   /** Called when E is pressed near an NPC */
   onNpcInteract?: (npcId: string) => void;
+  /** E near a rune tile (vfx armed): toggle in-game glow */
+  onRuneVfxToggle?: (tileGx: number, tileGy: number) => void;
   /** Ref containing NPC positions keyed by id, updated by IslandScene */
   npcPositionsRef?: MutableRefObject<Map<string, { gx: number; gy: number }>>;
 };
@@ -184,6 +235,8 @@ export function useCharacterMovement(
   tileListRef.current = tileList;
   const tileTypeMapRef = useRef(tileTypeMap);
   tileTypeMapRef.current = tileTypeMap;
+  const islandRef = useRef(island);
+  islandRef.current = island;
   const onTileActionRef = useRef(options.onTileAction);
   onTileActionRef.current = options.onTileAction;
   const onCancelMiniActionRef = useRef(options.onCancelMiniAction);
@@ -193,6 +246,9 @@ export function useCharacterMovement(
   const mouseGroundRef = options.mouseGroundRef;
   const mouseGroundRefRef = useRef(mouseGroundRef);
   mouseGroundRefRef.current = mouseGroundRef;
+  const tpsCameraStateRef = options.tpsCameraStateRef;
+  const tpsCameraStateRefRef = useRef(tpsCameraStateRef);
+  tpsCameraStateRefRef.current = tpsCameraStateRef;
   const spellCastRef = options.spellCastRef;
   const spellCastRefRef = useRef(spellCastRef);
   spellCastRefRef.current = spellCastRef;
@@ -201,6 +257,8 @@ export function useCharacterMovement(
   const npcPositionsRef = options.npcPositionsRef;
   const npcPositionsRefRef = useRef(npcPositionsRef);
   npcPositionsRefRef.current = npcPositionsRef;
+  const onRuneVfxToggleRef = useRef(options.onRuneVfxToggle);
+  onRuneVfxToggleRef.current = options.onRuneVfxToggle;
   const spellTimerRef = useRef<number>(0);
   const [renderPose, setRenderPose] = useState<CharacterPose3D>(poseRef.current);
   const prevPoseRef = useRef<CharacterPose3D>(poseRef.current);
@@ -213,11 +271,18 @@ export function useCharacterMovement(
   const rollStartRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
   const rollTargetRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
   const lastMoveDir = useRef<{ dx: number; dy: number }>({ dx: 1, dy: 0 });
+  const wasTpsActiveRef = useRef(false);
 
   const lastManualInputRef = useRef<number>(performance.now());
   const patrolPhaseRef = useRef<PatrolPhase>("inactive");
   const patrolTargetRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
   const patrolPauseTimerRef = useRef<number>(0);
+
+  const getActiveTpsViewYaw = (): number | null => {
+    const state = tpsCameraStateRefRef.current?.current;
+    if (!state?.active || state.viewYaw == null) return null;
+    return state.viewYaw;
+  };
 
   const prevSpawnRef = useRef(`${spawn.gx},${spawn.gy}`);
   useEffect(() => {
@@ -247,10 +312,17 @@ export function useCharacterMovement(
           const pose = poseRef.current;
           const keys = keysRef.current;
           let dx = 0, dy = 0;
+          const tpsViewYaw = getActiveTpsViewYaw();
           const mousePos = mouseGroundRefRef.current?.current;
           const charX = pose.gx * TILE_UNIT_SIZE;
           const charZ = pose.gy * TILE_UNIT_SIZE;
-          if (mousePos && (keys.w || keys.s || keys.a || keys.d) && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
+          if (tpsViewYaw != null && (keys.w || keys.s || keys.a || keys.d)) {
+            const basis = getBasisFromYaw(tpsViewYaw);
+            if (keys.w) { dx += basis.forwardX; dy += basis.forwardZ; }
+            if (keys.s) { dx -= basis.forwardX; dy -= basis.forwardZ; }
+            if (keys.a) { dx -= basis.leftX; dy -= basis.leftZ; }
+            if (keys.d) { dx += basis.leftX; dy += basis.leftZ; }
+          } else if (mousePos && (keys.w || keys.s || keys.a || keys.d) && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
             const mx = mousePos.x - charX;
             const mz = mousePos.z - charZ;
             const len = Math.hypot(mx, mz);
@@ -287,7 +359,9 @@ export function useCharacterMovement(
             const dirY = dy / len;
 
             let jumpDist: number;
-            if (mousePos && (keys.w || keys.s || keys.a || keys.d)) {
+            if (tpsViewYaw != null) {
+              jumpDist = JUMP_DISTANCE_KEYBOARD;
+            } else if (mousePos && (keys.w || keys.s || keys.a || keys.d)) {
               const mouseDist = Math.hypot(mousePos.x - charX, mousePos.z - charZ);
               jumpDist = clamp(mouseDist * 0.55, JUMP_DISTANCE_MIN, JUMP_DISTANCE_MAX);
             } else {
@@ -332,9 +406,14 @@ export function useCharacterMovement(
           const pose = poseRef.current;
           const charX = pose.gx * TILE_UNIT_SIZE;
           const charZ = pose.gy * TILE_UNIT_SIZE;
+          const tpsViewYaw = getActiveTpsViewYaw();
           const mousePos = mouseGroundRefRef.current?.current;
           let dirX: number, dirZ: number;
-          if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
+          if (tpsViewYaw != null) {
+            const basis = getBasisFromYaw(tpsViewYaw);
+            dirX = basis.forwardX;
+            dirZ = basis.forwardZ;
+          } else if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
             const dx = mousePos.x - charX;
             const dz = mousePos.z - charZ;
             const len = Math.hypot(dx, dz);
@@ -378,9 +457,14 @@ export function useCharacterMovement(
           const pose = poseRef.current;
           const charX = pose.gx * TILE_UNIT_SIZE;
           const charZ = pose.gy * TILE_UNIT_SIZE;
+          const tpsViewYaw = getActiveTpsViewYaw();
           const mousePos = mouseGroundRefRef.current?.current;
           let dirX: number, dirZ: number;
-          if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
+          if (tpsViewYaw != null) {
+            const basis = getBasisFromYaw(tpsViewYaw);
+            dirX = basis.forwardX;
+            dirZ = basis.forwardZ;
+          } else if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
             const dx = mousePos.x - charX;
             const dz = mousePos.z - charZ;
             const len = Math.hypot(dx, dz);
@@ -419,6 +503,14 @@ export function useCharacterMovement(
           autoChopCooldownRef.current = 2 + Math.random() * 2;
           onTileActionRef.current(result.action, result.tileGx, result.tileGy);
         } else {
+          const runeHit = findNearbyRuneTile(pose.gx, pose.gy, islandRef.current);
+          if (runeHit && onRuneVfxToggleRef.current) {
+            const dir: "left" | "right" = runeHit.gx < Math.round(pose.gx) ? "left" : "right";
+            poseRef.current = { ...pose, direction: dir, isManualMove: false };
+            setRenderPose({ ...poseRef.current });
+            onRuneVfxToggleRef.current(runeHit.gx, runeHit.gy);
+            return;
+          }
           const npcMap = npcPositionsRefRef.current?.current;
           if (npcMap && onNpcInteractRef.current) {
             for (const [id, npcPos] of npcMap) {
@@ -485,6 +577,8 @@ export function useCharacterMovement(
     const dt = Math.min(0.05, delta);
     const keys = keysRef.current;
     const hasInput = keys.w || keys.a || keys.s || keys.d;
+    const tpsViewYaw = getActiveTpsViewYaw();
+    const tpsActive = tpsViewYaw != null;
     if (chopTimerRef.current > 0) chopTimerRef.current -= dt;
     if (spellTimerRef.current > 0) spellTimerRef.current -= dt;
 
@@ -506,6 +600,13 @@ export function useCharacterMovement(
         poseRef.current = { ...pose, animState: "chop", isManualMove: false };
       } else {
         poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+      }
+      if (tpsViewYaw != null) {
+        poseRef.current = { ...poseRef.current, facingAngle: tpsViewYaw };
+        wasTpsActiveRef.current = true;
+      } else if (wasTpsActiveRef.current) {
+        poseRef.current = { ...poseRef.current, facingAngle: undefined };
+        wasTpsActiveRef.current = false;
       }
       prevPoseRef.current = { ...poseRef.current };
       setRenderPose({ ...poseRef.current });
@@ -562,7 +663,13 @@ export function useCharacterMovement(
       const charX = pose.gx * TILE_UNIT_SIZE;
       const charZ = pose.gy * TILE_UNIT_SIZE;
 
-      if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
+      if (tpsViewYaw != null) {
+        const basis = getBasisFromYaw(tpsViewYaw);
+        if (keys.w) { mgx += basis.forwardX; mgy += basis.forwardZ; }
+        if (keys.s) { mgx -= basis.forwardX; mgy -= basis.forwardZ; }
+        if (keys.a) { mgx -= basis.leftX; mgy -= basis.leftZ; }
+        if (keys.d) { mgx += basis.leftX; mgy += basis.leftZ; }
+      } else if (mousePos && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
         const dx = mousePos.x - charX;
         const dz = mousePos.z - charZ;
         const len = Math.hypot(dx, dz);
@@ -628,7 +735,14 @@ export function useCharacterMovement(
         let dirStr: "left" | "right" = pose.direction;
         if (mgx > 0.01) dirStr = "right";
         else if (mgx < -0.01) dirStr = "left";
-        poseRef.current = { gx: nx, gy: ny, direction: dirStr, animState: isRunning ? "run" : "walk", isManualMove: true };
+        poseRef.current = {
+          gx: nx,
+          gy: ny,
+          direction: dirStr,
+          animState: isRunning ? "run" : "walk",
+          isManualMove: true,
+          facingAngle: tpsActive ? tpsViewYaw ?? undefined : undefined,
+        };
       }
     } else {
       const idleSeconds = (performance.now() - lastManualInputRef.current) / 1000;
@@ -681,14 +795,29 @@ export function useCharacterMovement(
       }
     }
 
+    if (tpsViewYaw != null) {
+      poseRef.current = { ...poseRef.current, facingAngle: tpsViewYaw };
+      wasTpsActiveRef.current = true;
+    } else if (wasTpsActiveRef.current) {
+      poseRef.current = { ...poseRef.current, facingAngle: undefined };
+      wasTpsActiveRef.current = false;
+    }
+
     const next = { ...poseRef.current };
     const prev = prevPoseRef.current;
+    const facingChanged =
+      (next.facingAngle == null && prev.facingAngle != null) ||
+      (next.facingAngle != null && prev.facingAngle == null) ||
+      (next.facingAngle != null &&
+        prev.facingAngle != null &&
+        Math.abs(next.facingAngle - prev.facingAngle) > 0.001);
     if (
       next.gx !== prev.gx ||
       next.gy !== prev.gy ||
       next.direction !== prev.direction ||
       next.animState !== prev.animState ||
-      next.isManualMove !== prev.isManualMove
+      next.isManualMove !== prev.isManualMove ||
+      facingChanged
     ) {
       prevPoseRef.current = next;
       setRenderPose(next);

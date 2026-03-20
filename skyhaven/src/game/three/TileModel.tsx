@@ -1,11 +1,15 @@
 import { useGLTF } from "@react-three/drei";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { TileDef } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { scalePbrRoughness } from "./islandGltfMeshDefaults";
+import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 
 const DECORATION_SIZE_FACTOR = 0.45;
+const CAMERA_OCCLUDER_PAD = 0.12;
+const CAMERA_OCCLUSION_LAYER = 2;
 
 type TileModelProps = {
   tile: TileDef;
@@ -13,6 +17,7 @@ type TileModelProps = {
   showBlocked?: boolean;
   onHoverEnter?: () => void;
   onHoverLeave?: () => void;
+  cameraOccludersRef?: MutableRefObject<THREE.Object3D[]>;
 };
 
 const SCALE_OVERRIDES: Record<string, number> = {
@@ -26,16 +31,26 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   floatingForge: { w: 2, h: 2 },
   farmingChicken: { w: 2, h: 2 },
   magicTower: { w: 2, h: 2 },
+  cottaTile: { w: 2, h: 2 },
+  ancientTempleTile: { w: 2, h: 2 },
 };
 
-const normalizeCache = new Map<string, { scale: number; offsetY: number }>();
+type NormalizationInfo = {
+  scale: number;
+  offsetY: number;
+  size: THREE.Vector3;
+  center: THREE.Vector3;
+};
 
-function computeNormalization(scene: THREE.Object3D, path: string, modelKey: string): { scale: number; offsetY: number } {
+const normalizeCache = new Map<string, NormalizationInfo>();
+
+function computeNormalization(scene: THREE.Object3D, path: string, modelKey: string): NormalizationInfo {
   const cached = normalizeCache.get(path);
   if (cached) return cached;
 
   const box = new THREE.Box3().setFromObject(scene);
   const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
   const multi = MULTI_CELL[modelKey];
   const footprint = multi ? Math.max(multi.w, multi.h) * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
   const maxDim = Math.max(size.x, size.z);
@@ -44,7 +59,7 @@ function computeNormalization(scene: THREE.Object3D, path: string, modelKey: str
   if (override) scale *= override;
   const offsetY = -box.min.y * scale;
 
-  const result = { scale, offsetY };
+  const result = { scale, offsetY, size, center };
   normalizeCache.set(path, result);
   return result;
 }
@@ -52,17 +67,28 @@ function computeNormalization(scene: THREE.Object3D, path: string, modelKey: str
 const _emissiveColor = new THREE.Color(0x88ccff);
 const _blockedColor = new THREE.Color(0xff4444);
 
-export function TileModel({ tile, hovered, showBlocked, onHoverEnter, onHoverLeave }: TileModelProps) {
+export function TileModel({
+  tile,
+  hovered,
+  showBlocked,
+  onHoverEnter,
+  onHoverLeave,
+  cameraOccludersRef,
+}: TileModelProps) {
   const modelKey = getModelKeyForAsset(tile.type);
   const modelPath = getModelPathForAsset(tile.type);
   const { scene } = useGLTF(modelPath);
   const groupRef = useRef<THREE.Group>(null);
+  const cameraOccluderRef = useRef<THREE.Mesh>(null);
   const hoveredRef = useRef(false);
   const glowIntensityRef = useRef(0);
 
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
-  const { scale, offsetY } = useMemo(() => computeNormalization(scene, modelPath, modelKey), [scene, modelPath, modelKey]);
+  const { scale, offsetY, size, center } = useMemo(
+    () => computeNormalization(scene, modelPath, modelKey),
+    [scene, modelPath, modelKey],
+  );
 
   const multi = MULTI_CELL[modelKey];
   const gridOffsetX = multi ? ((multi.w - 1) * TILE_UNIT_SIZE) / 2 : 0;
@@ -87,14 +113,27 @@ export function TileModel({ tile, hovered, showBlocked, onHoverEnter, onHoverLea
         child.receiveShadow = true;
         if (child.material) {
           child.material = child.material.clone();
+          stripEmbeddedEmissive(child.material);
+          scalePbrRoughness(child.material);
           if (isTree && (child.material instanceof THREE.MeshStandardMaterial || child.material instanceof THREE.MeshPhysicalMaterial)) {
-            child.material.roughness = 0.98;
             child.material.metalness = 0;
           }
         }
       }
     });
   }, [cloned, isTree]);
+
+  useEffect(() => {
+    if (!cameraOccludersRef) return;
+    const occluder = cameraOccluderRef.current;
+    if (!occluder) return;
+    occluder.layers.set(CAMERA_OCCLUSION_LAYER);
+    cameraOccludersRef.current.push(occluder);
+    return () => {
+      const index = cameraOccludersRef.current.indexOf(occluder);
+      if (index >= 0) cameraOccludersRef.current.splice(index, 1);
+    };
+  }, [cameraOccludersRef]);
 
   hoveredRef.current = !!hovered;
 
@@ -121,12 +160,22 @@ export function TileModel({ tile, hovered, showBlocked, onHoverEnter, onHoverLea
   const hitW = multi ? multi.w * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
   const hitD = multi ? multi.h * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
   const hitH = TILE_UNIT_SIZE * 0.9;
+  const occluderW = Math.max(size.x * scaleX + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.6);
+  const occluderH = Math.max(size.y * scaleY + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.6);
+  const occluderD = Math.max(size.z * scaleZ + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.6);
+  const occluderX = center.x * scaleX;
+  const occluderY = center.y * scaleY;
+  const occluderZ = center.z * scaleZ;
 
   const isBlocked = !!tile.blocked && !!showBlocked;
 
   return (
     <group ref={groupRef} position={[posX, offsetY + posY3d, posZ]} rotation={[0, rotY, 0]}>
       <primitive object={cloned} scale={[scaleX, scaleY, scaleZ]} />
+      <mesh ref={cameraOccluderRef} position={[occluderX, occluderY, occluderZ]}>
+        <boxGeometry args={[occluderW, occluderH, occluderD]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
       <mesh
         position={[0, hitH / 2, 0]}
         onPointerOver={onHoverEnter ? (e) => { e.stopPropagation(); onHoverEnter(); } : undefined}
@@ -141,24 +190,34 @@ export function TileModel({ tile, hovered, showBlocked, onHoverEnter, onHoverLea
           <meshBasicMaterial color={_blockedColor} transparent opacity={0.3} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
-      {tile.decoration && <DecorationModel tile={tile} parentOffsetY={offsetY} />}
+      {tile.decoration && <DecorationModel tile={tile} parentOffsetY={offsetY} cameraOccludersRef={cameraOccludersRef} />}
     </group>
   );
 }
 
 const DECO_SURFACE_Y = 0.82;
 
-function DecorationModel({ tile, parentOffsetY }: { tile: TileDef; parentOffsetY: number }) {
+function DecorationModel({
+  tile,
+  parentOffsetY,
+  cameraOccludersRef,
+}: {
+  tile: TileDef;
+  parentOffsetY: number;
+  cameraOccludersRef?: MutableRefObject<THREE.Object3D[]>;
+}) {
   const decoPath = getModelPathForAsset(tile.decoration as import("../types").AssetKey);
   const { scene } = useGLTF(decoPath);
   const decoCloned = useMemo(() => scene.clone(true), [scene]);
+  const decoOccluderRef = useRef<THREE.Mesh>(null);
 
-  const { scale: normScale, offsetY: decoOffsetY } = useMemo(() => {
+  const { scale: normScale, offsetY: decoOffsetY, size, center } = useMemo(() => {
     const box = new THREE.Box3().setFromObject(scene);
     const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.z);
     const s = maxDim > 0 ? (TILE_UNIT_SIZE * DECORATION_SIZE_FACTOR) / maxDim : 1;
-    return { scale: s, offsetY: -box.min.y * s };
+    return { scale: s, offsetY: -box.min.y * s, size, center };
   }, [scene]);
 
   useEffect(() => {
@@ -169,10 +228,24 @@ function DecorationModel({ tile, parentOffsetY }: { tile: TileDef; parentOffsetY
         child.frustumCulled = false;
         if (child.material) {
           child.material = child.material.clone();
+          stripEmbeddedEmissive(child.material);
+          scalePbrRoughness(child.material);
         }
       }
     });
   }, [decoCloned]);
+
+  useEffect(() => {
+    if (!cameraOccludersRef) return;
+    const occluder = decoOccluderRef.current;
+    if (!occluder) return;
+    occluder.layers.set(CAMERA_OCCLUSION_LAYER);
+    cameraOccludersRef.current.push(occluder);
+    return () => {
+      const index = cameraOccludersRef.current.indexOf(occluder);
+      if (index >= 0) cameraOccludersRef.current.splice(index, 1);
+    };
+  }, [cameraOccludersRef]);
 
   const baseY = DECO_SURFACE_Y - parentOffsetY + decoOffsetY;
   const dx = tile.decoPos3d?.x ?? 0;
@@ -182,9 +255,19 @@ function DecorationModel({ tile, parentOffsetY }: { tile: TileDef; parentOffsetY
   const dsy = tile.decoScale3d?.y ?? 1;
   const dsz = tile.decoScale3d?.z ?? 1;
   const dRotY = tile.decoRotY ?? 0;
+  const occluderW = Math.max(size.x * normScale + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.45);
+  const occluderH = Math.max(size.y * normScale + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.45);
+  const occluderD = Math.max(size.z * normScale + CAMERA_OCCLUDER_PAD, TILE_UNIT_SIZE * 0.45);
+  const occluderX = center.x * normScale;
+  const occluderY = center.y * normScale;
+  const occluderZ = center.z * normScale;
 
   return (
     <group position={[dx, dy, dz]} scale={[dsx, dsy, dsz]} rotation={[0, dRotY, 0]}>
+      <mesh ref={decoOccluderRef} position={[occluderX, occluderY, occluderZ]}>
+        <boxGeometry args={[occluderW, occluderH, occluderD]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
       <primitive object={decoCloned} scale={[normScale, normScale, normScale]} />
     </group>
   );

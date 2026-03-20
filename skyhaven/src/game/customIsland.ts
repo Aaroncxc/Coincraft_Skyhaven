@@ -17,6 +17,7 @@ export type VisualCloneTemplate = {
   scale3d?: { x: number; y: number; z: number };
   rotY?: number;
   blocked?: boolean;
+  vfxEnabled?: boolean;
 };
 
 export type CloneLinePreview = {
@@ -198,6 +199,7 @@ export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
     scale3d: tile.scale3d ? { ...tile.scale3d } : undefined,
     rotY: tile.rotY,
     blocked: tile.blocked,
+    vfxEnabled: tile.vfxEnabled,
   };
 }
 
@@ -208,13 +210,13 @@ export function instantiateVisualCloneTile(
 ): Partial<
   Pick<
     TileDef,
-    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
+    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
   >
 > {
   const nextTile: Partial<
     Pick<
       TileDef,
-      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
+      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
     >
   > = {
     type: template.type,
@@ -226,6 +228,7 @@ export function instantiateVisualCloneTile(
     scale3d: template.scale3d ? { ...template.scale3d } : undefined,
     rotY: template.rotY,
     blocked: template.blocked,
+    vfxEnabled: template.vfxEnabled,
   };
 
   if (template.pos3dOffset) {
@@ -336,7 +339,7 @@ export function updateTile(
   island: IslandMap,
   gx: number,
   gy: number,
-  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY">>
+  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY" | "vfxEnabled" | "runeVfxLit">>
 ): IslandMap {
   const key = coordKey(gx, gy);
   return {

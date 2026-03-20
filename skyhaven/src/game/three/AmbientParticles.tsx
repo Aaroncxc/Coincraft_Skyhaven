@@ -186,6 +186,7 @@ export function AmbientParticles({
         transparent
         opacity={0.55}
         depthWrite={false}
+        blending={THREE.AdditiveBlending}
       />
     </instancedMesh>
   );

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { getIntroMusicElement } from "./introMusicController";
+import { isSkyhavenWidgetRuntime } from "../runtime/isWidgetRuntime";
 
 const BG_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Back.png";
 const FRONT_RIGHT_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Front_Right.png";
 const FRONT_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Front.png";
-const MUSIC_SRC = "/ingame_assets/IntroScreen/Ruins at Golden Hour (Edit).mp3";
 const INTRO_TEXT_SRC = "/ingame_assets/IntroScreen/IntroText.png";
 const MULTIKUNST_SRC = "/ingame_assets/IntroScreen/multikunst_kleiner_rand 1.png";
 
@@ -17,8 +18,10 @@ export function IntroSplash({ fadingOut, onStart }: IntroSplashProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    const audio = new Audio(MUSIC_SRC);
-    audio.loop = true;
+    if (!isSkyhavenWidgetRuntime()) return;
+
+    const ac = new AbortController();
+    const audio = getIntroMusicElement();
     audio.volume = 0.45;
     audioRef.current = audio;
 
@@ -26,18 +29,16 @@ export function IntroSplash({ fadingOut, onStart }: IntroSplashProps) {
       audio.play().catch(() => {
         const resume = () => {
           audio.play().catch(() => {});
-          document.removeEventListener("pointerdown", resume);
-          document.removeEventListener("keydown", resume);
         };
-        document.addEventListener("pointerdown", resume, { once: true });
-        document.addEventListener("keydown", resume, { once: true });
+        document.addEventListener("pointerdown", resume, { once: true, signal: ac.signal });
+        document.addEventListener("keydown", resume, { once: true, signal: ac.signal });
       });
     };
     tryPlay();
 
     return () => {
-      audio.pause();
-      audio.src = "";
+      ac.abort();
+      // Do not stopIntroMusicCompletely here: StrictMode remount would interrupt; stop when entering game (main.tsx).
       audioRef.current = null;
     };
   }, []);

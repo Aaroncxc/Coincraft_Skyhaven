@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
 import { IntroSplash } from "./ui/IntroSplash";
+import { stopIntroMusicCompletely } from "./ui/introMusicController";
 import "./styles.css";
 
 const INTRO_FADE_OUT_MS = 900;
@@ -11,11 +12,6 @@ function AppBoot() {
   const [showIntro, setShowIntro] = useState(true);
   const [isIntroFadingOut, setIsIntroFadingOut] = useState(false);
   const shellRef = useRef<HTMLDivElement | null>(null);
-
-  const handleStart = () => {
-    setIsIntroFadingOut(true);
-    window.setTimeout(() => setShowIntro(false), INTRO_FADE_OUT_MS);
-  };
 
   useEffect(() => {
     const shell = shellRef.current;
@@ -80,6 +76,14 @@ function AppBoot() {
       window.removeEventListener("pointercancel", onPointerUp, true);
     };
   }, []);
+
+  const handleStart = () => {
+    setIsIntroFadingOut(true);
+    window.setTimeout(() => {
+      stopIntroMusicCompletely();
+      setShowIntro(false);
+    }, INTRO_FADE_OUT_MS);
+  };
 
   return (
     <div
