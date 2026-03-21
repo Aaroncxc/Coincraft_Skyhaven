@@ -408,6 +408,16 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       localYOffset: 80,
       gridSpan: { w: 2, h: 2 },
     },
+    kaserneTile: {
+      src: "/ingame_assets/3d/Kaserne_Tile.png",
+      drawW: 444,
+      drawH: 444,
+      anchorX: 0.5,
+      anchorY: 0.65,
+      layerOrder: 300,
+      localYOffset: 80,
+      gridSpan: { w: 2, h: 2 },
+    },
     runeTile: {
       src: "/ingame_assets/3d/Rune_Tile.png",
       drawW: 222,

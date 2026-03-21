@@ -142,6 +142,7 @@ const FALLBACK_TILE_PALETTES: Record<AssetKey, TilePalette> = {
   halfGrownCropTile: { top: "rgba(160, 140, 80, 0.65)", stroke: "rgba(220, 200, 130, 0.75)" },
   cottaTile: { top: "rgba(150, 130, 90, 0.65)", stroke: "rgba(210, 190, 140, 0.75)" },
   ancientTempleTile: { top: "rgba(140, 150, 120, 0.65)", stroke: "rgba(200, 215, 180, 0.75)" },
+  kaserneTile: { top: "rgba(130, 120, 100, 0.65)", stroke: "rgba(200, 190, 165, 0.75)" },
   runeTile: { top: "rgba(150, 130, 110, 0.65)", stroke: "rgba(220, 180, 140, 0.75)" },
 };
 

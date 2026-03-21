@@ -27,6 +27,7 @@ export const TILE_3D_MODELS: Record<string, string> = {
   halfGrownCropTile: "/ingame_assets/3d/Half_grown3D_Crop_Tile.glb",
   cottaTile: "/ingame_assets/3d/Cotta_Tile.glb",
   ancientTempleTile: "/ingame_assets/3d/ancientTemple_Tile.glb",
+  kaserneTile: "/ingame_assets/3d/Kaserne1_Tile.glb",
   runeTile: "/ingame_assets/3d/Rune_tile.glb",
 };
 
@@ -90,6 +91,7 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   halfGrownCropTile: "halfGrownCropTile",
   cottaTile: "cottaTile",
   ancientTempleTile: "ancientTempleTile",
+  kaserneTile: "kaserneTile",
   runeTile: "runeTile",
 };
 
@@ -124,6 +126,19 @@ export const MAGIC_MAN_MODELS = {
   zauber: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Call_Gesture_withSkin.glb",
 };
 
+export const FIGHT_MAN_MODELS = {
+  base: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Character_output.glb",
+  /** Playable fight_man + fallback clip assembly. */
+  anims: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Meshy_AI_Meshy_Merged_Animations.glb",
+  /** Fight Man NPC: patrol picks walk or counterstrike at random; E-interact plays taunt. */
+  npcWalk: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Animation_Walking_withSkin.glb",
+  npcCounterstrike: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Counterstrike_withSkin.glb",
+  npcTaunt: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Chest_Pound_Taunt_withSkin.glb",
+};
+
+/** Shared albedo atlas for the playable character (overrides embedded GLB `map` in CharacterModel). */
+export const MAIN_CHAR_ALBEDO_MAP = "/ingame_assets/3d/Main_Char/texture_0.png";
+
 export const CHAR_3D_MODELS = {
   base: "/ingame_assets/3d/Main_Char/Meshy_AI_Character_output.glb",
   idle: "/ingame_assets/3d/Main_Char/Meshy_AI_Animation_Idle_8_withSkin.glb",
@@ -143,6 +158,7 @@ export const ALL_GAME_GLTF_PATHS = Array.from(
     ...ALL_MODEL_PATHS,
     ...Object.values(MINING_MAN_MODELS),
     ...Object.values(MAGIC_MAN_MODELS),
+    ...Object.values(FIGHT_MAN_MODELS),
     ...Object.values(CHAR_3D_MODELS),
     SKULLY_MODEL_PATH,
   ]),

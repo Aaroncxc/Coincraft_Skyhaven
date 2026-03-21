@@ -32,6 +32,7 @@ const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   halfGrownCropTile: "/ingame_assets/3d/Half_grown_Crop_Tile.png",
   cottaTile: "/ingame_assets/3d/Cottn_Tile.png",
   ancientTempleTile: "/ingame_assets/3d/Temple_Tile.png",
+  kaserneTile: "/ingame_assets/3d/Kaserne_Tile.png",
   runeTile: "/ingame_assets/3d/Rune_Tile.png",
 };
 
@@ -116,6 +117,7 @@ export const BAUKASTEN_TILES: Array<{ type: AssetKey; label: string }> = [
   { type: "halfGrownCropTile", label: "Half-grown Crop" },
   { type: "cottaTile", label: "Cotta" },
   { type: "ancientTempleTile", label: "Ancient Temple" },
+  { type: "kaserneTile", label: "Kaserne" },
   { type: "runeTile", label: "Rune" },
 ];
 

@@ -161,6 +161,7 @@ const PLACEABLE_TYPES = [
   { key: "halfGrownCropTile", label: "Half-grown Crop" },
   { key: "cottaTile", label: "Cotta" },
   { key: "ancientTempleTile", label: "Ancient Temple" },
+  { key: "kaserneTile", label: "Kaserne" },
   { key: "runeTile", label: "Rune" },
 ];
 

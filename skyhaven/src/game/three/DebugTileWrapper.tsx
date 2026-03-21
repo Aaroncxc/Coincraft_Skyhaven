@@ -34,6 +34,7 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   magicTower: { w: 2, h: 2 },
   cottaTile: { w: 2, h: 2 },
   ancientTempleTile: { w: 2, h: 2 },
+  kaserneTile: { w: 2, h: 2 },
 };
 
 export function DebugTileWrapper({

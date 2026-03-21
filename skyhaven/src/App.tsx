@@ -64,6 +64,13 @@ import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
 import { PlannerOverlay } from "./ui/planner/PlannerOverlay";
+import { CharacterSelectOverlay } from "./ui/CharacterSelectOverlay";
+import {
+  hydratePlayableCharacter,
+  persistPlayableCharacter,
+  isPlayableCharacterUnlocked,
+  type PlayableCharacterId,
+} from "./game/playableCharacters";
 import { isSkyhavenWidgetRuntime } from "./runtime/isWidgetRuntime";
 import {
   hydrateEquipment,
@@ -120,6 +127,11 @@ export default function App() {
   const [isInventoryOverlayOpen, setIsInventoryOverlayOpen] = useState<boolean>(false);
   const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
   const [isPlannerOpen, setIsPlannerOpen] = useState<boolean>(false);
+  const [characterSelectOpen, setCharacterSelectOpen] = useState(false);
+  const [playableCharacterId, setPlayableCharacterId] = useState<PlayableCharacterId>(() =>
+    hydratePlayableCharacter(),
+  );
+  const [tpsModeActive, setTpsModeActive] = useState(false);
   const [dailyQuests, setDailyQuests] = useState<DailyQuest[]>(() => hydrateQuests());
   const [actionStats, setActionStats] = useState<ActionStats>(() => hydrateActionStats());
   const [profile] = useState<PlayerProfile>(() => hydrateProfile());
@@ -207,6 +219,14 @@ export default function App() {
 
   useEffect(() => {
     customIslandRef.current = customIsland;
+  }, [customIsland]);
+
+  useEffect(() => {
+    setPlayableCharacterId((cur) => {
+      if (isPlayableCharacterUnlocked(cur, customIsland)) return cur;
+      persistPlayableCharacter("default");
+      return "default";
+    });
   }, [customIsland]);
 
   useEffect(() => {
@@ -549,6 +569,7 @@ export default function App() {
         halfGrownCropTile: "halfGrownCropTile",
         cottaTile: "cottaTile",
         ancientTempleTile: "ancientTempleTile",
+        kaserneTile: "kaserneTile",
         runeTile: "runeTile",
       };
       const assetKey = typeMap[modelKey];
@@ -1203,10 +1224,6 @@ export default function App() {
     windowMode === "compact"
       ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBackground ?? SKYHAVEN_SPRITE_MANIFEST.ui.background
       : SKYHAVEN_SPRITE_MANIFEST.ui.background;
-  const frameBorder =
-    windowMode === "compact"
-      ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBorder ?? SKYHAVEN_SPRITE_MANIFEST.ui.border
-      : SKYHAVEN_SPRITE_MANIFEST.ui.border;
 
   return (
     <div className="skyhaven-shell" ref={shellRef}>
@@ -1229,6 +1246,7 @@ export default function App() {
           className="island-canvas"
           data-no-window-drag={
             debugMode ||
+            tpsModeActive ||
             (selectedIslandId === "custom" &&
               windowMode === "expanded" &&
               !isMinimalMode &&
@@ -1293,6 +1311,9 @@ export default function App() {
               onCancelMiniAction={handleCancelMiniAction}
               isMiniActionActive={session?.actionType === "woodcutting" || session?.actionType === "harvesting"}
               onRuneVfxToggle={handleRuneVfxToggle}
+              onOpenCharacterSelect={() => setCharacterSelectOpen(true)}
+              playableVariant={playableCharacterId}
+              onTpsModeChange={setTpsModeActive}
               showVignette={(windowMode === "expanded" || isFullscreen) && !isMinimalMode}
             />
           </Canvas>
@@ -1394,6 +1415,16 @@ export default function App() {
           inventory={inventory}
           equipmentState={equipment}
           onMoveItem={handleMoveProfileItem}
+        />
+        <CharacterSelectOverlay
+          open={characterSelectOpen}
+          onClose={() => setCharacterSelectOpen(false)}
+          homeIsland={customIsland}
+          selectedId={playableCharacterId}
+          onSelect={(id) => {
+            setPlayableCharacterId(id);
+            persistPlayableCharacter(id);
+          }}
         />
         <PlannerOverlay
           open={isPlannerOpen}
@@ -1506,7 +1537,7 @@ export default function App() {
           showFullscreenToggle={windowMode === "expanded" && !isMinimalMode}
         />
 
-        <img className="frame-border" src={frameBorder} alt="" />
+        <div className="frame-border" aria-hidden />
       </div>
     </div>
   );

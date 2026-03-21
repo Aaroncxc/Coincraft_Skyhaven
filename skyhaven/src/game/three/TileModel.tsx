@@ -4,20 +4,27 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { TileDef } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { isTileFadeEligible, type CameraOccluderEntry } from "./cameraOcclusion";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 
 const DECORATION_SIZE_FACTOR = 0.45;
 const CAMERA_OCCLUDER_PAD = 0.12;
-const CAMERA_OCCLUSION_LAYER = 2;
+/** Keep in sync with IslandCamera LOS ray; avoid layer 2 (OutlineEffect). */
+const CAMERA_OCCLUSION_LAYER = 11;
+const FADE_MIN_OPACITY = 0.45;
+const FADE_IN_SPEED = 12;
+const FADE_OUT_SPEED = 8;
 
 type TileModelProps = {
   tile: TileDef;
   hovered?: boolean;
+  faded?: boolean;
+  decorationFaded?: boolean;
   showBlocked?: boolean;
   onHoverEnter?: () => void;
   onHoverLeave?: () => void;
-  cameraOccludersRef?: MutableRefObject<THREE.Object3D[]>;
+  cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 };
 
 const SCALE_OVERRIDES: Record<string, number> = {
@@ -33,6 +40,7 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   magicTower: { w: 2, h: 2 },
   cottaTile: { w: 2, h: 2 },
   ancientTempleTile: { w: 2, h: 2 },
+  kaserneTile: { w: 2, h: 2 },
 };
 
 type NormalizationInfo = {
@@ -40,6 +48,14 @@ type NormalizationInfo = {
   offsetY: number;
   size: THREE.Vector3;
   center: THREE.Vector3;
+};
+
+type FadableMaterialState = {
+  material: THREE.Material;
+  transparent: boolean;
+  opacity: number;
+  depthWrite: boolean;
+  alphaTest: number;
 };
 
 const normalizeCache = new Map<string, NormalizationInfo>();
@@ -67,9 +83,43 @@ function computeNormalization(scene: THREE.Object3D, path: string, modelKey: str
 const _emissiveColor = new THREE.Color(0x88ccff);
 const _blockedColor = new THREE.Color(0xff4444);
 
+function snapshotFadableMaterial(material: THREE.Material): FadableMaterialState {
+  return {
+    material,
+    transparent: material.transparent,
+    opacity: material.opacity,
+    depthWrite: material.depthWrite,
+    alphaTest: material.alphaTest,
+  };
+}
+
+function applyFadeToMaterialStates(states: readonly FadableMaterialState[], fadeAlpha: number): void {
+  const fadeActive = fadeAlpha > 0.001;
+  for (const state of states) {
+    const nextTransparent = fadeActive ? true : state.transparent;
+    const nextDepthWrite = fadeActive ? false : state.depthWrite;
+    const nextOpacity = fadeActive
+      ? THREE.MathUtils.lerp(state.opacity, Math.min(state.opacity, FADE_MIN_OPACITY), fadeAlpha)
+      : state.opacity;
+
+    if (state.material.transparent !== nextTransparent || state.material.depthWrite !== nextDepthWrite) {
+      state.material.transparent = nextTransparent;
+      state.material.depthWrite = nextDepthWrite;
+      state.material.needsUpdate = true;
+    }
+    state.material.opacity = nextOpacity;
+    if (!fadeActive && state.material.alphaTest !== state.alphaTest) {
+      state.material.alphaTest = state.alphaTest;
+      state.material.needsUpdate = true;
+    }
+  }
+}
+
 export function TileModel({
   tile,
   hovered,
+  faded,
+  decorationFaded,
   showBlocked,
   onHoverEnter,
   onHoverLeave,
@@ -82,6 +132,9 @@ export function TileModel({
   const cameraOccluderRef = useRef<THREE.Mesh>(null);
   const hoveredRef = useRef(false);
   const glowIntensityRef = useRef(0);
+  const fadedRef = useRef(false);
+  const fadeAlphaRef = useRef(0);
+  const materialStatesRef = useRef<FadableMaterialState[]>([]);
 
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
@@ -104,23 +157,52 @@ export function TileModel({
   const rotY = tile.rotY ?? 0;
 
   const isTree = modelKey === "tree" || modelKey === "treeMiddle";
+  const fadeEligible = isTileFadeEligible(tile.type);
 
   useEffect(() => {
+    const materialStates: FadableMaterialState[] = [];
     cloned.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.raycast = () => {};
         child.castShadow = true;
         child.receiveShadow = true;
         if (child.material) {
-          child.material = child.material.clone();
-          stripEmbeddedEmissive(child.material);
-          scalePbrRoughness(child.material);
-          if (isTree && (child.material instanceof THREE.MeshStandardMaterial || child.material instanceof THREE.MeshPhysicalMaterial)) {
-            child.material.metalness = 0;
+          if (Array.isArray(child.material)) {
+            child.material = child.material.map((material) => {
+              const clonedMaterial = material.clone();
+              stripEmbeddedEmissive(clonedMaterial);
+              scalePbrRoughness(clonedMaterial);
+              if (
+                isTree &&
+                (clonedMaterial instanceof THREE.MeshStandardMaterial ||
+                  clonedMaterial instanceof THREE.MeshPhysicalMaterial)
+              ) {
+                clonedMaterial.metalness = 0;
+              }
+              materialStates.push(snapshotFadableMaterial(clonedMaterial));
+              return clonedMaterial;
+            });
+          } else {
+            const clonedMaterial = child.material.clone();
+            stripEmbeddedEmissive(clonedMaterial);
+            scalePbrRoughness(clonedMaterial);
+            if (
+              isTree &&
+              (clonedMaterial instanceof THREE.MeshStandardMaterial ||
+                clonedMaterial instanceof THREE.MeshPhysicalMaterial)
+            ) {
+              clonedMaterial.metalness = 0;
+            }
+            materialStates.push(snapshotFadableMaterial(clonedMaterial));
+            child.material = clonedMaterial;
           }
         }
       }
     });
+    materialStatesRef.current = materialStates;
+    return () => {
+      materialStatesRef.current = [];
+    };
   }, [cloned, isTree]);
 
   useEffect(() => {
@@ -128,14 +210,20 @@ export function TileModel({
     const occluder = cameraOccluderRef.current;
     if (!occluder) return;
     occluder.layers.set(CAMERA_OCCLUSION_LAYER);
-    cameraOccludersRef.current.push(occluder);
+    const entry: CameraOccluderEntry = {
+      occluder,
+      fadeKey: `tile:${tile.id}`,
+      fadeEligible,
+    };
+    cameraOccludersRef.current.push(entry);
     return () => {
-      const index = cameraOccludersRef.current.indexOf(occluder);
+      const index = cameraOccludersRef.current.findIndex((candidate) => candidate.occluder === occluder);
       if (index >= 0) cameraOccludersRef.current.splice(index, 1);
     };
-  }, [cameraOccludersRef]);
+  }, [cameraOccludersRef, fadeEligible, tile.id]);
 
   hoveredRef.current = !!hovered;
+  fadedRef.current = !!faded;
 
   useFrame((_, delta) => {
     const target = hoveredRef.current ? 1 : 0;
@@ -155,6 +243,14 @@ export function TileModel({
         child.material.emissiveIntensity = intensity * 0.4;
       }
     });
+
+    const fadeTarget = fadedRef.current ? 1 : 0;
+    const fadeSpeed = fadeTarget > fadeAlphaRef.current ? FADE_IN_SPEED : FADE_OUT_SPEED;
+    fadeAlphaRef.current += (fadeTarget - fadeAlphaRef.current) * Math.min(1, fadeSpeed * delta);
+    if (Math.abs(fadeAlphaRef.current - fadeTarget) < 0.01) {
+      fadeAlphaRef.current = fadeTarget;
+    }
+    applyFadeToMaterialStates(materialStatesRef.current, fadeAlphaRef.current);
   });
 
   const hitW = multi ? multi.w * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
@@ -190,7 +286,14 @@ export function TileModel({
           <meshBasicMaterial color={_blockedColor} transparent opacity={0.3} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
-      {tile.decoration && <DecorationModel tile={tile} parentOffsetY={offsetY} cameraOccludersRef={cameraOccludersRef} />}
+      {tile.decoration && (
+        <DecorationModel
+          tile={tile}
+          parentOffsetY={offsetY}
+          faded={decorationFaded}
+          cameraOccludersRef={cameraOccludersRef}
+        />
+      )}
     </group>
   );
 }
@@ -200,16 +303,21 @@ const DECO_SURFACE_Y = 0.82;
 function DecorationModel({
   tile,
   parentOffsetY,
+  faded,
   cameraOccludersRef,
 }: {
   tile: TileDef;
   parentOffsetY: number;
-  cameraOccludersRef?: MutableRefObject<THREE.Object3D[]>;
+  faded?: boolean;
+  cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 }) {
   const decoPath = getModelPathForAsset(tile.decoration as import("../types").AssetKey);
   const { scene } = useGLTF(decoPath);
   const decoCloned = useMemo(() => scene.clone(true), [scene]);
   const decoOccluderRef = useRef<THREE.Mesh>(null);
+  const fadedRef = useRef(false);
+  const fadeAlphaRef = useRef(0);
+  const materialStatesRef = useRef<FadableMaterialState[]>([]);
 
   const { scale: normScale, offsetY: decoOffsetY, size, center } = useMemo(() => {
     const box = new THREE.Box3().setFromObject(scene);
@@ -221,18 +329,35 @@ function DecorationModel({
   }, [scene]);
 
   useEffect(() => {
+    const materialStates: FadableMaterialState[] = [];
     decoCloned.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true;
         child.receiveShadow = true;
         child.frustumCulled = false;
         if (child.material) {
-          child.material = child.material.clone();
-          stripEmbeddedEmissive(child.material);
-          scalePbrRoughness(child.material);
+          if (Array.isArray(child.material)) {
+            child.material = child.material.map((material) => {
+              const clonedMaterial = material.clone();
+              stripEmbeddedEmissive(clonedMaterial);
+              scalePbrRoughness(clonedMaterial);
+              materialStates.push(snapshotFadableMaterial(clonedMaterial));
+              return clonedMaterial;
+            });
+          } else {
+            const clonedMaterial = child.material.clone();
+            stripEmbeddedEmissive(clonedMaterial);
+            scalePbrRoughness(clonedMaterial);
+            materialStates.push(snapshotFadableMaterial(clonedMaterial));
+            child.material = clonedMaterial;
+          }
         }
       }
     });
+    materialStatesRef.current = materialStates;
+    return () => {
+      materialStatesRef.current = [];
+    };
   }, [decoCloned]);
 
   useEffect(() => {
@@ -240,12 +365,29 @@ function DecorationModel({
     const occluder = decoOccluderRef.current;
     if (!occluder) return;
     occluder.layers.set(CAMERA_OCCLUSION_LAYER);
-    cameraOccludersRef.current.push(occluder);
+    const entry: CameraOccluderEntry = {
+      occluder,
+      fadeKey: `deco:${tile.id}`,
+      fadeEligible: true,
+    };
+    cameraOccludersRef.current.push(entry);
     return () => {
-      const index = cameraOccludersRef.current.indexOf(occluder);
+      const index = cameraOccludersRef.current.findIndex((candidate) => candidate.occluder === occluder);
       if (index >= 0) cameraOccludersRef.current.splice(index, 1);
     };
-  }, [cameraOccludersRef]);
+  }, [cameraOccludersRef, tile.id]);
+
+  fadedRef.current = !!faded;
+
+  useFrame((_, delta) => {
+    const fadeTarget = fadedRef.current ? 1 : 0;
+    const fadeSpeed = fadeTarget > fadeAlphaRef.current ? FADE_IN_SPEED : FADE_OUT_SPEED;
+    fadeAlphaRef.current += (fadeTarget - fadeAlphaRef.current) * Math.min(1, fadeSpeed * delta);
+    if (Math.abs(fadeAlphaRef.current - fadeTarget) < 0.01) {
+      fadeAlphaRef.current = fadeTarget;
+    }
+    applyFadeToMaterialStates(materialStatesRef.current, fadeAlphaRef.current);
+  });
 
   const baseY = DECO_SURFACE_Y - parentOffsetY + decoOffsetY;
   const dx = tile.decoPos3d?.x ?? 0;

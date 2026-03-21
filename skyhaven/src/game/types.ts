@@ -66,6 +66,7 @@ export type AssetKey =
   | "halfGrownCropTile"
   | "cottaTile"
   | "ancientTempleTile"
+  | "kaserneTile"
   | "runeTile";
 
 export const TREE_TILES: readonly AssetKey[] = ["treeMiddle"];
@@ -82,6 +83,7 @@ export const NO_DECORATION_TILES: readonly AssetKey[] = [
   "halfGrownCropTile",
   "cottaTile",
   "ancientTempleTile",
+  "kaserneTile",
   "runeTile",
 ];
 

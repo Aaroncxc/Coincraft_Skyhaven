@@ -1,14 +1,29 @@
-import { useGLTF, useAnimations } from "@react-three/drei";
+import { useGLTF, useAnimations, useTexture } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useRef, useEffect, useMemo, type MutableRefObject } from "react";
+import {
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  type MutableRefObject,
+  type RefObject,
+} from "react";
 import { SkeletonUtils } from "three-stdlib";
 import * as THREE from "three";
-import { TILE_UNIT_SIZE, CHAR_3D_MODELS } from "./assets3d";
+import {
+  TILE_UNIT_SIZE,
+  CHAR_3D_MODELS,
+  MAIN_CHAR_ALBEDO_MAP,
+  MINING_MAN_MODELS,
+  MAGIC_MAN_MODELS,
+  FIGHT_MAN_MODELS,
+} from "./assets3d";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import type { CharacterPose3D } from "./useCharacterMovement";
 import { EQUIPPABLE_ITEMS, type EquippableItemId, type ItemSocketTransform } from "../equipment";
+import type { PlayableCharacterId } from "../playableCharacters";
 
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 
@@ -22,7 +37,7 @@ const JUMP_DURATION_DEFAULT = 0.38;
 const CHOP_DURATION_DEFAULT = 0.92;
 const SPELL_DURATION_DEFAULT = 1.05;
 
-type Props = {
+type BaseProps = {
   pose: CharacterPose3D;
   mouseGroundRef?: MutableRefObject<THREE.Vector3 | null>;
   equippedRightHand?: EquippableItemId | null;
@@ -88,7 +103,116 @@ function createToolObject(itemId: EquippableItemId): THREE.Object3D {
   }
 }
 
-export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null }: Props) {
+function tuneSkinnedSceneMaterials(scene: THREE.Object3D): void {
+  scene.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+    child.frustumCulled = false;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      mat.side = THREE.DoubleSide;
+      mat.depthWrite = true;
+      mat.depthTest = true;
+      if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
+        if (mat.transparent && mat.map) {
+          mat.alphaTest = 0.5;
+          mat.transparent = false;
+        }
+      }
+      stripEmbeddedEmissive(mat);
+      tuneRigPbrForIslandLighting(mat);
+      scalePbrRoughness(mat);
+      mat.needsUpdate = true;
+    }
+  });
+}
+
+function useCharacterFrame(
+  outerRef: RefObject<THREE.Group | null>,
+  modelRef: RefObject<THREE.Group | null>,
+  poseRef: React.MutableRefObject<CharacterPose3D>,
+  mouseGroundRef: MutableRefObject<THREE.Vector3 | null> | undefined,
+): void {
+  const jumpArcTimer = useRef(0);
+  const wasJumping = useRef(false);
+
+  useFrame((_, delta) => {
+    if (!outerRef.current) return;
+    const p = poseRef.current;
+    const tx = p.gx * TILE_UNIT_SIZE;
+    const tz = p.gy * TILE_UNIT_SIZE;
+    const pos = outerRef.current.position;
+
+    const sm = 1 - Math.exp(-12 * delta);
+    const isJumping = p.animState === "jump";
+    const isRolling = p.animState === "roll";
+    if (isJumping && !wasJumping.current) {
+      jumpArcTimer.current = 0;
+    }
+    wasJumping.current = isJumping;
+
+    if (isJumping || isRolling) {
+      pos.x = tx;
+      pos.z = tz;
+    } else {
+      pos.x += (tx - pos.x) * sm;
+      pos.z += (tz - pos.z) * sm;
+    }
+
+    let arcY = 0;
+    if (isJumping) {
+      jumpArcTimer.current += delta;
+      const dur = p.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      const t = Math.min(1, jumpArcTimer.current / dur);
+      const ascentPortion = 0.46;
+      let arcNorm = 0;
+      if (t < ascentPortion) {
+        const u = t / ascentPortion;
+        arcNorm = Math.sin((u * Math.PI) / 2);
+      } else {
+        const u = (t - ascentPortion) / (1 - ascentPortion);
+        arcNorm = Math.cos((u * Math.PI) / 2);
+      }
+      arcY = JUMP_ARC_HEIGHT * Math.max(0, arcNorm);
+    }
+    pos.y = TILE_SURFACE_Y + arcY;
+
+    if (modelRef.current) {
+      const hasMoveInput = p.animState === "walk" || p.animState === "run";
+      const useMouseLook = hasMoveInput && p.isManualMove;
+      const mousePos = mouseGroundRef?.current;
+      let targetRot: number;
+      if (p.facingAngle != null) {
+        targetRot = p.facingAngle;
+      } else if (useMouseLook && mousePos) {
+        const cx = pos.x;
+        const cz = pos.z;
+        const dx = mousePos.x - cx;
+        const dz = mousePos.z - cz;
+        if (Math.abs(dx) > 1e-5 || Math.abs(dz) > 1e-5) {
+          targetRot = Math.atan2(dx, dz);
+        } else {
+          targetRot = p.direction === "right" ? BASE_ROT_Y + Math.PI : BASE_ROT_Y;
+        }
+      } else {
+        targetRot = p.direction === "right" ? BASE_ROT_Y + Math.PI : BASE_ROT_Y;
+      }
+      const cur = modelRef.current.rotation.y;
+      let diff = targetRot - cur;
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      modelRef.current.rotation.y += diff * sm;
+    }
+  });
+}
+
+function DefaultCharacterModel({
+  pose,
+  mouseGroundRef,
+  equippedRightHand = null,
+}: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
   const poseRef = useRef(pose);
@@ -96,9 +220,6 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
   const prevClipRef = useRef("");
   const initDoneRef = useRef(false);
   const toolObjectRef = useRef<THREE.Object3D | null>(null);
-
-  const jumpArcTimer = useRef(0);
-  const wasJumping = useRef(false);
 
   const idleToggleRef = useRef<boolean>(false);
 
@@ -123,29 +244,30 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
   }, []);
 
   useMemo(() => {
+    tuneSkinnedSceneMaterials(modelScene);
+  }, [modelScene]);
+
+  const bodyAlbedo = useTexture(MAIN_CHAR_ALBEDO_MAP, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.flipY = false;
+  });
+
+  useLayoutEffect(() => {
+    bodyAlbedo.colorSpace = THREE.SRGBColorSpace;
+    bodyAlbedo.flipY = false;
+    bodyAlbedo.needsUpdate = true;
     modelScene.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
-      child.castShadow = true;
-      child.receiveShadow = true;
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       for (const mat of mats) {
         if (!mat) continue;
-        mat.side = THREE.DoubleSide;
-        mat.depthWrite = true;
-        mat.depthTest = true;
         if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
-          if (mat.transparent && mat.map) {
-            mat.alphaTest = 0.5;
-            mat.transparent = false;
-          }
+          mat.map = bodyAlbedo;
+          mat.needsUpdate = true;
         }
-        stripEmbeddedEmissive(mat);
-        tuneRigPbrForIslandLighting(mat);
-        scalePbrRoughness(mat);
-        mat.needsUpdate = true;
       }
     });
-  }, [modelScene]);
+  }, [modelScene, bodyAlbedo]);
 
   const allClips = useMemo(() => {
     const clips: THREE.AnimationClip[] = [];
@@ -292,6 +414,395 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
       if (pose.animState === "jump") {
         desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
       } else if (pose.animState === "roll") {
+        desiredDuration = pose.rollDuration ?? clipDuration;
+      } else if (pose.animState === "chop") {
+        desiredDuration = CHOP_DURATION_DEFAULT;
+      } else if (pose.animState === "spell") {
+        desiredDuration = SPELL_DURATION_DEFAULT;
+      }
+      if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
+        nextAction.timeScale = clipDuration / desiredDuration;
+      } else {
+        nextAction.timeScale = 1;
+      }
+    } else {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1;
+    }
+
+    if (prevAction && prevAction.isRunning()) {
+      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
+    }
+    nextAction.play();
+    prevClipRef.current = target;
+  }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration]);
+
+  useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef);
+
+  return (
+    <group ref={outerRef}>
+      <group ref={modelRef}>
+        <group scale={CHAR_SCALE}>
+          <primitive object={modelScene} />
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function FightManPlayableModel({
+  pose,
+  mouseGroundRef,
+  equippedRightHand = null,
+}: BaseProps) {
+  const outerRef = useRef<THREE.Group>(null);
+  const modelRef = useRef<THREE.Group>(null);
+  const sceneRef = useRef<THREE.Group | THREE.Object3D>(null);
+  const poseRef = useRef(pose);
+  poseRef.current = pose;
+  const prevClipRef = useRef("");
+  const initDoneRef = useRef(false);
+  const toolObjectRef = useRef<THREE.Object3D | null>(null);
+
+  const baseGltf = useGLTF(FIGHT_MAN_MODELS.base);
+  const animsGltf = useGLTF(FIGHT_MAN_MODELS.anims);
+  const modelScene = useMemo(
+    () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
+    [baseGltf.scene],
+  );
+
+  const rightHandSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+
+  useMemo(() => {
+    tuneSkinnedSceneMaterials(modelScene);
+  }, [modelScene]);
+
+  const allClips = useMemo(() => {
+    const clips: THREE.AnimationClip[] = [];
+    const add = (anims: THREE.AnimationClip[], name: string) => {
+      if (anims.length > 0) {
+        const c = anims[0].clone();
+        c.name = name;
+        clips.push(c);
+      }
+    };
+    const merged = animsGltf.animations;
+    if (merged.length >= 1) add([merged[0]], "walk");
+    if (merged.length >= 2) add([merged[1]], "idle");
+    if (merged.length >= 3) add([merged[2]], "attack");
+    if (merged.length >= 1) add([merged[0]], "run");
+    if (merged.length >= 3) add([merged[2]], "jump");
+    if (merged.length >= 3) add([merged[2]], "spell");
+    if (merged.length >= 3) add([merged[2]], "roll");
+    return clips;
+  }, [animsGltf.animations]);
+
+  const { actions } = useAnimations(allClips, sceneRef);
+
+  useEffect(() => {
+    const modelRoot = modelRef.current;
+    if (!modelRoot) return;
+    const rightHand = modelRoot.getObjectByName("RightHand");
+    if (!rightHand) return;
+    rightHand.add(rightHandSocket);
+    return () => {
+      rightHand.remove(rightHandSocket);
+    };
+  }, [modelScene, rightHandSocket]);
+
+  useEffect(() => {
+    const previousTool = toolObjectRef.current;
+    if (previousTool) {
+      rightHandSocket.remove(previousTool);
+      disposeObject3D(previousTool);
+      toolObjectRef.current = null;
+    }
+    if (!equippedRightHand) return;
+    const itemDef = EQUIPPABLE_ITEMS[equippedRightHand];
+    if (!itemDef) return;
+    const toolObject = createToolObject(equippedRightHand);
+    applySocketTransform(toolObject, itemDef.rightHand);
+    rightHandSocket.add(toolObject);
+    toolObjectRef.current = toolObject;
+    return () => {
+      rightHandSocket.remove(toolObject);
+      disposeObject3D(toolObject);
+      if (toolObjectRef.current === toolObject) {
+        toolObjectRef.current = null;
+      }
+    };
+  }, [equippedRightHand, rightHandSocket]);
+
+  useEffect(() => {
+    if (initDoneRef.current) return;
+    const idle = actions["idle"];
+    if (idle) {
+      idle.reset().setLoop(THREE.LoopRepeat, Infinity).play();
+      prevClipRef.current = "idle";
+      initDoneRef.current = true;
+    }
+  }, [actions]);
+
+  useEffect(() => {
+    if (!initDoneRef.current) return;
+    let target: string;
+    switch (pose.animState) {
+      case "walk":
+        target = "walk";
+        break;
+      case "run":
+        target = "run";
+        break;
+      case "attack":
+      case "chop":
+        target = "attack";
+        break;
+      case "jump":
+        target = "jump";
+        break;
+      case "spell":
+        target = "spell";
+        break;
+      case "roll":
+        target = "roll";
+        break;
+      default: {
+        if (prevClipRef.current === "idle") return;
+        target = "idle";
+        break;
+      }
+    }
+
+    const isOneShot =
+      pose.animState === "attack" ||
+      pose.animState === "chop" ||
+      pose.animState === "jump" ||
+      pose.animState === "spell" ||
+      pose.animState === "roll";
+    if (!isOneShot && target === prevClipRef.current) return;
+
+    const nextAction = actions[target];
+    const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
+    if (!nextAction) return;
+    const clipDuration = nextAction.getClip().duration;
+
+    nextAction.reset();
+    if (isOneShot) {
+      nextAction.setLoop(THREE.LoopOnce, 1);
+      nextAction.clampWhenFinished = true;
+      let desiredDuration = clipDuration;
+      if (pose.animState === "jump") {
+        desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      } else if (pose.animState === "roll") {
+        desiredDuration = pose.rollDuration ?? clipDuration;
+      } else if (pose.animState === "chop") {
+        desiredDuration = CHOP_DURATION_DEFAULT;
+      } else if (pose.animState === "spell") {
+        desiredDuration = SPELL_DURATION_DEFAULT;
+      } else if (pose.animState === "attack") {
+        desiredDuration = clipDuration;
+      }
+      if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
+        nextAction.timeScale = clipDuration / desiredDuration;
+      } else {
+        nextAction.timeScale = 1;
+      }
+    } else {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = target === "run" ? 1.65 : 1;
+    }
+
+    if (prevAction && prevAction.isRunning()) {
+      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
+    }
+    nextAction.play();
+    prevClipRef.current = target;
+  }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration]);
+
+  useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef);
+
+  return (
+    <group ref={outerRef}>
+      <group ref={modelRef}>
+        <group scale={CHAR_SCALE}>
+          <primitive ref={sceneRef} object={modelScene} />
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function MiningPlayableModel({
+  pose,
+  mouseGroundRef,
+  equippedRightHand = null,
+}: BaseProps) {
+  const outerRef = useRef<THREE.Group>(null);
+  const modelRef = useRef<THREE.Group>(null);
+  const poseRef = useRef(pose);
+  poseRef.current = pose;
+  const prevClipRef = useRef("");
+  const initDoneRef = useRef(false);
+  const toolObjectRef = useRef<THREE.Object3D | null>(null);
+  const idleToggleRef = useRef(false);
+
+  const baseGltf = useGLTF(MINING_MAN_MODELS.base);
+  const walkGltf = useGLTF(MINING_MAN_MODELS.walk);
+  const attackGltf = useGLTF(MINING_MAN_MODELS.attack);
+  const talkGltf = useGLTF(MINING_MAN_MODELS.talk);
+
+  const modelScene = useMemo(
+    () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
+    [baseGltf.scene],
+  );
+  const rightHandSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+
+  useMemo(() => {
+    tuneSkinnedSceneMaterials(modelScene);
+  }, [modelScene]);
+
+  const allClips = useMemo(() => {
+    const clips: THREE.AnimationClip[] = [];
+    const add = (anims: THREE.AnimationClip[], name: string) => {
+      if (anims.length > 0) {
+        const c = anims[0].clone();
+        c.name = name;
+        clips.push(c);
+      }
+    };
+    add(walkGltf.animations, "idle");
+    add(walkGltf.animations, "idle2");
+    add(walkGltf.animations, "walk");
+    add(walkGltf.animations, "run");
+    add(attackGltf.animations, "skill");
+    add(attackGltf.animations, "alert");
+    add(attackGltf.animations, "jump");
+    add(attackGltf.animations, "spell");
+    add(attackGltf.animations, "roll");
+    add(talkGltf.animations, "talk");
+    return clips;
+  }, [walkGltf.animations, attackGltf.animations, talkGltf.animations]);
+
+  const { actions } = useAnimations(allClips, modelRef);
+
+  useEffect(() => {
+    const modelRoot = modelRef.current;
+    if (!modelRoot) return;
+    const rightHand = modelRoot.getObjectByName("RightHand");
+    if (!rightHand) return;
+    rightHand.add(rightHandSocket);
+    return () => {
+      rightHand.remove(rightHandSocket);
+    };
+  }, [modelScene, rightHandSocket]);
+
+  useEffect(() => {
+    const previousTool = toolObjectRef.current;
+    if (previousTool) {
+      rightHandSocket.remove(previousTool);
+      disposeObject3D(previousTool);
+      toolObjectRef.current = null;
+    }
+    if (!equippedRightHand) return;
+    const itemDef = EQUIPPABLE_ITEMS[equippedRightHand];
+    if (!itemDef) return;
+    const toolObject = createToolObject(equippedRightHand);
+    applySocketTransform(toolObject, itemDef.rightHand);
+    rightHandSocket.add(toolObject);
+    toolObjectRef.current = toolObject;
+    return () => {
+      rightHandSocket.remove(toolObject);
+      disposeObject3D(toolObject);
+      if (toolObjectRef.current === toolObject) {
+        toolObjectRef.current = null;
+      }
+    };
+  }, [equippedRightHand, rightHandSocket]);
+
+  useEffect(() => {
+    if (initDoneRef.current) return;
+    const idle = actions["idle"];
+    if (idle) {
+      idle.reset().setLoop(THREE.LoopRepeat, Infinity).play();
+      idle.timeScale = 0.18;
+      prevClipRef.current = "idle";
+      initDoneRef.current = true;
+    }
+  }, [actions]);
+
+  useEffect(() => {
+    if (!initDoneRef.current) return;
+    let target: string;
+    switch (pose.animState) {
+      case "walk":
+        target = "walk";
+        break;
+      case "run":
+        target = "run";
+        break;
+      case "attack":
+        target = "alert";
+        break;
+      case "chop":
+        target = "skill";
+        break;
+      case "jump":
+        target = "jump";
+        break;
+      case "spell":
+        target = "spell";
+        break;
+      case "roll":
+        target = "roll";
+        break;
+      default: {
+        const prev = prevClipRef.current;
+        const wasIdle = prev === "idle" || prev === "idle2";
+        if (wasIdle) return;
+        idleToggleRef.current = !idleToggleRef.current;
+        target = idleToggleRef.current ? "idle2" : "idle";
+        break;
+      }
+    }
+
+    if (target === prevClipRef.current) return;
+
+    const nextAction = actions[target];
+    const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
+    if (!nextAction) return;
+    const clipDuration = nextAction.getClip().duration;
+
+    nextAction.reset();
+    if (target === "idle" || target === "idle2") {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = target === "idle2" ? 0.22 : 0.18;
+    } else if (target === "run") {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1.65;
+    } else if (target === "walk") {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1;
+    } else if (
+      pose.animState === "attack" ||
+      pose.animState === "chop" ||
+      pose.animState === "jump" ||
+      pose.animState === "spell" ||
+      pose.animState === "roll"
+    ) {
+      nextAction.setLoop(THREE.LoopOnce, 1);
+      nextAction.clampWhenFinished = true;
+      let desiredDuration = clipDuration;
+      if (pose.animState === "jump") {
+        desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      } else if (pose.animState === "roll") {
         desiredDuration = clipDuration;
       } else if (pose.animState === "chop") {
         desiredDuration = CHOP_DURATION_DEFAULT;
@@ -315,74 +826,7 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
     prevClipRef.current = target;
   }, [pose.animState, actions]);
 
-  useFrame((_, delta) => {
-    if (!outerRef.current) return;
-    const p = poseRef.current;
-    const tx = p.gx * TILE_UNIT_SIZE;
-    const tz = p.gy * TILE_UNIT_SIZE;
-    const pos = outerRef.current.position;
-
-    const sm = 1 - Math.exp(-12 * delta);
-    const isJumping = p.animState === "jump";
-    const isRolling = p.animState === "roll";
-    if (isJumping && !wasJumping.current) {
-      jumpArcTimer.current = 0;
-    }
-    wasJumping.current = isJumping;
-
-    if (isJumping || isRolling) {
-      pos.x = tx;
-      pos.z = tz;
-    } else {
-      pos.x += (tx - pos.x) * sm;
-      pos.z += (tz - pos.z) * sm;
-    }
-
-    let arcY = 0;
-    if (isJumping) {
-      jumpArcTimer.current += delta;
-      const dur = p.jumpDuration ?? JUMP_DURATION_DEFAULT;
-      const t = Math.min(1, jumpArcTimer.current / dur);
-      const ascentPortion = 0.46;
-      let arcNorm = 0;
-      if (t < ascentPortion) {
-        const u = t / ascentPortion;
-        arcNorm = Math.sin((u * Math.PI) / 2);
-      } else {
-        const u = (t - ascentPortion) / (1 - ascentPortion);
-        arcNorm = Math.cos((u * Math.PI) / 2);
-      }
-      arcY = JUMP_ARC_HEIGHT * Math.max(0, arcNorm);
-    }
-    pos.y = TILE_SURFACE_Y + arcY;
-
-    if (modelRef.current) {
-      const hasMoveInput = p.animState === "walk" || p.animState === "run";
-      const useMouseLook = hasMoveInput && p.isManualMove;
-      const mousePos = mouseGroundRef?.current;
-      let targetRot: number;
-      if (p.facingAngle != null) {
-        targetRot = p.facingAngle;
-      } else if (useMouseLook && mousePos) {
-        const cx = pos.x;
-        const cz = pos.z;
-        const dx = mousePos.x - cx;
-        const dz = mousePos.z - cz;
-        if (Math.abs(dx) > 1e-5 || Math.abs(dz) > 1e-5) {
-          targetRot = Math.atan2(dx, dz);
-        } else {
-          targetRot = p.direction === "right" ? BASE_ROT_Y + Math.PI : BASE_ROT_Y;
-        }
-      } else {
-        targetRot = p.direction === "right" ? BASE_ROT_Y + Math.PI : BASE_ROT_Y;
-      }
-      const cur = modelRef.current.rotation.y;
-      let diff = targetRot - cur;
-      while (diff > Math.PI) diff -= 2 * Math.PI;
-      while (diff < -Math.PI) diff += 2 * Math.PI;
-      modelRef.current.rotation.y += diff * sm;
-    }
-  });
+  useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef);
 
   return (
     <group ref={outerRef}>
@@ -393,4 +837,219 @@ export function CharacterModel({ pose, mouseGroundRef, equippedRightHand = null 
       </group>
     </group>
   );
+}
+
+function MagicPlayableModel({
+  pose,
+  mouseGroundRef,
+  equippedRightHand = null,
+}: BaseProps) {
+  const outerRef = useRef<THREE.Group>(null);
+  const modelRef = useRef<THREE.Group>(null);
+  const poseRef = useRef(pose);
+  poseRef.current = pose;
+  const prevClipRef = useRef("");
+  const initDoneRef = useRef(false);
+  const toolObjectRef = useRef<THREE.Object3D | null>(null);
+  const idleToggleRef = useRef(false);
+
+  const baseGltf = useGLTF(MAGIC_MAN_MODELS.base);
+  const walkGltf = useGLTF(MAGIC_MAN_MODELS.walk);
+  const idleGltf = useGLTF(MAGIC_MAN_MODELS.idle);
+  const zauberGltf = useGLTF(MAGIC_MAN_MODELS.zauber);
+
+  const modelScene = useMemo(
+    () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
+    [baseGltf.scene],
+  );
+  const rightHandSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+
+  useMemo(() => {
+    tuneSkinnedSceneMaterials(modelScene);
+  }, [modelScene]);
+
+  const allClips = useMemo(() => {
+    const clips: THREE.AnimationClip[] = [];
+    const add = (anims: THREE.AnimationClip[], name: string) => {
+      if (anims.length > 0) {
+        const c = anims[0].clone();
+        c.name = name;
+        clips.push(c);
+      }
+    };
+    add(idleGltf.animations, "idle");
+    add(idleGltf.animations, "idle2");
+    add(walkGltf.animations, "walk");
+    add(walkGltf.animations, "run");
+    add(zauberGltf.animations, "spell");
+    add(zauberGltf.animations, "skill");
+    add(idleGltf.animations, "jump");
+    add(idleGltf.animations, "alert");
+    add(idleGltf.animations, "roll");
+    return clips;
+  }, [idleGltf.animations, walkGltf.animations, zauberGltf.animations]);
+
+  const { actions } = useAnimations(allClips, modelRef);
+
+  useEffect(() => {
+    const modelRoot = modelRef.current;
+    if (!modelRoot) return;
+    const rightHand = modelRoot.getObjectByName("RightHand");
+    if (!rightHand) return;
+    rightHand.add(rightHandSocket);
+    return () => {
+      rightHand.remove(rightHandSocket);
+    };
+  }, [modelScene, rightHandSocket]);
+
+  useEffect(() => {
+    const previousTool = toolObjectRef.current;
+    if (previousTool) {
+      rightHandSocket.remove(previousTool);
+      disposeObject3D(previousTool);
+      toolObjectRef.current = null;
+    }
+    if (!equippedRightHand) return;
+    const itemDef = EQUIPPABLE_ITEMS[equippedRightHand];
+    if (!itemDef) return;
+    const toolObject = createToolObject(equippedRightHand);
+    applySocketTransform(toolObject, itemDef.rightHand);
+    rightHandSocket.add(toolObject);
+    toolObjectRef.current = toolObject;
+    return () => {
+      rightHandSocket.remove(toolObject);
+      disposeObject3D(toolObject);
+      if (toolObjectRef.current === toolObject) {
+        toolObjectRef.current = null;
+      }
+    };
+  }, [equippedRightHand, rightHandSocket]);
+
+  useEffect(() => {
+    if (initDoneRef.current) return;
+    const idle = actions["idle"];
+    if (idle) {
+      idle.reset().setLoop(THREE.LoopRepeat, Infinity).play();
+      prevClipRef.current = "idle";
+      initDoneRef.current = true;
+    }
+  }, [actions]);
+
+  useEffect(() => {
+    if (!initDoneRef.current) return;
+    let target: string;
+    switch (pose.animState) {
+      case "walk":
+        target = "walk";
+        break;
+      case "run":
+        target = "run";
+        break;
+      case "attack":
+        target = "alert";
+        break;
+      case "chop":
+        target = "skill";
+        break;
+      case "jump":
+        target = "jump";
+        break;
+      case "spell":
+        target = "spell";
+        break;
+      case "roll":
+        target = "roll";
+        break;
+      default: {
+        const prev = prevClipRef.current;
+        const wasIdle = prev === "idle" || prev === "idle2";
+        if (wasIdle) return;
+        idleToggleRef.current = !idleToggleRef.current;
+        target = idleToggleRef.current ? "idle2" : "idle";
+        break;
+      }
+    }
+
+    if (target === prevClipRef.current) return;
+
+    const nextAction = actions[target];
+    const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
+    if (!nextAction) return;
+    const clipDuration = nextAction.getClip().duration;
+
+    nextAction.reset();
+    if (target === "run") {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1.55;
+    } else if (
+      pose.animState === "attack" ||
+      pose.animState === "chop" ||
+      pose.animState === "jump" ||
+      pose.animState === "spell" ||
+      pose.animState === "roll"
+    ) {
+      nextAction.setLoop(THREE.LoopOnce, 1);
+      nextAction.clampWhenFinished = true;
+      let desiredDuration = clipDuration;
+      if (pose.animState === "jump") {
+        desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      } else if (pose.animState === "roll") {
+        desiredDuration = pose.rollDuration ?? Math.min(clipDuration, 0.5);
+      } else if (pose.animState === "chop") {
+        desiredDuration = CHOP_DURATION_DEFAULT;
+      } else if (pose.animState === "spell") {
+        desiredDuration = SPELL_DURATION_DEFAULT;
+      }
+      if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
+        nextAction.timeScale = clipDuration / desiredDuration;
+      } else {
+        nextAction.timeScale = 1;
+      }
+    } else {
+      nextAction.setLoop(THREE.LoopRepeat, Infinity);
+      nextAction.timeScale = 1;
+    }
+
+    if (prevAction && prevAction.isRunning()) {
+      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
+    }
+    nextAction.play();
+    prevClipRef.current = target;
+  }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration]);
+
+  useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef);
+
+  return (
+    <group ref={outerRef}>
+      <group ref={modelRef}>
+        <group scale={CHAR_SCALE}>
+          <primitive object={modelScene} />
+        </group>
+      </group>
+    </group>
+  );
+}
+
+export type CharacterModelProps = BaseProps & {
+  playableVariant?: PlayableCharacterId;
+};
+
+export function CharacterModel({
+  playableVariant = "default",
+  ...rest
+}: CharacterModelProps) {
+  switch (playableVariant) {
+    case "fight_man":
+      return <FightManPlayableModel {...rest} />;
+    case "mining_man":
+      return <MiningPlayableModel {...rest} />;
+    case "magic_man":
+      return <MagicPlayableModel {...rest} />;
+    default:
+      return <DefaultCharacterModel {...rest} />;
+  }
 }

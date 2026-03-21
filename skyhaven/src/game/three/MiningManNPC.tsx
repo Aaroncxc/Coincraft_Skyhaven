@@ -8,6 +8,13 @@ import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import { MINE_TILES } from "../types";
 import type { IslandMap } from "../types";
+import {
+  buildBlockedFootprintSet,
+  buildWalkableCellSet,
+  findNearestValidCell,
+  getWalkableTileList,
+  isAvatarCellValid,
+} from "./islandWalkability";
 
 Object.values(MINING_MAN_MODELS).forEach((p) => useGLTF.preload(p));
 
@@ -22,6 +29,8 @@ const ATTACK_INTERVAL_MIN = 8;
 const ATTACK_INTERVAL_MAX = 15;
 const ATTACK_DURATION = 5;
 const TALK_DURATION = 6;
+/** Reset NPC to anchor neighborhood if stuck on same rounded tile this long while walking/pausing. */
+const NPC_TILE_DWELL_RESET_SEC = 8;
 type NpcState = "walk" | "pause" | "attack" | "talk";
 
 type Props = {
@@ -39,19 +48,6 @@ function findMineTile(island: IslandMap): { gx: number; gy: number } | null {
     }
   }
   return null;
-}
-
-function getWalkableTiles(island: IslandMap): { gx: number; gy: number }[] {
-  return island.tiles.filter((t) => !t.blocked).map((t) => ({ gx: t.gx, gy: t.gy }));
-}
-
-function buildWalkableCellSet(island: IslandMap): Set<string> {
-  const set = new Set<string>();
-  for (const t of island.tiles) {
-    if (t.blocked) continue;
-    set.add(`${t.gx},${t.gy}`);
-  }
-  return set;
 }
 
 function pickRandomNearby(
@@ -88,20 +84,26 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
   const attackDurationRef = useRef(0);
   const talkTimerRef = useRef(0);
   const spawnedRef = useRef(false);
+  const dwellTimerRef = useRef(0);
+  const lastDwellRoundedKeyRef = useRef("");
 
   const mineTile = useMemo(() => findMineTile(island), [island]);
-  const walkableTiles = useMemo(() => getWalkableTiles(island), [island]);
+  const walkableTiles = useMemo(() => getWalkableTileList(island), [island]);
   const walkableCells = useMemo(() => buildWalkableCellSet(island), [island]);
+  const blockedFootprint = useMemo(() => buildBlockedFootprintSet(island), [island]);
 
   useEffect(() => {
     if (!mineTile || walkableTiles.length === 0) return;
     if (!spawnedRef.current) {
-      gxRef.current = mineTile.gx;
-      gyRef.current = mineTile.gy;
-      targetRef.current = pickRandomNearby(walkableTiles, mineTile.gx, mineTile.gy, 3);
+      const safe = findNearestValidCell(mineTile.gx, mineTile.gy, walkableCells, blockedFootprint);
+      gxRef.current = safe.gx;
+      gyRef.current = safe.gy;
+      targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
+      lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
+      dwellTimerRef.current = 0;
       spawnedRef.current = true;
     }
-  }, [mineTile, walkableTiles]);
+  }, [mineTile, walkableTiles, walkableCells, blockedFootprint]);
 
   useMemo(() => {
     baseGltf.scene.traverse((child) => {
@@ -187,10 +189,23 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
   useFrame((_, delta) => {
     if (!outerRef.current || !mineTile || walkableTiles.length === 0) return;
     const dt = Math.min(0.05, delta);
-    const state = stateRef.current;
 
     npcPosRef.current = { gx: gxRef.current, gy: gyRef.current };
 
+    if (!isAvatarCellValid(walkableCells, blockedFootprint, gxRef.current, gyRef.current)) {
+      const safe = findNearestValidCell(gxRef.current, gyRef.current, walkableCells, blockedFootprint);
+      gxRef.current = safe.gx;
+      gyRef.current = safe.gy;
+      targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
+      dwellTimerRef.current = 0;
+      lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
+      if (stateRef.current === "pause") {
+        stateRef.current = "walk";
+        playClip("walk", true);
+      }
+    }
+
+    let state = stateRef.current;
     if (state === "talk") {
       talkTimerRef.current -= dt;
       if (talkTimerRef.current <= 0) {
@@ -235,7 +250,7 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
         const nextGx = gxRef.current + dx * step;
         const nextGy = gyRef.current + dy * step;
         const cellKey = `${Math.round(nextGx)},${Math.round(nextGy)}`;
-        if (!walkableCells.has(cellKey)) {
+        if (blockedFootprint.has(cellKey) || !walkableCells.has(cellKey)) {
           targetRef.current = pickRandomNearby(walkableTiles, gxRef.current, gyRef.current, 3);
           stateRef.current = "walk";
           playClip("walk", true);
@@ -263,6 +278,34 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
       }
     }
 
+    state = stateRef.current;
+    const endState = state;
+    const dwellRounded = `${Math.round(gxRef.current)},${Math.round(gyRef.current)}`;
+    const countDwell = endState === "walk" || endState === "pause";
+    if (countDwell) {
+      if (dwellRounded !== lastDwellRoundedKeyRef.current) {
+        lastDwellRoundedKeyRef.current = dwellRounded;
+        dwellTimerRef.current = 0;
+      } else {
+        dwellTimerRef.current += dt;
+        if (dwellTimerRef.current >= NPC_TILE_DWELL_RESET_SEC) {
+          const safe = findNearestValidCell(mineTile.gx, mineTile.gy, walkableCells, blockedFootprint);
+          gxRef.current = safe.gx;
+          gyRef.current = safe.gy;
+          targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
+          dwellTimerRef.current = 0;
+          lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
+          if (endState === "pause") {
+            stateRef.current = "walk";
+            playClip("walk", true);
+          }
+        }
+      }
+    } else {
+      lastDwellRoundedKeyRef.current = dwellRounded;
+      dwellTimerRef.current = 0;
+    }
+
     const tx = gxRef.current * TILE_UNIT_SIZE;
     const tz = gyRef.current * TILE_UNIT_SIZE;
     const pos = outerRef.current.position;
@@ -273,7 +316,7 @@ export function MiningManNPC({ island, isTalking, npcPosRef, playerGx, playerGy 
 
     if (modelRef.current) {
       let targetRot = facingAngleRef.current;
-      if (state === "talk") {
+      if (stateRef.current === "talk") {
         const toPlayerX = playerGx * TILE_UNIT_SIZE - tx;
         const toPlayerZ = playerGy * TILE_UNIT_SIZE - tz;
         if (Math.abs(toPlayerX) > 1e-4 || Math.abs(toPlayerZ) > 1e-4) {

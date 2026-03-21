@@ -17,11 +17,13 @@ import { CharacterModel } from "./CharacterModel";
 import { SkullyCompanion } from "./SkullyCompanion";
 import { MiningManNPC } from "./MiningManNPC";
 import { MagicManNPC } from "./MagicManNPC";
+import { FightManNPCWithSuspense } from "./FightManNPC";
 import { SpeechBubble } from "./SpeechBubble";
 import {
   useCharacterMovement,
   findNearbyInteractable,
   findNearbyRuneTile,
+  findNearbyAncientTempleTile,
   buildTileTypeMap,
   type SpellCastEvent,
   type TpsCameraState,
@@ -37,6 +39,7 @@ import { WorldParticles, getParticleTileWorldXZ, BUBBLING_DEFAULT_SPAWN_Y } from
 import { TileHighlight } from "./TileHighlight";
 import { DebugTileWrapper } from "./DebugTileWrapper";
 import { ALL_GAME_GLTF_PATHS, TILE_UNIT_SIZE } from "./assets3d";
+import type { CameraOccluderEntry } from "./cameraOcclusion";
 import { GltfEmissiveSanitize } from "./GltfEmissiveSanitize";
 import {
   type IslandLightingParams,
@@ -44,6 +47,7 @@ import {
   sunPositionFromAngles,
 } from "./islandLighting";
 import { MINE_TILES, DECORATION_TILES, NO_DECORATION_TILES } from "../types";
+import type { PlayableCharacterId } from "../playableCharacters";
 
 const MOUSE_GROUND_Y = 0.82;
 const mouseGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -MOUSE_GROUND_Y);
@@ -63,6 +67,15 @@ const RUNE_BUBBLE_LUMINANCE_BOOST = 3.4;
 const RUNE_GLOW_POINT_INTENSITY = 2.4;
 const RUNE_GLOW_POINT_DISTANCE = 5.5;
 const RUNE_BUBBLE_COLOR_CYCLE = { from: 0xffcc55, to: 0xcc2200, periodSec: 7 } as const;
+const HOVER_OUTLINE_SELECTION_LAYER = 10;
+
+function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
 
 function MouseGroundTracker({
   mouseGroundRef,
@@ -146,6 +159,11 @@ export type IslandSceneProps = {
   onCancelMiniAction?: () => void;
   isMiniActionActive?: boolean;
   onRuneVfxToggle?: (tileGx: number, tileGy: number) => void;
+  /** E near Ancient Temple opens character roster (React overlay). */
+  onOpenCharacterSelect?: () => void;
+  /** Active playable skin; duplicate world NPC hidden when it matches. */
+  playableVariant?: PlayableCharacterId;
+  onTpsModeChange?: (active: boolean) => void;
   /** When true, vignette is shown (expanded/fullscreen only, not compact/transparent) */
   showVignette?: boolean;
   /** Sun + ambient/fill/env; in debug mode usually driven by sliders. */
@@ -526,6 +544,9 @@ export function IslandScene({
   onCancelMiniAction,
   isMiniActionActive = false,
   onRuneVfxToggle,
+  onOpenCharacterSelect,
+  playableVariant = "default",
+  onTpsModeChange,
   showVignette = false,
   islandLighting: islandLightingProp = DEFAULT_ISLAND_LIGHTING,
 }: IslandSceneProps) {
@@ -535,13 +556,26 @@ export function IslandScene({
   const [gizmoDragging, setGizmoDragging] = useState(false);
   const [miningManTalking, setMiningManTalking] = useState(false);
   const [magicManTalking, setMagicManTalking] = useState(false);
+  const [fightManTalking, setFightManTalking] = useState(false);
+  const [tpsModeActive, setTpsModeActive] = useState(false);
+  const [fadedOccluderKeys, setFadedOccluderKeys] = useState<string[]>([]);
   const mouseGroundRef = useRef<THREE.Vector3 | null>(null);
-  const tpsCameraStateRef = useRef<TpsCameraState>({ active: false, viewYaw: null });
-  const cameraOccludersRef = useRef<THREE.Object3D[]>([]);
+  const tpsCameraStateRef = useRef<TpsCameraState>({
+    active: false,
+    viewYaw: null,
+    characterOccluded: false,
+    steeringActive: false,
+    mouseForwardActive: false,
+    fadedOccluderKeys: [],
+  });
+  const cameraOccludersRef = useRef<CameraOccluderEntry[]>([]);
   const spellCastRef = useRef<SpellCastEvent | null>(null);
   const npcPosRef = useRef<{ gx: number; gy: number } | null>(null);
   const magicManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
+  const fightManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
   const npcPositionsMapRef = useRef(new Map<string, { gx: number; gy: number }>());
+  const prevTpsActiveRef = useRef(false);
+  const prevFadedOccluderKeysRef = useRef<string[]>([]);
 
   const hasMiningTile = useMemo(
     () => island.tiles.some((t) => (MINE_TILES as readonly string[]).includes(t.type)),
@@ -550,6 +584,11 @@ export function IslandScene({
 
   const hasMagicTower = useMemo(
     () => island.tiles.some((t) => t.type === "magicTower"),
+    [island],
+  );
+
+  const hasKaserneTile = useMemo(
+    () => island.tiles.some((t) => t.type === "kaserneTile"),
     [island],
   );
 
@@ -601,6 +640,9 @@ export function IslandScene({
     } else if (npcId === "magicMan") {
       setMagicManTalking(true);
       setTimeout(() => setMagicManTalking(false), 6000);
+    } else if (npcId === "fightMan") {
+      setFightManTalking(true);
+      setTimeout(() => setFightManTalking(false), 6000);
     }
   }, []);
 
@@ -614,6 +656,7 @@ export function IslandScene({
     onNpcInteract: handleNpcInteract,
     npcPositionsRef: npcPositionsMapRef,
     onRuneVfxToggle,
+    onOpenCharacterSelect,
   });
 
   useFrame(() => {
@@ -629,7 +672,36 @@ export function IslandScene({
     } else {
       npcPositionsMapRef.current.delete("magicMan");
     }
+    const fightPos = fightManNpcPosRef.current;
+    if (fightPos) {
+      npcPositionsMapRef.current.set("fightMan", fightPos);
+    } else {
+      npcPositionsMapRef.current.delete("fightMan");
+    }
+
+    const tpsActive = tpsCameraStateRef.current.active;
+    if (prevTpsActiveRef.current !== tpsActive) {
+      prevTpsActiveRef.current = tpsActive;
+      setTpsModeActive(tpsActive);
+      if (tpsActive) {
+        setHoveredTileId(null);
+        setHoveredOutlineRef(null);
+      }
+      onTpsModeChange?.(tpsActive);
+    }
+
+    const nextFadedOccluderKeys = tpsActive ? tpsCameraStateRef.current.fadedOccluderKeys : [];
+    if (!sameStringArray(prevFadedOccluderKeysRef.current, nextFadedOccluderKeys)) {
+      prevFadedOccluderKeysRef.current = [...nextFadedOccluderKeys];
+      setFadedOccluderKeys(nextFadedOccluderKeys);
+    }
   });
+
+  useLayoutEffect(() => {
+    return () => {
+      onTpsModeChange?.(false);
+    };
+  }, [onTpsModeChange]);
 
   const tileTypeMap = useMemo(() => buildTileTypeMap(island), [island]);
   const nearbyInteract = useMemo(
@@ -639,6 +711,11 @@ export function IslandScene({
 
   const nearbyRune = useMemo(
     () => (isMiniActionActive ? null : findNearbyRuneTile(charPose.gx, charPose.gy, island)),
+    [charPose.gx, charPose.gy, island, isMiniActionActive],
+  );
+
+  const nearbyTemple = useMemo(
+    () => (isMiniActionActive ? null : findNearbyAncientTempleTile(charPose.gx, charPose.gy, island)),
     [charPose.gx, charPose.gy, island, isMiniActionActive],
   );
 
@@ -662,8 +739,16 @@ export function IslandScene({
         bestDist = d;
       }
     }
+    if (hasKaserneTile && fightManNpcPosRef.current) {
+      const pos = fightManNpcPosRef.current;
+      const d = Math.hypot(charPose.gx - pos.gx, charPose.gy - pos.gy);
+      if (d <= 1.2 && d < bestDist) {
+        best = pos;
+        bestDist = d;
+      }
+    }
     return best;
-  }, [charPose.gx, charPose.gy, hasMiningTile, hasMagicTower, isMiniActionActive]);
+  }, [charPose.gx, charPose.gy, hasMiningTile, hasMagicTower, hasKaserneTile, isMiniActionActive]);
 
   const setHoveredTileIdSmooth = useCallback((id: string | null) => {
     startTransition(() => setHoveredTileId(id));
@@ -680,6 +765,8 @@ export function IslandScene({
   }, [onEditDraggingChange]);
 
   const gridExtent = useMemo(() => getGridExtent(island), [island]);
+  const fadedOccluderKeySet = useMemo(() => new Set(fadedOccluderKeys), [fadedOccluderKeys]);
+  const gameplayOccluderFadeActive = tpsModeActive && !buildMode && !eraseMode;
 
   const islandLighting = islandLightingProp;
 
@@ -881,7 +968,13 @@ export function IslandScene({
                 uniformScale={debugUniformScale}
               />
             ))}
-            <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
+            <Suspense fallback={null}>
+              <CharacterModel
+                pose={charPose}
+                mouseGroundRef={mouseGroundRef}
+                playableVariant={playableVariant}
+              />
+            </Suspense>
             <SkullyCompanion pose={charPose} />
             <ChopParticles
               gx={charPose.gx}
@@ -926,7 +1019,7 @@ export function IslandScene({
                 offsetZ={-0.35}
               />
             )}
-            {hasMiningTile && (
+            {hasMiningTile && playableVariant !== "mining_man" && (
               <MiningManNPC
                 island={island}
                 isTalking={miningManTalking}
@@ -935,11 +1028,20 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
-            {hasMagicTower && (
+            {hasMagicTower && playableVariant !== "magic_man" && (
               <MagicManNPC
                 island={island}
                 isTalking={magicManTalking}
                 npcPosRef={magicManNpcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            {hasKaserneTile && playableVariant !== "fight_man" && (
+              <FightManNPCWithSuspense
+                island={island}
+                isTalking={fightManTalking}
+                npcPosRef={fightManNpcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
               />
@@ -975,7 +1077,13 @@ export function IslandScene({
                   uniformScale={editUniformScale}
                 />
               ))}
-              <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
+              <Suspense fallback={null}>
+                <CharacterModel
+                  pose={charPose}
+                  mouseGroundRef={mouseGroundRef}
+                  playableVariant={playableVariant}
+                />
+              </Suspense>
               <SkullyCompanion pose={charPose} />
               <ChopParticles
                 gx={charPose.gx}
@@ -1020,7 +1128,7 @@ export function IslandScene({
                   offsetZ={-0.35}
                 />
               )}
-              {hasMiningTile && (
+              {hasMiningTile && playableVariant !== "mining_man" && (
                 <MiningManNPC
                   island={island}
                   isTalking={miningManTalking}
@@ -1029,11 +1137,20 @@ export function IslandScene({
                   playerGy={charPose.gy}
                 />
               )}
-              {hasMagicTower && (
+              {hasMagicTower && playableVariant !== "magic_man" && (
                 <MagicManNPC
                   island={island}
                   isTalking={magicManTalking}
                   npcPosRef={magicManNpcPosRef}
+                  playerGx={charPose.gx}
+                  playerGy={charPose.gy}
+                />
+              )}
+              {hasKaserneTile && playableVariant !== "fight_man" && (
+                <FightManNPCWithSuspense
+                  island={island}
+                  isTalking={fightManTalking}
+                  npcPosRef={fightManNpcPosRef}
                   playerGx={charPose.gx}
                   playerGy={charPose.gy}
                 />
@@ -1050,13 +1167,21 @@ export function IslandScene({
               <TileModel
                 key={tile.id}
                 tile={tile}
-                hovered={tile.id === hoveredTileId}
-                onHoverEnter={() => setHoveredTileIdSmooth(tile.id)}
-                onHoverLeave={() => setHoveredTileIdSmooth(null)}
+                hovered={!tpsModeActive && tile.id === hoveredTileId}
+                faded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`tile:${tile.id}`)}
+                decorationFaded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`deco:${tile.id}`)}
+                onHoverEnter={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(tile.id)}
+                onHoverLeave={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(null)}
                 cameraOccludersRef={cameraOccludersRef}
               />
             ))}
-            <CharacterModel pose={charPose} mouseGroundRef={mouseGroundRef} />
+            <Suspense fallback={null}>
+              <CharacterModel
+                pose={charPose}
+                mouseGroundRef={mouseGroundRef}
+                playableVariant={playableVariant}
+              />
+            </Suspense>
             <SkullyCompanion pose={charPose} />
             <ChopParticles
               gx={charPose.gx}
@@ -1101,7 +1226,7 @@ export function IslandScene({
                 offsetZ={-0.35}
               />
             )}
-            {hasMiningTile && (
+            {hasMiningTile && playableVariant !== "mining_man" && (
               <MiningManNPC
                 island={island}
                 isTalking={miningManTalking}
@@ -1110,11 +1235,20 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
-            {hasMagicTower && (
+            {hasMagicTower && playableVariant !== "magic_man" && (
               <MagicManNPC
                 island={island}
                 isTalking={magicManTalking}
                 npcPosRef={magicManNpcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            {hasKaserneTile && playableVariant !== "fight_man" && (
+              <FightManNPCWithSuspense
+                island={island}
+                isTalking={fightManTalking}
+                npcPosRef={fightManNpcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
               />
@@ -1137,7 +1271,7 @@ export function IslandScene({
             />
           ))}
 
-        {!debugMode && !editMode && hoveredTileId && !buildMode && !eraseMode && (() => {
+        {!debugMode && !editMode && !tpsModeActive && hoveredTileId && !buildMode && !eraseMode && (() => {
           const tile = island.tiles.find((t) => t.id === hoveredTileId);
           return tile ? <TileHighlight gx={tile.gx} gy={tile.gy} color="#88ccff" /> : null;
         })()}
@@ -1178,13 +1312,23 @@ export function IslandScene({
           <InteractPrompt tileGx={nearbyRune.gx} tileGy={nearbyRune.gy} />
         )}
 
-        {nearbyNpc &&
+        {nearbyTemple &&
           !nearbyInteract &&
           !nearbyRune &&
           !debugMode &&
+          !editMode && (
+          <InteractPrompt tileGx={nearbyTemple.gx} tileGy={nearbyTemple.gy} />
+        )}
+
+        {nearbyNpc &&
+          !nearbyInteract &&
+          !nearbyRune &&
+          !nearbyTemple &&
+          !debugMode &&
           !editMode &&
           !miningManTalking &&
-          !magicManTalking && (
+          !magicManTalking &&
+          !fightManTalking && (
           <InteractPrompt tileGx={nearbyNpc.gx} tileGy={nearbyNpc.gy} />
         )}
 
@@ -1204,6 +1348,16 @@ export function IslandScene({
             ]}
           />
         )}
+        {hasKaserneTile && fightManNpcPosRef.current && (
+          <SpeechBubble
+            visible={fightManTalking}
+            position={[
+              fightManNpcPosRef.current.gx * TILE_UNIT_SIZE,
+              2.2,
+              fightManNpcPosRef.current.gy * TILE_UNIT_SIZE,
+            ]}
+          />
+        )}
 
         <Preload all />
       </Suspense>
@@ -1213,6 +1367,7 @@ export function IslandScene({
         <Vignette offset={0.3} darkness={0.9} opacity={showVignette ? 1 : 0} />
         <Outline
           selection={hoveredOutlineRef ? [hoveredOutlineRef] : []}
+          selectionLayer={HOVER_OUTLINE_SELECTION_LAYER}
           visibleEdgeColor={0x88ccff}
           hiddenEdgeColor={0x224466}
           edgeStrength={4}

@@ -6,6 +6,7 @@ import type { OrthographicCamera as ThreeOrthographicCamera, PerspectiveCamera a
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { TILE_UNIT_SIZE } from "./assets3d";
 import type { CharacterPose3D, TpsCameraState } from "./useCharacterMovement";
+import type { CameraOccluderEntry } from "./cameraOcclusion";
 
 const ISO_ANGLE_X = Math.atan(1 / Math.SQRT2);
 const ISO_ANGLE_Y = Math.PI / 4;
@@ -28,12 +29,42 @@ const TPS_PITCH_MIN = 0.16;
 const TPS_PITCH_MAX = 1.2;
 const TPS_LOOK_SENSITIVITY = 0.0024;
 const TPS_WHEEL_SPEED = 0.01;
-const TPS_OCCLUSION_BUFFER = 0.18;
-const TPS_OCCLUSION_MIN_DISTANCE = 0.95;
-const TPS_OCCLUSION_RECOVERY = 9;
-const CAMERA_OCCLUSION_LAYER = 2;
+/** Must not collide with postprocessing `OutlineEffect` selection layers (starts at 2). */
+const CAMERA_OCCLUSION_LAYER = 11;
+/** Ray must get this close to the look target before we treat LOS as clear (character radius). */
+const CHAR_LOS_CLEAR_MARGIN = 0.22;
+const CHAR_LOS_SMOOTH_SPEED = 14;
+const CHAR_LOS_HEAD_OFFSET = 0.42;
+const CHAR_LOS_LOWER_TORSO_OFFSET = -0.34;
+const CHAR_LOS_SHOULDER_OFFSET = 0.24;
 
-type CameraMode = "iso" | "tps";
+const TPS_ENTER_TRANSITION_DURATION = 0.35;
+const TPS_EXIT_TRANSITION_DURATION = 0.45;
+const TPS_EXIT_WHEEL_TO_ISO_ZOOM = 0.12;
+
+/** OrbitControls ortho zoom uses fixed multiplicative steps per notch; we drive a target + lerp for smooth scroll / trackpad. */
+const ISO_ZOOM_LERP_SPEED = 14;
+/** deltaY is often ~100 per mouse notch; scale so one notch moves target zoom noticeably but camera eases in. */
+const ISO_ZOOM_WHEEL_SCALE = 0.085;
+const TPS_DISTANCE_LERP_SPEED = 16;
+
+type CameraMode = "iso" | "tps" | "tps_exit";
+
+type IsoResumeState = {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  offset: THREE.Vector3;
+};
+
+type TpsExitTransition = {
+  fromPos: THREE.Vector3;
+  fromQuat: THREE.Quaternion;
+  toPos: THREE.Vector3;
+  toQuat: THREE.Quaternion;
+  fromZoom: number;
+  toZoom: number;
+  t: number;
+};
 
 type IslandCameraProps = {
   characterPose?: CharacterPose3D | null;
@@ -41,7 +72,7 @@ type IslandCameraProps = {
   orbitEnabled?: boolean;
   tpsEnabled?: boolean;
   tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
-  cameraOccludersRef?: MutableRefObject<THREE.Object3D[]>;
+  cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -53,6 +84,19 @@ function wrapAngle(angle: number): number {
   while (wrapped > Math.PI) wrapped -= Math.PI * 2;
   while (wrapped < -Math.PI) wrapped += Math.PI * 2;
   return wrapped;
+}
+
+function smoothstep01(t: number): number {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+function buildIsoOffset(out: THREE.Vector3): THREE.Vector3 {
+  return out.set(
+    CAMERA_DISTANCE * Math.sin(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X),
+    CAMERA_DISTANCE * Math.sin(ISO_ANGLE_X),
+    CAMERA_DISTANCE * Math.cos(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X),
+  );
 }
 
 export function IslandCamera({
@@ -72,8 +116,12 @@ export function IslandCamera({
   const viewYawRef = useRef(wrapAngle(ISO_ANGLE_Y + Math.PI));
   const pitchRef = useRef(ISO_ANGLE_X);
   const distanceRef = useRef(TPS_MAX_DISTANCE);
-  const occludedDistanceRef = useRef(TPS_MAX_DISTANCE);
+  const charLosSmoothRef = useRef(0);
   const pointerLockActiveRef = useRef(false);
+  const steeringActiveRef = useRef(false);
+  const mouseForwardActiveRef = useRef(false);
+  const leftMouseButtonRef = useRef(false);
+  const rightMouseButtonRef = useRef(false);
   const fallbackDraggingRef = useRef(false);
   const fallbackPointerIdRef = useRef<number | null>(null);
   const lastFallbackPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -81,12 +129,26 @@ export function IslandCamera({
   const desiredOffsetRef = useRef(new THREE.Vector3());
   const desiredPositionRef = useRef(new THREE.Vector3());
   const rayDirectionRef = useRef(new THREE.Vector3());
+  const camWorldLosRef = useRef(new THREE.Vector3());
+  const probeTargetRef = useRef(new THREE.Vector3());
+  const probeRightRef = useRef(new THREE.Vector3());
+  const tpsEnterStartWorldRef = useRef(new THREE.Vector3());
+  const tpsEnterBlendTRef = useRef(1);
+  const tpsEnterInitiatedRef = useRef(false);
+  const isoResumeStateRef = useRef<IsoResumeState | null>(null);
+  const isoRestoreOffsetRef = useRef(new THREE.Vector3());
+  const tpsExitTransitionRef = useRef<TpsExitTransition | null>(null);
+  const targetZoomRef = useRef(DEFAULT_ZOOM);
+  const distanceTargetRef = useRef(TPS_MAX_DISTANCE);
+  const modeRef = useRef<CameraMode>("iso");
+  modeRef.current = mode;
 
   useEffect(() => {
     const camera = orthoCameraRef.current;
     if (!camera) return;
     camera.zoom = DEFAULT_ZOOM;
     camera.updateProjectionMatrix();
+    targetZoomRef.current = camera.zoom;
   }, []);
 
   useEffect(() => {
@@ -94,9 +156,29 @@ export function IslandCamera({
       if (tpsCameraStateRef) {
         tpsCameraStateRef.current.active = false;
         tpsCameraStateRef.current.viewYaw = null;
+        tpsCameraStateRef.current.characterOccluded = false;
+        tpsCameraStateRef.current.steeringActive = false;
+        tpsCameraStateRef.current.mouseForwardActive = false;
+        tpsCameraStateRef.current.fadedOccluderKeys = [];
       }
     };
   }, [tpsCameraStateRef]);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const onWheel = (event: WheelEvent) => {
+      if (!orbitEnabled) return;
+      if (modeRef.current !== "iso") return;
+      event.preventDefault();
+      targetZoomRef.current = clamp(
+        targetZoomRef.current - event.deltaY * ISO_ZOOM_WHEEL_SCALE,
+        MIN_ZOOM,
+        MAX_ZOOM,
+      );
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, [gl, orbitEnabled]);
 
   const stopFallbackDrag = useCallback(() => {
     fallbackDraggingRef.current = false;
@@ -110,83 +192,212 @@ export function IslandCamera({
     }
   }, [gl]);
 
+  const setSteeringActive = useCallback((active: boolean) => {
+    steeringActiveRef.current = active;
+    if (tpsCameraStateRef) {
+      tpsCameraStateRef.current.steeringActive = active;
+    }
+  }, [tpsCameraStateRef]);
+
+  const setMouseForwardActive = useCallback((active: boolean) => {
+    mouseForwardActiveRef.current = active;
+    if (tpsCameraStateRef) {
+      tpsCameraStateRef.current.mouseForwardActive = active;
+    }
+  }, [tpsCameraStateRef]);
+
+  const syncMouseForwardActive = useCallback(() => {
+    setMouseForwardActive(modeRef.current === "tps" && leftMouseButtonRef.current && rightMouseButtonRef.current);
+  }, [setMouseForwardActive]);
+
   const applyLookDelta = useCallback((deltaX: number, deltaY: number) => {
     viewYawRef.current = wrapAngle(viewYawRef.current - deltaX * TPS_LOOK_SENSITIVITY);
     pitchRef.current = clamp(pitchRef.current - deltaY * TPS_LOOK_SENSITIVITY, TPS_PITCH_MIN, TPS_PITCH_MAX);
   }, []);
 
-  const exitToIso = useCallback(() => {
-    stopFallbackDrag();
-    exitPointerLock();
-    pointerLockActiveRef.current = false;
-    occludedDistanceRef.current = distanceRef.current;
-    const camera = orthoCameraRef.current;
-    if (camera) {
-      camera.zoom = TPS_EXIT_TO_ISO_ZOOM;
-      camera.updateProjectionMatrix();
+  const finishExitToIso = useCallback(() => {
+    const ortho = orthoCameraRef.current;
+    const controls = controlsRef.current;
+    const transition = tpsExitTransitionRef.current;
+    if (ortho && controls && transition) {
+      ortho.position.copy(transition.toPos);
+      ortho.quaternion.copy(transition.toQuat);
+      ortho.zoom = transition.toZoom;
+      ortho.updateProjectionMatrix();
+      ortho.updateMatrixWorld();
+      targetZoomRef.current = transition.toZoom;
+      controls.target.copy(targetRef.current);
+      controls.update();
     }
+    tpsExitTransitionRef.current = null;
     if (tpsCameraStateRef) {
       tpsCameraStateRef.current.active = false;
       tpsCameraStateRef.current.viewYaw = null;
+      tpsCameraStateRef.current.characterOccluded = false;
+      tpsCameraStateRef.current.steeringActive = false;
+      tpsCameraStateRef.current.mouseForwardActive = false;
+      tpsCameraStateRef.current.fadedOccluderKeys = [];
     }
+    tpsEnterInitiatedRef.current = false;
     setMode("iso");
-  }, [exitPointerLock, stopFallbackDrag, tpsCameraStateRef]);
+  }, [tpsCameraStateRef]);
+
+  const beginExitToIso = useCallback((wheelDeltaY: number) => {
+    stopFallbackDrag();
+    exitPointerLock();
+    pointerLockActiveRef.current = false;
+    leftMouseButtonRef.current = false;
+    rightMouseButtonRef.current = false;
+    setSteeringActive(false);
+    setMouseForwardActive(false);
+    charLosSmoothRef.current = 0;
+
+    const ortho = orthoCameraRef.current;
+    const persp = perspectiveCameraRef.current;
+    const controls = controlsRef.current;
+    const targetZoom = clamp(
+      TPS_EXIT_TO_ISO_ZOOM - Math.max(0, wheelDeltaY) * TPS_EXIT_WHEEL_TO_ISO_ZOOM,
+      MIN_ZOOM,
+      TPS_EXIT_TO_ISO_ZOOM,
+    );
+
+    if (ortho && persp && controls) {
+      const resumeState = isoResumeStateRef.current;
+      const isoOffset = resumeState?.offset ?? buildIsoOffset(isoRestoreOffsetRef.current);
+
+      ortho.position.copy(targetRef.current).add(isoOffset);
+      ortho.lookAt(targetRef.current);
+      ortho.updateMatrixWorld();
+
+      tpsExitTransitionRef.current = {
+        fromPos: persp.position.clone(),
+        fromQuat: persp.quaternion.clone(),
+        toPos: ortho.position.clone(),
+        toQuat: ortho.quaternion.clone(),
+        fromZoom: ortho.zoom,
+        toZoom: targetZoom,
+        t: 0,
+      };
+
+      ortho.position.copy(persp.position);
+      ortho.quaternion.copy(persp.quaternion);
+      ortho.zoom = tpsExitTransitionRef.current.fromZoom;
+      ortho.updateProjectionMatrix();
+      ortho.updateMatrixWorld();
+      setMode("tps_exit");
+      return;
+    }
+
+    if (ortho) {
+      ortho.zoom = targetZoom;
+      ortho.updateProjectionMatrix();
+      targetZoomRef.current = targetZoom;
+    }
+    finishExitToIso();
+  }, [exitPointerLock, finishExitToIso, setSteeringActive, stopFallbackDrag]);
 
   const enterTpsFromIso = useCallback(() => {
     const controls = controlsRef.current;
-    if (!controls) return;
+    const ortho = orthoCameraRef.current;
+    if (!controls || !ortho) return;
 
+    ortho.getWorldPosition(tpsEnterStartWorldRef.current);
+    isoRestoreOffsetRef.current.copy(ortho.position).sub(controls.target);
+    isoResumeStateRef.current = {
+      position: ortho.position.clone(),
+      quaternion: ortho.quaternion.clone(),
+      offset: isoRestoreOffsetRef.current.clone(),
+    };
+    tpsEnterBlendTRef.current = 0;
     targetRef.current.set(controls.target.x, TPS_TARGET_Y, controls.target.z);
     viewYawRef.current = wrapAngle(controls.getAzimuthalAngle() + Math.PI);
     pitchRef.current = clamp(Math.PI / 2 - controls.getPolarAngle(), TPS_PITCH_MIN, TPS_PITCH_MAX);
     distanceRef.current = TPS_MAX_DISTANCE;
-    occludedDistanceRef.current = TPS_MAX_DISTANCE;
+    distanceTargetRef.current = TPS_MAX_DISTANCE;
+    charLosSmoothRef.current = 0;
+    leftMouseButtonRef.current = false;
+    rightMouseButtonRef.current = false;
+    setMouseForwardActive(false);
+    setSteeringActive(false);
     stopFallbackDrag();
     setMode("tps");
-  }, [stopFallbackDrag]);
+  }, [setMouseForwardActive, setSteeringActive, stopFallbackDrag]);
 
   useEffect(() => {
-    if (mode !== "tps") return;
+    if (mode !== "tps" && mode !== "tps_exit") return;
     if (!tpsEnabled || !followCharacter || !characterPose || !orbitEnabled) {
-      exitToIso();
+      if (mode === "tps") {
+        beginExitToIso(0);
+      } else {
+        finishExitToIso();
+      }
     }
-  }, [characterPose, exitToIso, followCharacter, mode, orbitEnabled, tpsEnabled]);
+  }, [beginExitToIso, characterPose, finishExitToIso, followCharacter, mode, orbitEnabled, tpsEnabled]);
 
   useEffect(() => {
     if (mode !== "tps") return;
 
     const canvas = gl.domElement;
+    const eventTargetsCanvas = (event: Event) => {
+      if (event.target === canvas) return true;
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      return path.includes(canvas);
+    };
 
     const syncPointerLock = () => {
       const locked = document.pointerLockElement === canvas;
       pointerLockActiveRef.current = locked;
       if (locked) {
         stopFallbackDrag();
+        setSteeringActive(true);
+      } else if (!fallbackDraggingRef.current) {
+        setSteeringActive(false);
       }
     };
 
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
-
-      if (event.button === 0 && !pointerLockActiveRef.current) {
-        try {
-          const request = canvas.requestPointerLock?.() as void | Promise<void>;
-          if (request && typeof (request as Promise<void>).catch === "function") {
-            void (request as Promise<void>).catch(() => {});
-          }
-        } catch {
-          // Ignore lock failures; RMB fallback remains available.
-        }
-        return;
-      }
-
-      if (event.button !== 2 || pointerLockActiveRef.current) return;
-
+    const beginFallbackDrag = (event: PointerEvent) => {
       fallbackDraggingRef.current = true;
       fallbackPointerIdRef.current = event.pointerId;
       lastFallbackPointRef.current = { x: event.clientX, y: event.clientY };
       canvas.setPointerCapture?.(event.pointerId);
+      setSteeringActive(true);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      if (event.button === 0) {
+        leftMouseButtonRef.current = true;
+        syncMouseForwardActive();
+        event.preventDefault();
+        return;
+      }
+      if (event.button !== 2) return;
+
+      rightMouseButtonRef.current = true;
       event.preventDefault();
+      syncMouseForwardActive();
+      setSteeringActive(true);
+
+      if (pointerLockActiveRef.current) return;
+
+      const requestPointerLock = canvas.requestPointerLock?.bind(canvas);
+      if (!requestPointerLock) {
+        beginFallbackDrag(event);
+        return;
+      }
+
+      try {
+        const request = requestPointerLock() as void | Promise<void>;
+        if (request && typeof (request as Promise<void>).catch === "function") {
+          void (request as Promise<void>).catch(() => {
+            if (!pointerLockActiveRef.current) {
+              beginFallbackDrag(event);
+            }
+          });
+        }
+      } catch {
+        beginFallbackDrag(event);
+      }
     };
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -202,6 +413,8 @@ export function IslandCamera({
       if (!fallbackDraggingRef.current) return;
 
       if ((event.buttons & 2) === 0) {
+        rightMouseButtonRef.current = false;
+        syncMouseForwardActive();
         stopFallbackDrag();
         return;
       }
@@ -216,35 +429,86 @@ export function IslandCamera({
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (event.button === 0) {
+        leftMouseButtonRef.current = false;
+        syncMouseForwardActive();
+        return;
+      }
+      if (event.button !== 2 && fallbackPointerIdRef.current !== event.pointerId) return;
+      rightMouseButtonRef.current = false;
+      syncMouseForwardActive();
       if (fallbackPointerIdRef.current === event.pointerId) {
         canvas.releasePointerCapture?.(event.pointerId);
       }
       stopFallbackDrag();
+      setSteeringActive(false);
+      exitPointerLock();
+    };
+
+    const handleMouseDown = (event: MouseEvent) => {
+      if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      const canvasRelated =
+        pointerLockActiveRef.current ||
+        fallbackDraggingRef.current ||
+        rightMouseButtonRef.current ||
+        eventTargetsCanvas(event);
+
+      if (event.button === 0) {
+        if (!canvasRelated) return;
+        leftMouseButtonRef.current = true;
+        syncMouseForwardActive();
+        return;
+      }
+
+      if (event.button === 2 && eventTargetsCanvas(event)) {
+        rightMouseButtonRef.current = true;
+        syncMouseForwardActive();
+      }
+    };
+
+    const handleMouseUp = (event: MouseEvent) => {
+      if (event.button === 0) {
+        leftMouseButtonRef.current = false;
+        syncMouseForwardActive();
+        return;
+      }
+
+      if (event.button === 2) {
+        rightMouseButtonRef.current = false;
+        syncMouseForwardActive();
+      }
+    };
+
+    const handleWindowBlur = () => {
+      leftMouseButtonRef.current = false;
+      rightMouseButtonRef.current = false;
+      syncMouseForwardActive();
     };
 
     const handleWheel = (event: WheelEvent) => {
       if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
 
       event.preventDefault();
-      const desiredDistance = distanceRef.current + event.deltaY * TPS_WHEEL_SPEED;
-      if (desiredDistance > TPS_EXIT_DISTANCE) {
-        exitToIso();
+      const nextTarget = distanceTargetRef.current + event.deltaY * TPS_WHEEL_SPEED;
+      if (nextTarget > TPS_EXIT_DISTANCE) {
+        beginExitToIso(event.deltaY);
         return;
       }
-      distanceRef.current = clamp(desiredDistance, TPS_MIN_DISTANCE, TPS_MAX_DISTANCE);
+      distanceTargetRef.current = clamp(nextTarget, TPS_MIN_DISTANCE, TPS_MAX_DISTANCE);
     };
 
     const handleContextMenu = (event: MouseEvent) => {
-      if (fallbackDraggingRef.current) {
-        event.preventDefault();
-      }
+      event.preventDefault();
     };
 
     document.addEventListener("pointerlockchange", syncPointerLock);
     canvas.addEventListener("pointerdown", handlePointerDown);
     canvas.addEventListener("pointermove", handlePointerMove);
-    canvas.addEventListener("pointerup", handlePointerUp);
-    canvas.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("mousedown", handleMouseDown, true);
+    window.addEventListener("mouseup", handleMouseUp, true);
+    window.addEventListener("blur", handleWindowBlur);
     canvas.addEventListener("wheel", handleWheel, { passive: false });
     canvas.addEventListener("contextmenu", handleContextMenu);
 
@@ -254,14 +518,34 @@ export function IslandCamera({
       document.removeEventListener("pointerlockchange", syncPointerLock);
       canvas.removeEventListener("pointerdown", handlePointerDown);
       canvas.removeEventListener("pointermove", handlePointerMove);
-      canvas.removeEventListener("pointerup", handlePointerUp);
-      canvas.removeEventListener("pointercancel", handlePointerUp);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      window.removeEventListener("mousedown", handleMouseDown, true);
+      window.removeEventListener("mouseup", handleMouseUp, true);
+      window.removeEventListener("blur", handleWindowBlur);
       canvas.removeEventListener("wheel", handleWheel);
       canvas.removeEventListener("contextmenu", handleContextMenu);
+      leftMouseButtonRef.current = false;
+      rightMouseButtonRef.current = false;
       stopFallbackDrag();
       pointerLockActiveRef.current = false;
+      setMouseForwardActive(false);
+      setSteeringActive(false);
     };
-  }, [applyLookDelta, exitToIso, followCharacter, gl, mode, orbitEnabled, stopFallbackDrag, tpsEnabled]);
+  }, [
+    applyLookDelta,
+    exitPointerLock,
+    beginExitToIso,
+    followCharacter,
+    gl,
+    mode,
+    orbitEnabled,
+    setMouseForwardActive,
+    setSteeringActive,
+    stopFallbackDrag,
+    syncMouseForwardActive,
+    tpsEnabled,
+  ]);
 
   useFrame((_, delta) => {
     const orthoCamera = orthoCameraRef.current;
@@ -269,15 +553,33 @@ export function IslandCamera({
     const controls = controlsRef.current;
     if (!orthoCamera || !perspectiveCamera || !controls) return;
 
-    if (mode === "iso" && tpsEnabled && followCharacter && characterPose && orbitEnabled && orthoCamera.zoom >= TPS_ENTER_ZOOM) {
-      enterTpsFromIso();
-      return;
+    const enteringTps =
+      mode === "iso" &&
+      tpsEnabled &&
+      followCharacter &&
+      characterPose &&
+      orbitEnabled &&
+      orthoCamera.zoom >= TPS_ENTER_ZOOM;
+
+    if (mode === "tps" || mode === "tps_exit") {
+      tpsEnterInitiatedRef.current = false;
     }
+
+    if (enteringTps) {
+      if (!tpsEnterInitiatedRef.current) {
+        enterTpsFromIso();
+        tpsEnterInitiatedRef.current = true;
+      }
+    } else if (mode === "iso" && orthoCamera.zoom < TPS_ENTER_ZOOM) {
+      tpsEnterInitiatedRef.current = false;
+    }
+
+    const tpsDriving = mode === "tps" || mode === "tps_exit" || enteringTps;
 
     const shouldFollowCharacter = followCharacter && characterPose;
     const shouldFollowTarget =
       shouldFollowCharacter &&
-      (mode === "tps" || orthoCamera.zoom >= FOLLOW_ZOOM_THRESHOLD);
+      (tpsDriving || orthoCamera.zoom >= FOLLOW_ZOOM_THRESHOLD);
 
     if (shouldFollowTarget) {
       const desiredTargetX = characterPose.gx * TILE_UNIT_SIZE;
@@ -300,13 +602,31 @@ export function IslandCamera({
       }
     }
 
-    const tpsActive = mode === "tps" && tpsEnabled && followCharacter && !!characterPose;
+    const tpsActive = Boolean(tpsDriving && tpsEnabled && followCharacter && characterPose);
     if (tpsCameraStateRef) {
       tpsCameraStateRef.current.active = tpsActive;
       tpsCameraStateRef.current.viewYaw = tpsActive ? viewYawRef.current : null;
+      tpsCameraStateRef.current.steeringActive = tpsActive ? steeringActiveRef.current : false;
+      tpsCameraStateRef.current.mouseForwardActive = tpsActive ? mouseForwardActiveRef.current : false;
+      if (!tpsActive) {
+        tpsCameraStateRef.current.characterOccluded = false;
+        tpsCameraStateRef.current.steeringActive = false;
+        tpsCameraStateRef.current.mouseForwardActive = false;
+        tpsCameraStateRef.current.fadedOccluderKeys = [];
+        charLosSmoothRef.current = 0;
+        setMouseForwardActive(false);
+        setSteeringActive(false);
+      }
     }
 
-    if (mode === "iso") {
+    if (mode === "iso" && !enteringTps) {
+      const zoomAlpha = 1 - Math.exp(-ISO_ZOOM_LERP_SPEED * delta);
+      const zErr = targetZoomRef.current - orthoCamera.zoom;
+      if (Math.abs(zErr) > 1e-4) {
+        orthoCamera.zoom += zErr * zoomAlpha;
+        orthoCamera.updateProjectionMatrix();
+      }
+
       if (shouldFollowTarget) {
         controls.target.copy(targetRef.current);
         controls.update();
@@ -316,7 +636,48 @@ export function IslandCamera({
       return;
     }
 
+    if (mode === "tps_exit") {
+      const transition = tpsExitTransitionRef.current;
+      if (!transition) {
+        finishExitToIso();
+        return;
+      }
+
+      const resumeState = isoResumeStateRef.current;
+      const isoOffset = resumeState?.offset ?? buildIsoOffset(isoRestoreOffsetRef.current);
+      transition.toPos.copy(targetRef.current).add(isoOffset);
+      orthoCamera.position.copy(transition.toPos);
+      orthoCamera.lookAt(targetRef.current);
+      orthoCamera.updateMatrixWorld();
+      transition.toQuat.copy(orthoCamera.quaternion);
+
+      transition.t = Math.min(1, transition.t + delta / TPS_EXIT_TRANSITION_DURATION);
+      const eased = smoothstep01(transition.t);
+
+      perspectiveCamera.position.lerpVectors(transition.fromPos, transition.toPos, eased);
+      perspectiveCamera.quaternion.slerpQuaternions(transition.fromQuat, transition.toQuat, eased);
+
+      orthoCamera.position.copy(perspectiveCamera.position);
+      orthoCamera.quaternion.copy(perspectiveCamera.quaternion);
+      orthoCamera.zoom = THREE.MathUtils.lerp(transition.fromZoom, transition.toZoom, eased);
+      orthoCamera.updateProjectionMatrix();
+      orthoCamera.updateMatrixWorld();
+
+      if (transition.t >= 1) {
+        orthoCamera.position.copy(transition.toPos);
+        orthoCamera.quaternion.copy(transition.toQuat);
+        orthoCamera.zoom = transition.toZoom;
+        orthoCamera.updateProjectionMatrix();
+        orthoCamera.updateMatrixWorld();
+        finishExitToIso();
+      }
+      return;
+    }
+
     controls.target.copy(targetRef.current);
+
+    const distAlpha = 1 - Math.exp(-TPS_DISTANCE_LERP_SPEED * delta);
+    distanceRef.current += (distanceTargetRef.current - distanceRef.current) * distAlpha;
 
     const desiredDistance = clamp(distanceRef.current, TPS_MIN_DISTANCE, TPS_MAX_DISTANCE);
     const pitch = clamp(pitchRef.current, TPS_PITCH_MIN, TPS_PITCH_MAX);
@@ -330,37 +691,79 @@ export function IslandCamera({
       -forwardZ * horizontalDistance,
     );
     desiredPositionRef.current.copy(targetRef.current).add(desiredOffsetRef.current);
+    const finalTpsPos = desiredPositionRef.current;
 
-    let allowedDistance = desiredDistance;
-    const desiredOffsetLength = desiredOffsetRef.current.length();
+    if (tpsEnterBlendTRef.current < 1) {
+      tpsEnterBlendTRef.current = Math.min(1, tpsEnterBlendTRef.current + delta / TPS_ENTER_TRANSITION_DURATION);
+      const eased = smoothstep01(tpsEnterBlendTRef.current);
+      perspectiveCamera.position.lerpVectors(tpsEnterStartWorldRef.current, finalTpsPos, eased);
+    } else {
+      perspectiveCamera.position.copy(finalTpsPos);
+    }
+    perspectiveCamera.lookAt(targetRef.current);
+
+    let rawLosBlocked = false;
     const cameraOccluders = cameraOccludersRef?.current ?? [];
-    if (cameraOccluders.length > 0 && desiredOffsetLength > 1e-5) {
-      rayDirectionRef.current.copy(desiredOffsetRef.current).normalize();
+    if (tpsActive && cameraOccluders.length > 0 && tpsCameraStateRef) {
+      perspectiveCamera.getWorldPosition(camWorldLosRef.current);
+      probeRightRef.current.set(Math.cos(viewYawRef.current), 0, -Math.sin(viewYawRef.current));
+      let blockedCount = 0;
       const raycaster = occlusionRaycasterRef.current;
-      raycaster.set(targetRef.current, rayDirectionRef.current);
+      const occluderObjects = cameraOccluders.map((entry) => entry.occluder);
+      const occluderEntryMap = new Map<THREE.Object3D, CameraOccluderEntry>();
+      const fadedOccluderKeySet = new Set<string>();
+      for (const entry of cameraOccluders) {
+        occluderEntryMap.set(entry.occluder, entry);
+      }
       raycaster.layers.set(CAMERA_OCCLUSION_LAYER);
       raycaster.near = 0.05;
-      raycaster.far = desiredOffsetLength;
-      const hit = raycaster
-        .intersectObjects(cameraOccluders, false)
-        .find((candidate) => candidate.distance > 0.05);
-      if (hit) {
-        allowedDistance = clamp(hit.distance - TPS_OCCLUSION_BUFFER, TPS_OCCLUSION_MIN_DISTANCE, desiredDistance);
+
+      for (let probeIndex = 0; probeIndex < 5; probeIndex += 1) {
+        probeTargetRef.current.copy(targetRef.current);
+        if (probeIndex === 1) {
+          probeTargetRef.current.y += CHAR_LOS_HEAD_OFFSET;
+        } else if (probeIndex === 2) {
+          probeTargetRef.current.y += CHAR_LOS_LOWER_TORSO_OFFSET;
+        } else if (probeIndex === 3) {
+          probeTargetRef.current.addScaledVector(probeRightRef.current, CHAR_LOS_SHOULDER_OFFSET);
+        } else if (probeIndex === 4) {
+          probeTargetRef.current.addScaledVector(probeRightRef.current, -CHAR_LOS_SHOULDER_OFFSET);
+        }
+
+        rayDirectionRef.current.copy(probeTargetRef.current).sub(camWorldLosRef.current);
+        const losLen = rayDirectionRef.current.length();
+        if (losLen <= 1e-4) continue;
+
+        rayDirectionRef.current.multiplyScalar(1 / losLen);
+        raycaster.set(camWorldLosRef.current, rayDirectionRef.current);
+        raycaster.far = losLen;
+        const hits = raycaster.intersectObjects(occluderObjects, false);
+        let probeBlocked = false;
+        for (const hit of hits) {
+          if (hit.distance <= 0.05 || hit.distance >= losLen - CHAR_LOS_CLEAR_MARGIN) {
+            continue;
+          }
+          probeBlocked = true;
+          const occluderEntry = occluderEntryMap.get(hit.object);
+          if (occluderEntry?.fadeEligible) {
+            fadedOccluderKeySet.add(occluderEntry.fadeKey);
+          }
+        }
+        if (probeBlocked) {
+          blockedCount += 1;
+        }
       }
+      rawLosBlocked = blockedCount >= 2;
+      const losAlpha = 1 - Math.exp(-CHAR_LOS_SMOOTH_SPEED * delta);
+      charLosSmoothRef.current += ((rawLosBlocked ? 1 : 0) - charLosSmoothRef.current) * losAlpha;
+      tpsCameraStateRef.current.characterOccluded = charLosSmoothRef.current > 0.5;
+      tpsCameraStateRef.current.fadedOccluderKeys = Array.from(fadedOccluderKeySet).sort();
+    } else if (tpsCameraStateRef) {
+      charLosSmoothRef.current = 0;
+      tpsCameraStateRef.current.characterOccluded = false;
+      tpsCameraStateRef.current.fadedOccluderKeys = [];
     }
-
-    if (allowedDistance < occludedDistanceRef.current) {
-      occludedDistanceRef.current = allowedDistance;
-    } else {
-      const alpha = 1 - Math.exp(-TPS_OCCLUSION_RECOVERY * delta);
-      occludedDistanceRef.current += (allowedDistance - occludedDistanceRef.current) * alpha;
-    }
-
-    const appliedDistance = clamp(occludedDistanceRef.current, TPS_OCCLUSION_MIN_DISTANCE, desiredDistance);
-    const appliedScale = desiredDistance > 1e-5 ? appliedDistance / desiredDistance : 1;
-    perspectiveCamera.position.copy(targetRef.current).addScaledVector(desiredOffsetRef.current, appliedScale);
-    perspectiveCamera.lookAt(targetRef.current);
-  });
+  }, -1);
 
   const camX = CAMERA_DISTANCE * Math.sin(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X);
   const camY = CAMERA_DISTANCE * Math.sin(ISO_ANGLE_X);
@@ -378,7 +781,7 @@ export function IslandCamera({
       />
       <PerspectiveCamera
         ref={perspectiveCameraRef}
-        makeDefault={mode === "tps"}
+        makeDefault={mode === "tps" || mode === "tps_exit"}
         fov={TPS_FOV}
         position={[0, 0, 0]}
         near={0.1}
@@ -390,7 +793,7 @@ export function IslandCamera({
         enabled={mode === "iso" && orbitEnabled}
         enableRotate={true}
         enablePan={true}
-        enableZoom={true}
+        enableZoom={false}
         mouseButtons={{
           LEFT: -1 as unknown as THREE.MOUSE,
           MIDDLE: THREE.MOUSE.ROTATE,
@@ -407,7 +810,6 @@ export function IslandCamera({
         target={[1.5, TPS_TARGET_Y, 1.5]}
         enableDamping
         dampingFactor={0.1}
-        zoomSpeed={1.2}
         rotateSpeed={0.5}
         panSpeed={0.8}
       />
