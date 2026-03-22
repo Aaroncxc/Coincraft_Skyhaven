@@ -61,12 +61,15 @@ const WELL_BUBBLE_LUMINANCE_BOOST = 3.6;
 const WELL_GLOW_POINT_INTENSITY = 2.4;
 const WELL_GLOW_POINT_DISTANCE = 5.5;
 
-const RUNE_BUBBLE_COUNT = 56;
-const RUNE_BUBBLE_SIZE = 0.085;
-const RUNE_BUBBLE_LUMINANCE_BOOST = 3.4;
-const RUNE_GLOW_POINT_INTENSITY = 2.4;
-const RUNE_GLOW_POINT_DISTANCE = 5.5;
-const RUNE_BUBBLE_COLOR_CYCLE = { from: 0xffcc55, to: 0xcc2200, periodSec: 7 } as const;
+/** Rune: helix VFX (not bubbling like wells); sits higher above the tile. */
+const RUNE_HELIX_COUNT = 46;
+const RUNE_HELIX_SIZE = 0.074;
+const RUNE_HELIX_LUMINANCE_BOOST = 3.55;
+const RUNE_VFX_OFFSET_Y = 1.1;
+const RUNE_GLOW_POINT_Y = 1.18;
+const RUNE_GLOW_POINT_INTENSITY = 2.55;
+const RUNE_GLOW_POINT_DISTANCE = 5.75;
+const RUNE_HELIX_COLOR_CYCLE = { from: 0xffcc55, to: 0xcc2200, periodSec: 7 } as const;
 const HOVER_OUTLINE_SELECTION_LAYER = 10;
 
 function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
@@ -884,7 +887,7 @@ export function IslandScene({
         return (
           <pointLight
             key={`rune-vfx-light-${r.gx}-${r.gy}`}
-            position={[x, BUBBLING_DEFAULT_SPAWN_Y, z]}
+            position={[x, RUNE_GLOW_POINT_Y, z]}
             color={0xff5533}
             intensity={RUNE_GLOW_POINT_INTENSITY}
             distance={RUNE_GLOW_POINT_DISTANCE}
@@ -998,12 +1001,13 @@ export function IslandScene({
             {runeTiles.length > 0 && (
               <WorldParticles
                 positions={runeTiles}
-                style="bubbling"
-                color={RUNE_BUBBLE_COLOR_CYCLE.from}
-                count={RUNE_BUBBLE_COUNT}
-                size={RUNE_BUBBLE_SIZE}
-                luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
-                bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+                style="runeHelix"
+                color={RUNE_HELIX_COLOR_CYCLE.from}
+                count={RUNE_HELIX_COUNT}
+                size={RUNE_HELIX_SIZE}
+                luminanceBoost={RUNE_HELIX_LUMINANCE_BOOST}
+                offsetY={RUNE_VFX_OFFSET_Y}
+                bubblingColorCycle={RUNE_HELIX_COLOR_CYCLE}
               />
             )}
             {forgeTiles.length > 0 && (
@@ -1107,12 +1111,13 @@ export function IslandScene({
               {runeTiles.length > 0 && (
                 <WorldParticles
                   positions={runeTiles}
-                  style="bubbling"
-                  color={RUNE_BUBBLE_COLOR_CYCLE.from}
-                  count={RUNE_BUBBLE_COUNT}
-                  size={RUNE_BUBBLE_SIZE}
-                  luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
-                  bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+                  style="runeHelix"
+                  color={RUNE_HELIX_COLOR_CYCLE.from}
+                  count={RUNE_HELIX_COUNT}
+                  size={RUNE_HELIX_SIZE}
+                  luminanceBoost={RUNE_HELIX_LUMINANCE_BOOST}
+                  offsetY={RUNE_VFX_OFFSET_Y}
+                  bubblingColorCycle={RUNE_HELIX_COLOR_CYCLE}
                 />
               )}
               {forgeTiles.length > 0 && (
@@ -1205,12 +1210,13 @@ export function IslandScene({
             {runeTiles.length > 0 && (
               <WorldParticles
                 positions={runeTiles}
-                style="bubbling"
-                color={RUNE_BUBBLE_COLOR_CYCLE.from}
-                count={RUNE_BUBBLE_COUNT}
-                size={RUNE_BUBBLE_SIZE}
-                luminanceBoost={RUNE_BUBBLE_LUMINANCE_BOOST}
-                bubblingColorCycle={RUNE_BUBBLE_COLOR_CYCLE}
+                style="runeHelix"
+                color={RUNE_HELIX_COLOR_CYCLE.from}
+                count={RUNE_HELIX_COUNT}
+                size={RUNE_HELIX_SIZE}
+                luminanceBoost={RUNE_HELIX_LUMINANCE_BOOST}
+                offsetY={RUNE_VFX_OFFSET_Y}
+                bubblingColorCycle={RUNE_HELIX_COLOR_CYCLE}
               />
             )}
             {forgeTiles.length > 0 && (

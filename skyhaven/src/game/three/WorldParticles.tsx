@@ -3,7 +3,13 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { TILE_UNIT_SIZE } from "./assets3d";
 
-export type WorldParticleStyle = "floating" | "rising" | "pulsating" | "bubbling" | "smoke";
+export type WorldParticleStyle =
+  | "floating"
+  | "rising"
+  | "pulsating"
+  | "bubbling"
+  | "runeHelix"
+  | "smoke";
 
 type WorldParticlesProps = {
   positions: { gx: number; gy: number }[];
@@ -20,7 +26,7 @@ type WorldParticlesProps = {
   offsetX?: number;
   /** Horizontal spawn offset in Z (world units), added to tile center */
   offsetZ?: number;
-  /** Bubbling only: smooth oscillation between two colors (sine, one full cycle per periodSec). */
+  /** Bubbling / runeHelix: smooth oscillation between two colors (sine, one full cycle per periodSec). */
   bubblingColorCycle?: { from: number; to: number; periodSec: number };
 };
 
@@ -50,6 +56,8 @@ export function getParticleTileWorldXZ(gx: number, gy: number, tileSize: number 
 }
 
 export const BUBBLING_DEFAULT_SPAWN_Y = 0.5;
+/** Default spawn height for rune helix VFX (higher than wells). */
+export const RUNE_HELIX_DEFAULT_SPAWN_Y = 0.96;
 
 function getWorldPosition(gx: number, gy: number, tileSize: number) {
   return getParticleTileWorldXZ(gx, gy, tileSize);
@@ -65,6 +73,8 @@ function getStyleParams(style: WorldParticleStyle) {
       return { riseSpeed: 0.01, floatAmp: 0.03, floatFreq: 3, lifeMin: 5, lifeMax: 8 };
     case "bubbling":
       return { riseSpeed: 0.32, floatAmp: 0.04, floatFreq: 5, lifeMin: 1.5, lifeMax: 2.5 };
+    case "runeHelix":
+      return { riseSpeed: 0.11, floatAmp: 0.02, floatFreq: 3.5, lifeMin: 2.4, lifeMax: 4.2 };
     case "smoke":
       return { riseSpeed: 0.06, floatAmp: 0.03, floatFreq: 1.2, lifeMin: 3, lifeMax: 5 };
     default:
@@ -117,7 +127,7 @@ export function WorldParticles({
     const SPAWN_INTERVAL = 0.08;
 
     let bubblingBaseColor: THREE.Color = colorObj;
-    if (style === "bubbling" && bubblingColorCycle) {
+    if ((style === "bubbling" || style === "runeHelix") && bubblingColorCycle) {
       cycleA.setHex(bubblingColorCycle.from);
       cycleB.setHex(bubblingColorCycle.to);
       const u =
@@ -143,7 +153,8 @@ export function WorldParticles({
       const { x, z } = getWorldPosition(pos.gx, pos.gy, tileSize);
       const baseX = x + offsetX;
       const baseZ = z + offsetZ;
-      const spawnSpread = style === "bubbling" ? 0.04 : style === "smoke" ? 0.08 : 0.3;
+      const spawnSpread =
+        style === "bubbling" ? 0.04 : style === "runeHelix" ? 0.025 : style === "smoke" ? 0.08 : 0.3;
       const spreadX = (Math.random() - 0.5) * spawnSpread;
       const spreadZ = (Math.random() - 0.5) * spawnSpread;
       const spawnY =
@@ -151,9 +162,11 @@ export function WorldParticles({
           ? offsetY
           : style === "bubbling"
             ? BUBBLING_DEFAULT_SPAWN_Y
-            : style === "smoke"
-              ? 1.6
-              : 0.85;
+            : style === "runeHelix"
+              ? RUNE_HELIX_DEFAULT_SPAWN_Y
+              : style === "smoke"
+                ? 1.6
+                : 0.85;
       const life = params.lifeMin + Math.random() * (params.lifeMax - params.lifeMin);
       particlesRef.current.push({
         baseX: baseX + spreadX,
@@ -162,9 +175,9 @@ export function WorldParticles({
         x: baseX + spreadX,
         y: spawnY,
         z: baseZ + spreadZ,
-        vx: (Math.random() - 0.5) * (style === "smoke" ? 0.04 : 0.02),
+        vx: (Math.random() - 0.5) * (style === "smoke" ? 0.04 : style === "runeHelix" ? 0.008 : 0.02),
         vy: params.riseSpeed * (0.7 + Math.random() * 0.6),
-        vz: (Math.random() - 0.5) * (style === "smoke" ? 0.04 : 0.02),
+        vz: (Math.random() - 0.5) * (style === "smoke" ? 0.04 : style === "runeHelix" ? 0.008 : 0.02),
         life,
         maxLife: life,
         size: size * (0.7 + Math.random() * 0.6),
@@ -203,6 +216,27 @@ export function WorldParticles({
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
         const brightness = (0.6 + t * 0.4) * luminanceBoost;
+        bubblingBaseColor.toArray(colorsArr, i * 3);
+        colorsArr[i * 3] *= brightness;
+        colorsArr[i * 3 + 1] *= brightness;
+        colorsArr[i * 3 + 2] *= brightness;
+        continue;
+      } else if (style === "runeHelix") {
+        p.y += p.vy * dt;
+        const tLife = p.life / p.maxLife;
+        const globalPulse = 0.68 + 0.32 * Math.sin(state.clock.elapsedTime * 1.75 + p.phase * 0.3);
+        const radiusBreath = 0.075 * (0.78 + 0.22 * Math.sin(state.clock.elapsedTime * 2.35 + p.phase * 1.7));
+        const twist = 5.8;
+        const ang = p.phase + state.clock.elapsedTime * 1.25 + (p.y - p.baseY) * twist;
+        p.x = p.baseX + Math.cos(ang) * radiusBreath;
+        p.z = p.baseZ + Math.sin(ang) * radiusBreath;
+        const vertWobble = Math.sin(state.clock.elapsedTime * params.floatFreq + p.phase * 2) * params.floatAmp;
+        dummy.position.set(p.x, p.y + vertWobble, p.z);
+        const fade = tLife * tLife * (0.88 + 0.12 * globalPulse);
+        dummy.scale.setScalar(p.size * fade);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        const brightness = (0.5 + tLife * 0.5) * luminanceBoost * globalPulse;
         bubblingBaseColor.toArray(colorsArr, i * 3);
         colorsArr[i * 3] *= brightness;
         colorsArr[i * 3 + 1] *= brightness;
@@ -284,7 +318,9 @@ export function WorldParticles({
         transparent
         opacity={1}
         depthWrite={false}
-        blending={style === "smoke" ? THREE.NormalBlending : THREE.AdditiveBlending}
+        blending={
+          style === "smoke" ? THREE.NormalBlending : THREE.AdditiveBlending
+        }
       />
     </instancedMesh>
   );

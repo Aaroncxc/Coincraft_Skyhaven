@@ -1,0 +1,5 @@
+{
+  "installCommand": "cd skyhaven && npm install",
+  "buildCommand": "cd skyhaven && npm run build",
+  "outputDirectory": "skyhaven/dist"
+}
