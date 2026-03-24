@@ -5,8 +5,28 @@ import { isSkyhavenWidgetRuntime } from "../runtime/isWidgetRuntime";
 const BG_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Back.png";
 const FRONT_RIGHT_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Front_Right.png";
 const FRONT_SRC = "/ingame_assets/IntroScreen/IntroAnimation_Front.png";
+const INTRO_2_SRC = "/ingame_assets/IntroScreen/Intro_2.png";
+const INTRO_2_FRONT_SRC = "/ingame_assets/IntroScreen/Intro_2_Front.png";
 const INTRO_TEXT_SRC = "/ingame_assets/IntroScreen/IntroText.png";
 const MULTIKUNST_SRC = "/ingame_assets/IntroScreen/multikunst_kleiner_rand 1.png";
+
+const INTRO_BG_ROTATION_KEY = "skyhaven-intro-bg-rotation";
+
+type IntroBgVariant = "layered" | "intro2";
+
+/** Avoid double localStorage bump when React StrictMode runs the initializer twice in dev. */
+let strictModeIntroVariantPicked = false;
+let strictModeIntroVariant: IntroBgVariant = "layered";
+
+function pickIntroBgVariant(): IntroBgVariant {
+  if (typeof window === "undefined") return "layered";
+  if (strictModeIntroVariantPicked) return strictModeIntroVariant;
+  strictModeIntroVariantPicked = true;
+  const c = Number(window.localStorage.getItem(INTRO_BG_ROTATION_KEY) ?? 0);
+  strictModeIntroVariant = Number.isFinite(c) && c % 2 === 1 ? "intro2" : "layered";
+  window.localStorage.setItem(INTRO_BG_ROTATION_KEY, String(c + 1));
+  return strictModeIntroVariant;
+}
 
 type IntroSplashProps = {
   fadingOut: boolean;
@@ -14,8 +34,13 @@ type IntroSplashProps = {
 };
 
 export function IntroSplash({ fadingOut, onStart }: IntroSplashProps) {
+  const [bgVariant] = useState<IntroBgVariant>(pickIntroBgVariant);
   const [muted, setMuted] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const bgSrc = bgVariant === "intro2" ? INTRO_2_SRC : BG_SRC;
+  const showLayeredForeground = bgVariant === "layered";
+  const isIntro2 = bgVariant === "intro2";
 
   useEffect(() => {
     if (!isSkyhavenWidgetRuntime()) return;
@@ -67,41 +92,51 @@ export function IntroSplash({ fadingOut, onStart }: IntroSplashProps) {
 
   return (
     <div className={`intro-splash ${fadingOut ? "is-fade-out" : ""}`}>
-      <div className="intro-splash-card">
+      <div className={`intro-splash-card${isIntro2 ? " intro-splash-card--intro2" : ""}`}>
         {/* Background layer */}
         <img
           className="intro-splash-bg"
-          src={BG_SRC}
+          src={bgSrc}
           alt=""
           draggable={false}
         />
 
-        {/* Floating house layer */}
-        <img
-          className="intro-splash-layer intro-splash-front-right"
-          src={FRONT_RIGHT_SRC}
-          alt=""
-          draggable={false}
-        />
-
-        {/* Floating character layer */}
-        <img
-          className="intro-splash-layer intro-splash-front"
-          src={FRONT_SRC}
-          alt=""
-          draggable={false}
-        />
+        {showLayeredForeground ? (
+          <>
+            <img
+              className="intro-splash-layer intro-splash-front-right"
+              src={FRONT_RIGHT_SRC}
+              alt=""
+              draggable={false}
+            />
+            <img
+              className="intro-splash-layer intro-splash-front"
+              src={FRONT_SRC}
+              alt=""
+              draggable={false}
+            />
+          </>
+        ) : null}
 
         {/* Vignette overlay */}
         <div className="intro-splash-vignette" />
 
-        {/* Title logo top */}
+        {/* intro2: IntroText under Intro_2_Front (z-index via .intro-splash-card--intro2) */}
         <img
           className="intro-splash-title"
           src={INTRO_TEXT_SRC}
           alt="CoinCraft Skyhaven"
           draggable={false}
         />
+
+        {isIntro2 ? (
+          <img
+            className="intro-splash-intro2-front"
+            src={INTRO_2_FRONT_SRC}
+            alt=""
+            draggable={false}
+          />
+        ) : null}
 
         {/* Start button center */}
         <button

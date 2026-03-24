@@ -1,4 +1,4 @@
-import type { ActionType } from "./types";
+import type { ActionType, LegacyActionType } from "./types";
 
 export type QuestStatus = "planned" | "active" | "completed" | "skipped";
 
@@ -74,13 +74,30 @@ export function hydrateQuests(): DailyQuest[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (q: unknown) =>
-        q !== null &&
-        typeof q === "object" &&
-        typeof (q as DailyQuest).id === "string" &&
-        typeof (q as DailyQuest).title === "string"
-    );
+    let didMigrate = false;
+    const quests = parsed
+      .filter(
+        (q: unknown) =>
+          q !== null &&
+          typeof q === "object" &&
+          typeof (q as DailyQuest).id === "string" &&
+          typeof (q as DailyQuest).title === "string"
+      )
+      .map((quest) => {
+        const next = { ...(quest as DailyQuest), focusAction: (quest as { focusAction?: ActionType | LegacyActionType }).focusAction };
+        if (next.focusAction === "roaming") {
+          next.focusAction = "magic";
+          didMigrate = true;
+        } else if (next.focusAction === "cooking") {
+          next.focusAction = "fight";
+          didMigrate = true;
+        }
+        return next as DailyQuest;
+      });
+    if (didMigrate) {
+      persistQuests(quests);
+    }
+    return quests;
   } catch {
     return [];
   }

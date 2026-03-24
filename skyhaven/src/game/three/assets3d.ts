@@ -130,6 +130,8 @@ export const FIGHT_MAN_MODELS = {
   base: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Character_output.glb",
   /** Playable fight_man + fallback clip assembly. */
   anims: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Meshy_AI_Meshy_Merged_Animations.glb",
+  /** Shift-sprint for playable fight_man (separate GLB). */
+  sprint: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/fightman_sprint.glb",
   /** Fight Man NPC: patrol picks walk or counterstrike at random; E-interact plays taunt. */
   npcWalk: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Animation_Walking_withSkin.glb",
   npcCounterstrike: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Counterstrike_withSkin.glb",
@@ -138,6 +140,18 @@ export const FIGHT_MAN_MODELS = {
 
 /** Shared albedo atlas for the playable character (overrides embedded GLB `map` in CharacterModel). */
 export const MAIN_CHAR_ALBEDO_MAP = "/ingame_assets/3d/Main_Char/texture_0.png";
+
+/** Wood axe prop (right hand). */
+export const AXE_PROP_GLB = "/ingame_assets/3d/Waffen/Axt.glb";
+
+/** Chop animation for default main character (same rig as base char). */
+export const MAIN_CHAR_AXE_CHOP_ANIM_GLB = "/ingame_assets/3d/Main_Char/Axt_Schlag_Anim.glb";
+
+/** Wall-clock chop length; must match `useCharacterMovement` chop timer and `pose.chopDuration`. */
+export const AXE_CHOP_PLAYBACK_SEC = 0.92;
+
+/** Volumetric-style cloud cards under islands (`IslandCloudDeck`, instanced). */
+export const CLOUDS_GLB = "/ingame_assets/3d/Clouds.glb";
 
 export const CHAR_3D_MODELS = {
   base: "/ingame_assets/3d/Main_Char/Meshy_AI_Character_output.glb",
@@ -161,5 +175,8 @@ export const ALL_GAME_GLTF_PATHS = Array.from(
     ...Object.values(FIGHT_MAN_MODELS),
     ...Object.values(CHAR_3D_MODELS),
     SKULLY_MODEL_PATH,
+    AXE_PROP_GLB,
+    MAIN_CHAR_AXE_CHOP_ANIM_GLB,
+    CLOUDS_GLB,
   ]),
 );

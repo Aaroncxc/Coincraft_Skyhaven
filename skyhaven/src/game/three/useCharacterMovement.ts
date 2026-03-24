@@ -1,20 +1,38 @@
 import { useRef, useEffect, useState, useMemo, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
-import type { AssetKey, IslandMap } from "../types";
+import type { ActionType, AssetKey, FocusSession, IslandId, IslandMap } from "../types";
 import { TREE_TILES, FARM_TILES } from "../types";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../assets";
-import { TILE_UNIT_SIZE } from "./assets3d";
+import { buildPoiActionRequest, findNearbyPoiAction, type PoiActionRequest } from "../poiActions";
+import { AXE_CHOP_PLAYBACK_SEC, TILE_UNIT_SIZE } from "./assets3d";
+import { getPlayableAvatarGroundProfile } from "./avatarGrounding";
 import {
   buildBlockedFootprintSet,
   findNearestValidCell,
   isAvatarCellValid,
   resolveReachableTargetValid,
 } from "./islandWalkability";
+import {
+  buildIslandSurfaceData,
+  canStepBetweenCells,
+  FALL_RESET_MARGIN,
+  getSurfaceYAtWorldGrid,
+  getSupportedSurfaceYAtWorldGrid,
+  resolveHorizontalCollision,
+  type IslandSurfaceData,
+} from "./islandSurface";
 import type * as THREE from "three";
+import { playPlayerFootstep } from "../playerFootstepSfx";
+import { playAxeSwingSfx } from "../playerAxeSwingSfx";
+import { WOOD_AXE_ITEM_ID, type EquippableItemId } from "../equipment";
 
 export type CharacterPose3D = {
   gx: number;
   gy: number;
+  surfaceY?: number;
+  worldY?: number;
+  verticalVelocity?: number;
+  grounded?: boolean;
   direction: "left" | "right";
   animState: "idle" | "walk" | "run" | "jump" | "attack" | "chop" | "spell" | "roll";
   /** true when moving from WASD; false when patrol or idle (used so look direction follows mouse only on manual move) */
@@ -23,8 +41,21 @@ export type CharacterPose3D = {
   jumpDuration?: number;
   /** set during roll; used by CharacterModel for clip timing */
   rollDuration?: number;
+  /** set during axe chop; must match movement chop timer (see AXE_CHOP_PLAYBACK_SEC). */
+  chopDuration?: number;
+  /** Incremented on each new axe swing so `CharacterModel` can restart `chopAxe` when target clip unchanged. */
+  chopSwingId?: number;
   /** when set, overrides direction-based rotation to face this angle (radians) */
   facingAngle?: number;
+};
+
+export type CharacterMovementDebugSnapshot = {
+  animState: CharacterPose3D["animState"];
+  chopTimer: number;
+  chopPlaybackSec: number;
+  rollTimer: number;
+  mouseForwardActive: boolean;
+  steeringActive: boolean;
 };
 
 type MovementKeys = { w: boolean; a: boolean; s: boolean; d: boolean };
@@ -38,18 +69,32 @@ const TPS_DECEL = 14;
 const TPS_STOP_EPSILON = 0.001;
 const TPS_MOVE_ANIM_EPSILON = 0.03;
 const PATROL_GRID_SPEED = 0.62;
+
+function axeSwingVolume01(playerSfxVolume: number): number {
+  return Math.max(0, Math.min(100, playerSfxVolume)) / 100;
+}
 const IDLE_AUTOPATROL_DELAY_SEC = 7;
 const PATROL_PAUSE_MIN = 2;
 const PATROL_PAUSE_MAX = 5;
 const JUMP_DURATION = 0.52;
-const JUMP_DISTANCE_MIN = 0.35;
-const JUMP_DISTANCE_MAX = 2.0;
-const JUMP_DISTANCE_KEYBOARD = 0.85;
+const GRAVITY = 8.4;
+const LAND_SNAP_DISTANCE = 0.2;
 const ROLL_DURATION = 0.96;
 const ROLL_DISTANCE = 1.05;
 const INPUT_STUCK_UNSTICK_SEC = 2.5;
 const TPS_STUCK_VEL_EPS = 0.04;
 const ISO_FRAME_MOVE_EPS = 0.002;
+/**
+ * World-units between footstep SFX (travel distance × TILE_UNIT_SIZE).
+ * Tuned to the default main-char walk/run GLB cadence (was ~0.44; sounded ~2× too fast).
+ */
+const FOOTSTEP_WALK_DIST_SCALE = 0.9;
+const FOOTSTEP_RUN_DIST_SCALE = FOOTSTEP_WALK_DIST_SCALE * 0.72;
+/** Applied after sidebar SFX 0–100 → 0–1 (half of the previous 0.62 trim). */
+const FOOTSTEP_VOLUME_GAIN = 0.31;
+/** Extra trim by camera: ortho / isometric very quiet; TPS full level. */
+const FOOTSTEP_ISO_CAMERA_GAIN = 0.1;
+const FOOTSTEP_TPS_CAMERA_GAIN = 1;
 
 function resolveSpawn(island: IslandMap): { gx: number; gy: number } {
   if (isFinite(island.spawn?.gx) && isFinite(island.spawn?.gy)) {
@@ -69,8 +114,85 @@ function buildTileSet(island: IslandMap): Set<string> {
   return s;
 }
 
-function hasTileAt(tileSet: Set<string>, gx: number, gy: number): boolean {
-  return tileSet.has(`${Math.round(gx)},${Math.round(gy)}`);
+function hasTraversableTileAt(
+  tileSet: Set<string>,
+  surface: IslandSurfaceData,
+  fromGx: number,
+  fromGy: number,
+  toGx: number,
+  toGy: number,
+  maxStepHeight?: number,
+): boolean {
+  const roundedToGx = Math.round(toGx);
+  const roundedToGy = Math.round(toGy);
+  return (
+    tileSet.has(`${roundedToGx},${roundedToGy}`) &&
+    canStepBetweenCells(surface, fromGx, fromGy, roundedToGx, roundedToGy, maxStepHeight)
+  );
+}
+
+function clampTargetToTraversableSurface(
+  surface: IslandSurfaceData,
+  tileSet: Set<string>,
+  startGx: number,
+  startGy: number,
+  targetGx: number,
+  targetGy: number,
+  samples = 12,
+  maxStepHeight?: number,
+): { gx: number; gy: number } {
+  let bestGx = startGx;
+  let bestGy = startGy;
+  let prevGx = startGx;
+  let prevGy = startGy;
+
+  for (let i = 1; i <= samples; i += 1) {
+    const t = i / samples;
+    const gx = startGx + (targetGx - startGx) * t;
+    const gy = startGy + (targetGy - startGy) * t;
+    if (!hasTraversableTileAt(tileSet, surface, prevGx, prevGy, gx, gy, maxStepHeight)) {
+      break;
+    }
+    bestGx = gx;
+    bestGy = gy;
+    prevGx = gx;
+    prevGy = gy;
+  }
+
+  return { gx: bestGx, gy: bestGy };
+}
+
+function isPoiFocusAction(actionType: ActionType): actionType is "mining" | "farming" | "magic" | "fight" {
+  return actionType === "mining" || actionType === "farming" || actionType === "magic" || actionType === "fight";
+}
+
+function getPoiActionAnimState(actionType: ActionType): CharacterPose3D["animState"] {
+  switch (actionType) {
+    case "magic":
+      return "spell";
+    case "fight":
+      return "attack";
+    case "mining":
+    case "farming":
+    default:
+      return "chop";
+  }
+}
+
+function canMoveGroundedToCell(
+  tileSet: Set<string>,
+  blockedFootprintSet: Set<string>,
+  surface: IslandSurfaceData,
+  fromGx: number,
+  fromGy: number,
+  toGx: number,
+  toGy: number,
+  maxStepHeight: number,
+): boolean {
+  const targetKey = `${Math.round(toGx)},${Math.round(toGy)}`;
+  if (blockedFootprintSet.has(targetKey)) return false;
+  if (!tileSet.has(targetKey)) return true;
+  return canStepBetweenCells(surface, fromGx, fromGy, toGx, toGy, maxStepHeight);
 }
 
 export function buildTileTypeMap(island: IslandMap): Map<string, AssetKey> {
@@ -198,6 +320,7 @@ function pickRandomTile(
 
 export type SpellCastEvent = {
   posX: number;
+  posY: number;
   posZ: number;
   dirX: number;
   dirZ: number;
@@ -261,8 +384,13 @@ function getBasisFromYaw(yaw: number): {
 }
 
 export type CharacterMovementOptions = {
+  playableVariant?: "default" | "mining_man" | "magic_man" | "fight_man";
+  selectedIslandId?: IslandId;
   onTileAction?: (actionType: "woodcutting" | "harvesting", tileGx: number, tileGy: number) => void;
+  onPoiActionRequest?: (request: PoiActionRequest) => void;
   onCancelMiniAction?: () => void;
+  poiMenuOpen?: boolean;
+  activePoiSession?: FocusSession | null;
   isMiniActionActive?: boolean;
   /** Ref to mouse ground hit (world x,z). When set, W/S/A/D move relative to look direction. */
   mouseGroundRef?: MutableRefObject<THREE.Vector3 | null>;
@@ -278,6 +406,12 @@ export type CharacterMovementOptions = {
   onOpenCharacterSelect?: () => void;
   /** Ref containing NPC positions keyed by id, updated by IslandScene */
   npcPositionsRef?: MutableRefObject<Map<string, { gx: number; gy: number }>>;
+  /** 0–100; scales footstep SFX (Sidebar SFX Vol). */
+  playerSfxVolume?: number;
+  /** Action-bar item: LMB / G chop only when wood axe is equipped. */
+  equippedRightHand?: EquippableItemId | null;
+  /** Filled each frame when provided (for Debug dock / tooling). */
+  movementDebugRef?: MutableRefObject<CharacterMovementDebugSnapshot | null>;
 };
 
 export function useCharacterMovement(
@@ -285,9 +419,14 @@ export function useCharacterMovement(
   _characterActive: boolean,
   options: CharacterMovementOptions = {},
 ): CharacterPose3D {
+  const avatarGroundProfile = useMemo(
+    () => getPlayableAvatarGroundProfile(options.playableVariant ?? "default"),
+    [options.playableVariant],
+  );
   const spawn = resolveSpawn(island);
   const tileSet = useMemo(() => buildTileSet(island), [island]);
   const blockedFootprintSet = useMemo(() => buildBlockedFootprintSet(island), [island]);
+  const surfaceData = useMemo(() => buildIslandSurfaceData(island), [island]);
   const tileList = useMemo(
     () => island.tiles.filter((t) => !t.blocked).map((t) => ({ gx: t.gx, gy: t.gy })),
     [island],
@@ -297,6 +436,10 @@ export function useCharacterMovement(
   const poseRef = useRef<CharacterPose3D>({
     gx: spawn.gx,
     gy: spawn.gy,
+    surfaceY: getSurfaceYAtWorldGrid(surfaceData, spawn.gx, spawn.gy),
+    worldY: getSurfaceYAtWorldGrid(surfaceData, spawn.gx, spawn.gy),
+    verticalVelocity: 0,
+    grounded: true,
     direction: "right",
     animState: "idle",
     isManualMove: false,
@@ -304,23 +447,38 @@ export function useCharacterMovement(
   const keysRef = useRef<MovementKeys>({ w: false, a: false, s: false, d: false });
   const actionKeysRef = useRef<ActionKeys>({ shift: false, space: false });
   const chopTimerRef = useRef<number>(0);
+  const chopSwingSerialRef = useRef(0);
+  const activeChopPlaybackSecRef = useRef(AXE_CHOP_PLAYBACK_SEC);
+  const movementDebugRef = options.movementDebugRef;
+  const movementDebugRefRef = useRef(movementDebugRef);
+  movementDebugRefRef.current = movementDebugRef;
   const autoChopCooldownRef = useRef<number>(0);
   const tileSetRef = useRef(tileSet);
   tileSetRef.current = tileSet;
   const blockedFootprintRef = useRef(blockedFootprintSet);
   blockedFootprintRef.current = blockedFootprintSet;
+  const surfaceDataRef = useRef(surfaceData);
+  surfaceDataRef.current = surfaceData;
   const tileListRef = useRef(tileList);
   tileListRef.current = tileList;
   const tileTypeMapRef = useRef(tileTypeMap);
   tileTypeMapRef.current = tileTypeMap;
   const islandRef = useRef(island);
   islandRef.current = island;
+  const selectedIslandIdRef = useRef(options.selectedIslandId);
+  selectedIslandIdRef.current = options.selectedIslandId;
   const onTileActionRef = useRef(options.onTileAction);
   onTileActionRef.current = options.onTileAction;
+  const onPoiActionRequestRef = useRef(options.onPoiActionRequest);
+  onPoiActionRequestRef.current = options.onPoiActionRequest;
   const onCancelMiniActionRef = useRef(options.onCancelMiniAction);
   onCancelMiniActionRef.current = options.onCancelMiniAction;
   const isMiniActionActiveRef = useRef(options.isMiniActionActive ?? false);
   isMiniActionActiveRef.current = options.isMiniActionActive ?? false;
+  const poiMenuOpenRef = useRef(options.poiMenuOpen ?? false);
+  poiMenuOpenRef.current = options.poiMenuOpen ?? false;
+  const activePoiSessionRef = useRef(options.activePoiSession ?? null);
+  activePoiSessionRef.current = options.activePoiSession ?? null;
   const mouseGroundRef = options.mouseGroundRef;
   const mouseGroundRefRef = useRef(mouseGroundRef);
   mouseGroundRefRef.current = mouseGroundRef;
@@ -339,14 +497,27 @@ export function useCharacterMovement(
   onRuneVfxToggleRef.current = options.onRuneVfxToggle;
   const onOpenCharacterSelectRef = useRef(options.onOpenCharacterSelect);
   onOpenCharacterSelectRef.current = options.onOpenCharacterSelect;
+  const playerSfxVolumeRef = useRef(options.playerSfxVolume ?? 0);
+  playerSfxVolumeRef.current = options.playerSfxVolume ?? 0;
+  const equippedRightHandRef = useRef<EquippableItemId | null>(options.equippedRightHand ?? null);
+  equippedRightHandRef.current = options.equippedRightHand ?? null;
+  const avatarGroundProfileRef = useRef(avatarGroundProfile);
+  avatarGroundProfileRef.current = avatarGroundProfile;
   const spellTimerRef = useRef<number>(0);
   const [renderPose, setRenderPose] = useState<CharacterPose3D>(poseRef.current);
   const prevPoseRef = useRef<CharacterPose3D>(poseRef.current);
+  const syncPoseWithSurface = (pose: CharacterPose3D): CharacterPose3D => {
+    const surfaceY = getSurfaceYAtWorldGrid(surfaceDataRef.current, pose.gx, pose.gy);
+    const grounded = pose.grounded ?? true;
+    return {
+      ...pose,
+      surfaceY,
+      worldY: grounded ? surfaceY : (pose.worldY ?? surfaceY),
+      verticalVelocity: pose.verticalVelocity ?? 0,
+      grounded,
+    };
+  };
 
-  const jumpTimerRef = useRef<number>(0);
-  const jumpDurationRef = useRef<number>(JUMP_DURATION);
-  const jumpStartRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
-  const jumpTargetRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
   const rollTimerRef = useRef<number>(0);
   const rollStartRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
   const rollTargetRef = useRef<{ gx: number; gy: number }>({ gx: 0, gy: 0 });
@@ -357,6 +528,15 @@ export function useCharacterMovement(
 
   const inputStuckRoundedKeyRef = useRef("");
   const inputStuckTimerRef = useRef(0);
+  const lastSafeGroundRef = useRef<{ gx: number; gy: number; worldY: number }>({
+    gx: spawn.gx,
+    gy: spawn.gy,
+    worldY: getSurfaceYAtWorldGrid(surfaceData, spawn.gx, spawn.gy),
+  });
+
+  const footstepDistAccumRef = useRef(0);
+  const footstepPrevGxRef = useRef(poseRef.current.gx);
+  const footstepPrevGyRef = useRef(poseRef.current.gy);
 
   const lastManualInputRef = useRef<number>(performance.now());
   const patrolPhaseRef = useRef<PatrolPhase>("inactive");
@@ -378,9 +558,23 @@ export function useCharacterMovement(
     const key = `${sp.gx},${sp.gy}`;
     if (key === prevSpawnRef.current) return;
     prevSpawnRef.current = key;
-    poseRef.current = { gx: sp.gx, gy: sp.gy, direction: "right", animState: "idle", isManualMove: false };
+    poseRef.current = syncPoseWithSurface({
+      gx: sp.gx,
+      gy: sp.gy,
+      direction: "right",
+      animState: "idle",
+      isManualMove: false,
+    });
+    lastSafeGroundRef.current = {
+      gx: sp.gx,
+      gy: sp.gy,
+      worldY: getSurfaceYAtWorldGrid(surfaceDataRef.current, sp.gx, sp.gy),
+    };
     tpsVelocityRef.current = { x: 0, y: 0 };
     tpsFacingYawRef.current = undefined;
+    footstepDistAccumRef.current = 0;
+    footstepPrevGxRef.current = sp.gx;
+    footstepPrevGyRef.current = sp.gy;
   }, [island]);
 
   useEffect(() => {
@@ -398,118 +592,39 @@ export function useCharacterMovement(
         e.preventDefault();
         lastManualInputRef.current = performance.now();
         patrolPhaseRef.current = "inactive";
-        if (pressed && jumpTimerRef.current <= 0) {
+        if (pressed) {
           const pose = poseRef.current;
-          const keys = keysRef.current;
-          let dx = 0, dy = 0;
+          if (
+            pose.grounded === false ||
+            isMiniActionActiveRef.current ||
+            poiMenuOpenRef.current ||
+            activePoiSessionRef.current
+          ) {
+            actionKeysRef.current.space = pressed;
+            return;
+          }
           const tpsCameraState = getActiveTpsCameraState();
           const tpsViewYaw = tpsCameraState?.viewYaw ?? null;
-          const mousePos = mouseGroundRefRef.current?.current;
-          const charX = pose.gx * TILE_UNIT_SIZE;
-          const charZ = pose.gy * TILE_UNIT_SIZE;
-          if (tpsViewYaw != null && (keys.w || keys.s || keys.a || keys.d)) {
-            const basis = getBasisFromYaw(tpsViewYaw);
-            if (keys.w) { dx += basis.forwardX; dy += basis.forwardZ; }
-            if (keys.s) { dx -= basis.forwardX; dy -= basis.forwardZ; }
-            if (keys.a) { dx -= basis.leftX; dy -= basis.leftZ; }
-            if (keys.d) { dx += basis.leftX; dy += basis.leftZ; }
-          } else if (mousePos && (keys.w || keys.s || keys.a || keys.d) && (Math.abs(mousePos.x - charX) > 1e-5 || Math.abs(mousePos.z - charZ) > 1e-5)) {
-            const mx = mousePos.x - charX;
-            const mz = mousePos.z - charZ;
-            const len = Math.hypot(mx, mz);
-            if (len > 1e-5) {
-              const fwdX = mx / len;
-              const fwdZ = mz / len;
-              const leftX = -fwdZ;
-              const leftZ = fwdX;
-              if (keys.w) { dx += fwdX; dy += fwdZ; }
-              if (keys.s) { dx -= fwdX; dy -= fwdZ; }
-              if (keys.a) { dx += leftX; dy += leftZ; }
-              if (keys.d) { dx -= leftX; dy -= leftZ; }
-            }
+          const lastDir = lastMoveDir.current;
+          const jumpFacingAngle =
+            tpsViewYaw != null
+              ? (tpsFacingYawRef.current ?? tpsViewYaw)
+              : Math.abs(lastDir.dx) > 1e-4 || Math.abs(lastDir.dy) > 1e-4
+                ? getFacingAngleFromVector(lastDir.dx, lastDir.dy)
+                : pose.facingAngle;
+          if (tpsViewYaw != null && jumpFacingAngle != null) {
+            tpsFacingYawRef.current = jumpFacingAngle;
           }
-          if (dx === 0 && dy === 0) {
-            if (keys.w) dy -= 1;
-            if (keys.s) dy += 1;
-            if (keys.a) dx -= 1;
-            if (keys.d) dx += 1;
-          }
-
-          const startGx = pose.gx;
-          const startGy = pose.gy;
-
-          if (dx === 0 && dy === 0) {
-            jumpStartRef.current = { gx: startGx, gy: startGy };
-            jumpTargetRef.current = { gx: startGx, gy: startGy };
-            jumpDurationRef.current = JUMP_DURATION;
-            jumpTimerRef.current = JUMP_DURATION;
-            const facingAngle =
-              tpsViewYaw != null ? (tpsFacingYawRef.current ?? tpsViewYaw) : pose.facingAngle;
-            if (tpsViewYaw != null) {
-              tpsFacingYawRef.current = facingAngle;
-            }
-            tpsVelocityRef.current = { x: 0, y: 0 };
-            poseRef.current = {
-              ...pose,
-              gx: startGx,
-              gy: startGy,
-              animState: "jump",
-              isManualMove: true,
-              jumpDuration: JUMP_DURATION,
-              facingAngle,
-            };
-          } else {
-            const len = Math.hypot(dx, dy);
-            const dirX = dx / len;
-            const dirY = dy / len;
-
-            let jumpDist: number;
-            if (tpsViewYaw != null) {
-              jumpDist = JUMP_DISTANCE_KEYBOARD;
-            } else if (mousePos && (keys.w || keys.s || keys.a || keys.d)) {
-              const mouseDist = Math.hypot(mousePos.x - charX, mousePos.z - charZ);
-              jumpDist = clamp(mouseDist * 0.55, JUMP_DISTANCE_MIN, JUMP_DISTANCE_MAX);
-            } else {
-              jumpDist = JUMP_DISTANCE_KEYBOARD;
-            }
-
-            const targetGx = startGx + dirX * jumpDist;
-            const targetGy = startGy + dirY * jumpDist;
-            const tiles = tileSetRef.current;
-            const landing = resolveReachableTargetValid(
-              tiles,
-              blockedFootprintRef.current,
-              startGx,
-              startGy,
-              targetGx,
-              targetGy,
-              12,
-            );
-            const landGx = landing.gx;
-            const landGy = landing.gy;
-            const jumpDistActual = Math.hypot(landGx - startGx, landGy - startGy);
-            jumpDurationRef.current = JUMP_DURATION * (0.75 + 0.35 * clamp(jumpDistActual / JUMP_DISTANCE_MAX, 0, 1));
-            jumpStartRef.current = { gx: startGx, gy: startGy };
-            jumpTargetRef.current = { gx: landGx, gy: landGy };
-            jumpTimerRef.current = jumpDurationRef.current;
-            const dir: "left" | "right" = dirX > 0 ? "right" : dirX < 0 ? "left" : pose.direction;
-            const jumpFacingAngle = getFacingAngleFromVector(dirX, dirY);
-            if (tpsViewYaw != null) {
-              tpsFacingYawRef.current = jumpFacingAngle;
-            }
-            tpsVelocityRef.current = { x: 0, y: 0 };
-            poseRef.current = {
-              ...pose,
-              gx: startGx,
-              gy: startGy,
-              direction: dir,
-              animState: "jump",
-              isManualMove: true,
-              jumpDuration: jumpDurationRef.current,
-              facingAngle: jumpFacingAngle,
-            };
-          }
-          setRenderPose({ ...poseRef.current });
+          poseRef.current = {
+            ...pose,
+            grounded: false,
+            verticalVelocity: avatarGroundProfileRef.current.jumpVelocity,
+            animState: "jump",
+            isManualMove: true,
+            jumpDuration: JUMP_DURATION,
+            facingAngle: jumpFacingAngle,
+          };
+          setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
         }
         actionKeysRef.current.space = pressed;
         return;
@@ -519,8 +634,15 @@ export function useCharacterMovement(
         e.preventDefault();
         lastManualInputRef.current = performance.now();
         patrolPhaseRef.current = "inactive";
-        if (pressed && chopTimerRef.current <= 0) {
-          chopTimerRef.current = 0.92;
+        if (
+          pressed &&
+          chopTimerRef.current <= 0 &&
+          equippedRightHandRef.current === WOOD_AXE_ITEM_ID
+        ) {
+          chopSwingSerialRef.current += 1;
+          activeChopPlaybackSecRef.current = AXE_CHOP_PLAYBACK_SEC;
+          chopTimerRef.current = AXE_CHOP_PLAYBACK_SEC;
+          playAxeSwingSfx(axeSwingVolume01(playerSfxVolumeRef.current));
         }
         return;
       }
@@ -529,7 +651,7 @@ export function useCharacterMovement(
         e.preventDefault();
         lastManualInputRef.current = performance.now();
         patrolPhaseRef.current = "inactive";
-        if (pressed && rollTimerRef.current <= 0 && jumpTimerRef.current <= 0) {
+        if (pressed && rollTimerRef.current <= 0 && (poseRef.current.grounded ?? true)) {
           const pose = poseRef.current;
           const charX = pose.gx * TILE_UNIT_SIZE;
           const charZ = pose.gy * TILE_UNIT_SIZE;
@@ -565,8 +687,18 @@ export function useCharacterMovement(
             targetGy,
             12,
           );
-          const landGx = landing.gx;
-          const landGy = landing.gy;
+          const clampedLanding = clampTargetToTraversableSurface(
+            surfaceDataRef.current,
+            tiles,
+            startGx,
+            startGy,
+            landing.gx,
+            landing.gy,
+            12,
+            avatarGroundProfileRef.current.stepHeight,
+          );
+          const landGx = clampedLanding.gx;
+          const landGy = clampedLanding.gy;
           rollStartRef.current = { gx: startGx, gy: startGy };
           rollTargetRef.current = { gx: landGx, gy: landGy };
           rollTimerRef.current = ROLL_DURATION;
@@ -586,7 +718,7 @@ export function useCharacterMovement(
             rollDuration: ROLL_DURATION,
             facingAngle: rollFacingAngle,
           };
-          setRenderPose({ ...poseRef.current });
+          setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
         }
         return;
       }
@@ -629,10 +761,11 @@ export function useCharacterMovement(
             isManualMove: true,
             facingAngle: spellFacingAngle,
           };
-          setRenderPose({ ...poseRef.current });
+          setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
           if (spellCastRefRef.current) {
             spellCastRefRef.current.current = {
               posX: charX + dirX * 0.4,
+              posY: pose.worldY ?? pose.surfaceY ?? getSurfaceYAtWorldGrid(surfaceDataRef.current, pose.gx, pose.gy),
               posZ: charZ + dirZ * 0.4,
               dirX,
               dirZ,
@@ -649,6 +782,28 @@ export function useCharacterMovement(
         patrolPhaseRef.current = "inactive";
         const pose = poseRef.current;
         const tpsCameraState = getActiveTpsCameraState();
+        if (!isMiniActionActiveRef.current && !poiMenuOpenRef.current && !activePoiSessionRef.current) {
+          const nearbyPoi = findNearbyPoiAction(islandRef.current, pose.gx, pose.gy);
+          const selectedIslandId = selectedIslandIdRef.current;
+          if (nearbyPoi && selectedIslandId && onPoiActionRequestRef.current) {
+            const request = buildPoiActionRequest(selectedIslandId, islandRef.current, pose.gx, pose.gy, nearbyPoi);
+            if (request) {
+              const dir: "left" | "right" = request.anchorGx < Math.round(pose.gx) ? "left" : "right";
+              tpsVelocityRef.current = { x: 0, y: 0 };
+              poseRef.current = {
+                ...pose,
+                gx: request.anchorGx,
+                gy: request.anchorGy,
+                direction: dir,
+                isManualMove: false,
+                facingAngle: request.facingAngle,
+              };
+              setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
+              onPoiActionRequestRef.current(request);
+              return;
+            }
+          }
+        }
         const result = findNearbyInteractable(pose.gx, pose.gy, tileTypeMapRef.current);
         if (result && onTileActionRef.current) {
           const dir: "left" | "right" = result.tileGx < Math.round(pose.gx) ? "left" : "right";
@@ -661,7 +816,12 @@ export function useCharacterMovement(
           }
           tpsVelocityRef.current = { x: 0, y: 0 };
           poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
-          chopTimerRef.current = 0.92;
+          chopSwingSerialRef.current += 1;
+          activeChopPlaybackSecRef.current = AXE_CHOP_PLAYBACK_SEC;
+          chopTimerRef.current = AXE_CHOP_PLAYBACK_SEC;
+          if (equippedRightHandRef.current === WOOD_AXE_ITEM_ID) {
+            playAxeSwingSfx(axeSwingVolume01(playerSfxVolumeRef.current));
+          }
           autoChopCooldownRef.current = 2 + Math.random() * 2;
           onTileActionRef.current(result.action, result.tileGx, result.tileGy);
         } else {
@@ -677,7 +837,7 @@ export function useCharacterMovement(
             }
             tpsVelocityRef.current = { x: 0, y: 0 };
             poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
-            setRenderPose({ ...poseRef.current });
+            setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
             onRuneVfxToggleRef.current(runeHit.gx, runeHit.gy);
             return;
           }
@@ -693,7 +853,7 @@ export function useCharacterMovement(
             }
             tpsVelocityRef.current = { x: 0, y: 0 };
             poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
-            setRenderPose({ ...poseRef.current });
+            setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
             onOpenCharacterSelectRef.current();
             return;
           }
@@ -710,7 +870,7 @@ export function useCharacterMovement(
                 }
                 tpsVelocityRef.current = { x: 0, y: 0 };
                 poseRef.current = { ...pose, isManualMove: false, facingAngle: angle };
-                setRenderPose({ ...poseRef.current });
+                setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
                 onNpcInteractRef.current(id);
                 break;
               }
@@ -729,19 +889,25 @@ export function useCharacterMovement(
         const walkable = tileSetRef.current;
         const blocked = blockedFootprintRef.current;
         const safe = findNearestValidCell(sp.gx, sp.gy, walkable, blocked);
+        const safeWorldY = getSurfaceYAtWorldGrid(surfaceDataRef.current, safe.gx, safe.gy);
+        lastSafeGroundRef.current = { gx: safe.gx, gy: safe.gy, worldY: safeWorldY };
         tpsVelocityRef.current = { x: 0, y: 0 };
         const cur = poseRef.current;
         poseRef.current = {
           ...cur,
           gx: safe.gx,
           gy: safe.gy,
+          surfaceY: safeWorldY,
+          worldY: safeWorldY,
+          verticalVelocity: 0,
+          grounded: true,
           animState: "idle",
           isManualMove: false,
         };
         inputStuckTimerRef.current = 0;
         inputStuckRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
-        prevPoseRef.current = { ...poseRef.current };
-        setRenderPose({ ...poseRef.current });
+        prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
+        setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
         return;
       }
 
@@ -772,11 +938,17 @@ export function useCharacterMovement(
       if (tpsState?.active && (tpsState.mouseForwardActive || tpsState.steeringActive || (e.buttons & 2) !== 0)) {
         return;
       }
+      if (equippedRightHandRef.current !== WOOD_AXE_ITEM_ID) {
+        return;
+      }
       e.preventDefault();
       lastManualInputRef.current = performance.now();
       patrolPhaseRef.current = "inactive";
       if (chopTimerRef.current <= 0) {
-        chopTimerRef.current = 0.92;
+        chopSwingSerialRef.current += 1;
+        activeChopPlaybackSecRef.current = AXE_CHOP_PLAYBACK_SEC;
+        chopTimerRef.current = AXE_CHOP_PLAYBACK_SEC;
+        playAxeSwingSfx(axeSwingVolume01(playerSfxVolumeRef.current));
       }
     };
 
@@ -812,7 +984,12 @@ export function useCharacterMovement(
     if (isMiniActionActiveRef.current && !hasInput) {
       autoChopCooldownRef.current -= dt;
       if (autoChopCooldownRef.current <= 0 && chopTimerRef.current <= 0) {
-        chopTimerRef.current = 0.92;
+        chopSwingSerialRef.current += 1;
+        activeChopPlaybackSecRef.current = AXE_CHOP_PLAYBACK_SEC;
+        chopTimerRef.current = AXE_CHOP_PLAYBACK_SEC;
+        if (equippedRightHandRef.current === WOOD_AXE_ITEM_ID) {
+          playAxeSwingSfx(axeSwingVolume01(playerSfxVolumeRef.current));
+        }
         autoChopCooldownRef.current = 2 + Math.random() * 2;
       }
     }
@@ -822,11 +999,47 @@ export function useCharacterMovement(
     const isChopping = chopTimerRef.current > 0;
     const tiles = tileSetRef.current;
     let resolvedTpsFacingAngle = pose.facingAngle;
+    const activePoiSession = activePoiSessionRef.current;
+
+    if (
+      activePoiSession &&
+      isPoiFocusAction(activePoiSession.actionType) &&
+      activePoiSession.anchorGx != null &&
+      activePoiSession.anchorGy != null
+    ) {
+      tpsVelocityRef.current = { x: 0, y: 0 };
+      const lockedPose = syncPoseWithSurface({
+        ...pose,
+        gx: activePoiSession.anchorGx,
+        gy: activePoiSession.anchorGy,
+        animState: getPoiActionAnimState(activePoiSession.actionType),
+        isManualMove: false,
+        facingAngle: activePoiSession.facingAngle ?? pose.facingAngle,
+      });
+      poseRef.current = lockedPose;
+      prevPoseRef.current = lockedPose;
+      setRenderPose(lockedPose);
+      return;
+    }
+
+    if (poiMenuOpenRef.current) {
+      tpsVelocityRef.current = { x: 0, y: 0 };
+      poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+      prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
+      setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
+      return;
+    }
 
     if (isMiniActionActiveRef.current) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       if (isChopping) {
-        poseRef.current = { ...pose, animState: "chop", isManualMove: false };
+        poseRef.current = {
+          ...pose,
+          animState: "chop",
+          isManualMove: false,
+          chopDuration: activeChopPlaybackSecRef.current,
+          chopSwingId: chopSwingSerialRef.current,
+        };
       } else {
         poseRef.current = { ...pose, animState: "idle", isManualMove: false };
       }
@@ -845,34 +1058,12 @@ export function useCharacterMovement(
         poseRef.current = { ...poseRef.current, facingAngle: undefined };
         wasTpsActiveRef.current = false;
       }
-      prevPoseRef.current = { ...poseRef.current };
-      setRenderPose({ ...poseRef.current });
+      prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
+      setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       return;
     }
 
-    if (jumpTimerRef.current > 0) {
-      tpsVelocityRef.current = { x: 0, y: 0 };
-      jumpTimerRef.current -= dt;
-      const dur = jumpDurationRef.current;
-      const t = clamp(1 - jumpTimerRef.current / dur, 0, 1);
-      const start = jumpStartRef.current;
-      const target = jumpTargetRef.current;
-      const gx = start.gx + (target.gx - start.gx) * t;
-      const gy = start.gy + (target.gy - start.gy) * t;
-      poseRef.current = { ...pose, gx, gy, animState: "jump", isManualMove: true, jumpDuration: dur };
-      resolvedTpsFacingAngle = poseRef.current.facingAngle;
-      if (jumpTimerRef.current <= 0) {
-        poseRef.current = {
-          ...poseRef.current,
-          gx: target.gx,
-          gy: target.gy,
-          animState: hasInput ? (isRunning ? "run" : "walk") : "idle",
-          isManualMove: hasInput,
-        };
-        prevPoseRef.current = { ...poseRef.current };
-        setRenderPose({ ...poseRef.current });
-      }
-    } else if (rollTimerRef.current > 0) {
+    if (rollTimerRef.current > 0) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       rollTimerRef.current -= dt;
       const t = clamp(1 - rollTimerRef.current / ROLL_DURATION, 0, 1);
@@ -891,22 +1082,22 @@ export function useCharacterMovement(
           animState: hasInput ? (isRunning ? "run" : "walk") : "idle",
           isManualMove: hasInput,
         };
-        prevPoseRef.current = { ...poseRef.current };
-        setRenderPose({ ...poseRef.current });
+        prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
+        setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       }
     } else if (isChopping) {
-      if (tpsActive && mouseForwardActive) {
-        chopTimerRef.current = 0;
-        poseRef.current = { ...pose, animState: "idle" };
-      } else {
       tpsVelocityRef.current = { x: 0, y: 0 };
-      poseRef.current = { ...pose, animState: "chop" };
-      resolvedTpsFacingAngle = poseRef.current.facingAngle;
-      }
+      poseRef.current = {
+        ...pose,
+        animState: "chop",
+        chopDuration: activeChopPlaybackSecRef.current,
+        chopSwingId: chopSwingSerialRef.current,
+      };
+      resolvedTpsFacingAngle = pose.facingAngle;
     } else if (spellTimerRef.current > 0) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       poseRef.current = { ...pose, animState: "spell" };
-      resolvedTpsFacingAngle = poseRef.current.facingAngle;
+      resolvedTpsFacingAngle = pose.facingAngle;
     } else if (tpsActive) {
       let moveX = 0;
       let moveY = 0;
@@ -939,12 +1130,40 @@ export function useCharacterMovement(
       let velY = tpsVelocityRef.current.y;
       let nx = pose.gx + velX * dt;
       let ny = pose.gy + velY * dt;
-
-      const targetCellX = Math.round(nx);
-      const targetCellY = Math.round(ny);
-      if (!hasTileAt(tiles, targetCellX, targetCellY)) {
-        const canMoveX = hasTileAt(tiles, Math.round(pose.gx + velX * dt), Math.round(pose.gy));
-        const canMoveY = hasTileAt(tiles, Math.round(pose.gx), Math.round(pose.gy + velY * dt));
+      const grounded = pose.grounded ?? true;
+      if (
+        grounded &&
+        !canMoveGroundedToCell(
+          tiles,
+          blockedFootprintRef.current,
+          surfaceDataRef.current,
+          pose.gx,
+          pose.gy,
+          nx,
+          ny,
+          avatarGroundProfileRef.current.stepHeight,
+        )
+      ) {
+        const canMoveX = canMoveGroundedToCell(
+          tiles,
+          blockedFootprintRef.current,
+          surfaceDataRef.current,
+          pose.gx,
+          pose.gy,
+          pose.gx + velX * dt,
+          pose.gy,
+          avatarGroundProfileRef.current.stepHeight,
+        );
+        const canMoveY = canMoveGroundedToCell(
+          tiles,
+          blockedFootprintRef.current,
+          surfaceDataRef.current,
+          pose.gx,
+          pose.gy,
+          pose.gx,
+          pose.gy + velY * dt,
+          avatarGroundProfileRef.current.stepHeight,
+        );
         if (canMoveX && !canMoveY) {
           ny = pose.gy;
           velY = 0;
@@ -959,22 +1178,18 @@ export function useCharacterMovement(
         }
       }
 
-      const curCellX = Math.round(pose.gx);
-      const curCellY = Math.round(pose.gy);
-      let allowedMinX = curCellX - 0.45;
-      let allowedMaxX = curCellX + 0.45;
-      let allowedMinY = curCellY - 0.45;
-      let allowedMaxY = curCellY + 0.45;
-      if (hasTileAt(tiles, curCellX + 1, curCellY)) allowedMaxX = Math.max(allowedMaxX, curCellX + 1 + 0.45);
-      if (hasTileAt(tiles, curCellX - 1, curCellY)) allowedMinX = Math.min(allowedMinX, curCellX - 1 - 0.45);
-      if (hasTileAt(tiles, curCellX, curCellY + 1)) allowedMaxY = Math.max(allowedMaxY, curCellY + 1 + 0.45);
-      if (hasTileAt(tiles, curCellX, curCellY - 1)) allowedMinY = Math.min(allowedMinY, curCellY - 1 - 0.45);
-      const clampedX = clamp(nx, allowedMinX, allowedMaxX);
-      const clampedY = clamp(ny, allowedMinY, allowedMaxY);
-      if (clampedX !== nx) velX = 0;
-      if (clampedY !== ny) velY = 0;
-      nx = clampedX;
-      ny = clampedY;
+      const resolvedMove = resolveHorizontalCollision(
+        surfaceDataRef.current,
+        pose.gx,
+        pose.gy,
+        nx,
+        ny,
+        avatarGroundProfileRef.current.collisionRadius,
+      );
+      if (resolvedMove.x !== nx) velX = 0;
+      if (resolvedMove.z !== ny) velY = 0;
+      nx = resolvedMove.x;
+      ny = resolvedMove.z;
       tpsVelocityRef.current = { x: velX, y: velY };
 
       const actualSpeed = Math.hypot(velX, velY);
@@ -1002,7 +1217,7 @@ export function useCharacterMovement(
     } else if (hasInput) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       let mgx = 0, mgy = 0;
-      const mousePos = mouseGroundRef?.current;
+      const mousePos = mouseGroundRefRef.current?.current ?? null;
       const charX = pose.gx * TILE_UNIT_SIZE;
       const charZ = pose.gy * TILE_UNIT_SIZE;
 
@@ -1040,12 +1255,40 @@ export function useCharacterMovement(
         const step = (speed * dt) / len;
         let nx = pose.gx + mgx * step;
         let ny = pose.gy + mgy * step;
-
-        const targetCellX = Math.round(nx);
-        const targetCellY = Math.round(ny);
-        if (!hasTileAt(tiles, targetCellX, targetCellY)) {
-          const canMoveX = hasTileAt(tiles, Math.round(pose.gx + mgx * step), Math.round(pose.gy));
-          const canMoveY = hasTileAt(tiles, Math.round(pose.gx), Math.round(pose.gy + mgy * step));
+        const grounded = pose.grounded ?? true;
+        if (
+          grounded &&
+          !canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            nx,
+            ny,
+            avatarGroundProfileRef.current.stepHeight,
+          )
+        ) {
+          const canMoveX = canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            pose.gx + mgx * step,
+            pose.gy,
+            avatarGroundProfileRef.current.stepHeight,
+          );
+          const canMoveY = canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            pose.gx,
+            pose.gy + mgy * step,
+            avatarGroundProfileRef.current.stepHeight,
+          );
           if (canMoveX && !canMoveY) {
             ny = pose.gy;
           } else if (canMoveY && !canMoveX) {
@@ -1056,23 +1299,22 @@ export function useCharacterMovement(
           }
         }
 
-        const curCellX = Math.round(pose.gx);
-        const curCellY = Math.round(pose.gy);
-        let allowedMinX = curCellX - 0.45;
-        let allowedMaxX = curCellX + 0.45;
-        let allowedMinY = curCellY - 0.45;
-        let allowedMaxY = curCellY + 0.45;
-        if (hasTileAt(tiles, curCellX + 1, curCellY)) allowedMaxX = Math.max(allowedMaxX, curCellX + 1 + 0.45);
-        if (hasTileAt(tiles, curCellX - 1, curCellY)) allowedMinX = Math.min(allowedMinX, curCellX - 1 - 0.45);
-        if (hasTileAt(tiles, curCellX, curCellY + 1)) allowedMaxY = Math.max(allowedMaxY, curCellY + 1 + 0.45);
-        if (hasTileAt(tiles, curCellX, curCellY - 1)) allowedMinY = Math.min(allowedMinY, curCellY - 1 - 0.45);
-        nx = clamp(nx, allowedMinX, allowedMaxX);
-        ny = clamp(ny, allowedMinY, allowedMaxY);
+        const resolvedMove = resolveHorizontalCollision(
+          surfaceDataRef.current,
+          pose.gx,
+          pose.gy,
+          nx,
+          ny,
+          avatarGroundProfileRef.current.collisionRadius,
+        );
+        nx = resolvedMove.x;
+        ny = resolvedMove.z;
 
         let dirStr: "left" | "right" = pose.direction;
         if (mgx > 0.01) dirStr = "right";
         else if (mgx < -0.01) dirStr = "left";
         poseRef.current = {
+          ...pose,
           gx: nx,
           gy: ny,
           direction: dirStr,
@@ -1082,6 +1324,9 @@ export function useCharacterMovement(
       }
     } else {
       tpsVelocityRef.current = { x: 0, y: 0 };
+      if (pose.grounded === false) {
+        poseRef.current = { ...pose, animState: "jump", isManualMove: false };
+      } else {
       const idleSeconds = (performance.now() - lastManualInputRef.current) / 1000;
       const phase = patrolPhaseRef.current;
 
@@ -1106,14 +1351,62 @@ export function useCharacterMovement(
           let allowedMaxX = curCellX + 0.45;
           let allowedMinY = curCellY - 0.45;
           let allowedMaxY = curCellY + 0.45;
-          if (hasTileAt(tiles, curCellX + 1, curCellY)) allowedMaxX = Math.max(allowedMaxX, curCellX + 1 + 0.45);
-          if (hasTileAt(tiles, curCellX - 1, curCellY)) allowedMinX = Math.min(allowedMinX, curCellX - 1 - 0.45);
-          if (hasTileAt(tiles, curCellX, curCellY + 1)) allowedMaxY = Math.max(allowedMaxY, curCellY + 1 + 0.45);
-          if (hasTileAt(tiles, curCellX, curCellY - 1)) allowedMinY = Math.min(allowedMinY, curCellY - 1 - 0.45);
+          if (
+            hasTraversableTileAt(
+              tiles,
+              surfaceDataRef.current,
+              pose.gx,
+              pose.gy,
+              curCellX + 1,
+              curCellY,
+              avatarGroundProfileRef.current.stepHeight,
+            )
+          ) {
+            allowedMaxX = Math.max(allowedMaxX, curCellX + 1 + 0.45);
+          }
+          if (
+            hasTraversableTileAt(
+              tiles,
+              surfaceDataRef.current,
+              pose.gx,
+              pose.gy,
+              curCellX - 1,
+              curCellY,
+              avatarGroundProfileRef.current.stepHeight,
+            )
+          ) {
+            allowedMinX = Math.min(allowedMinX, curCellX - 1 - 0.45);
+          }
+          if (
+            hasTraversableTileAt(
+              tiles,
+              surfaceDataRef.current,
+              pose.gx,
+              pose.gy,
+              curCellX,
+              curCellY + 1,
+              avatarGroundProfileRef.current.stepHeight,
+            )
+          ) {
+            allowedMaxY = Math.max(allowedMaxY, curCellY + 1 + 0.45);
+          }
+          if (
+            hasTraversableTileAt(
+              tiles,
+              surfaceDataRef.current,
+              pose.gx,
+              pose.gy,
+              curCellX,
+              curCellY - 1,
+              avatarGroundProfileRef.current.stepHeight,
+            )
+          ) {
+            allowedMinY = Math.min(allowedMinY, curCellY - 1 - 0.45);
+          }
           nx = clamp(nx, allowedMinX, allowedMaxX);
           ny = clamp(ny, allowedMinY, allowedMaxY);
           const dir: "left" | "right" = dx < 0 ? "left" : "right";
-          poseRef.current = { gx: nx, gy: ny, direction: dir, animState: "walk", isManualMove: false };
+          poseRef.current = { ...pose, gx: nx, gy: ny, direction: dir, animState: "walk", isManualMove: false };
         }
       } else if (phase === "paused") {
         patrolPauseTimerRef.current -= dt;
@@ -1129,6 +1422,7 @@ export function useCharacterMovement(
         patrolPhaseRef.current = "walking";
       } else {
         poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+      }
       }
     }
 
@@ -1153,10 +1447,82 @@ export function useCharacterMovement(
       tpsFacingYawRef.current = undefined;
       poseRef.current = { ...poseRef.current, facingAngle: undefined };
       wasTpsActiveRef.current = false;
+      inputStuckTimerRef.current = 0;
+      inputStuckRoundedKeyRef.current = "";
+    }
+
+    {
+      const p = poseRef.current;
+      const supportY = getSupportedSurfaceYAtWorldGrid(surfaceDataRef.current, p.gx, p.gy);
+      const fallbackSurfaceY = getSurfaceYAtWorldGrid(surfaceDataRef.current, p.gx, p.gy);
+      const currentWorldY = p.worldY ?? p.surfaceY ?? fallbackSurfaceY;
+      let grounded = p.grounded ?? true;
+      let worldY = currentWorldY;
+      let verticalVelocity = p.verticalVelocity ?? 0;
+
+      if (grounded) {
+        if (supportY != null) {
+          worldY = supportY;
+          verticalVelocity = 0;
+          lastSafeGroundRef.current = { gx: p.gx, gy: p.gy, worldY: supportY };
+        } else {
+          grounded = false;
+          verticalVelocity = Math.min(verticalVelocity, 0);
+        }
+      }
+
+      if (!grounded) {
+        const prevVerticalVelocity = verticalVelocity;
+        worldY += prevVerticalVelocity * dt;
+        verticalVelocity = prevVerticalVelocity - GRAVITY * dt;
+        if (supportY != null && prevVerticalVelocity <= 0 && worldY <= supportY + LAND_SNAP_DISTANCE) {
+          grounded = true;
+          worldY = supportY;
+          verticalVelocity = 0;
+          lastSafeGroundRef.current = { gx: p.gx, gy: p.gy, worldY: supportY };
+          if (p.animState === "jump") {
+            p.animState = hasInput ? (isRunning ? "run" : "walk") : "idle";
+            p.isManualMove = hasInput;
+          }
+        } else if (
+          p.animState !== "roll" &&
+          p.animState !== "spell" &&
+          p.animState !== "chop" &&
+          p.animState !== "attack"
+        ) {
+          p.animState = "jump";
+        }
+      }
+
+      if (worldY < surfaceDataRef.current.safeFloorY - FALL_RESET_MARGIN) {
+        const safe = lastSafeGroundRef.current;
+        chopTimerRef.current = 0;
+        poseRef.current = {
+          ...p,
+          gx: safe.gx,
+          gy: safe.gy,
+          surfaceY: safe.worldY,
+          worldY: safe.worldY,
+          verticalVelocity: 0,
+          grounded: true,
+          animState: "idle",
+          isManualMove: false,
+        };
+        tpsVelocityRef.current = { x: 0, y: 0 };
+        patrolPhaseRef.current = "inactive";
+      } else {
+        poseRef.current = {
+          ...p,
+          surfaceY: supportY ?? fallbackSurfaceY,
+          worldY,
+          verticalVelocity,
+          grounded,
+        };
+      }
     }
 
     if (
-      jumpTimerRef.current <= 0 &&
+      (poseRef.current.grounded ?? true) &&
       rollTimerRef.current <= 0 &&
       !isMiniActionActiveRef.current
     ) {
@@ -1165,13 +1531,25 @@ export function useCharacterMovement(
       const p = poseRef.current;
       if (!isAvatarCellValid(walkable, blocked, p.gx, p.gy)) {
         const safe = findNearestValidCell(p.gx, p.gy, walkable, blocked);
+        const safeWorldY = getSurfaceYAtWorldGrid(surfaceDataRef.current, safe.gx, safe.gy);
+        lastSafeGroundRef.current = { gx: safe.gx, gy: safe.gy, worldY: safeWorldY };
+        const keepChop = chopTimerRef.current > 0 && p.animState === "chop";
         poseRef.current = {
           ...p,
           gx: safe.gx,
           gy: safe.gy,
-          animState:
-            p.animState === "walk" || p.animState === "run" ? p.animState : "idle",
-          isManualMove: hasInput,
+          surfaceY: safeWorldY,
+          worldY: safeWorldY,
+          verticalVelocity: 0,
+          grounded: true,
+          animState: keepChop
+            ? "chop"
+            : p.animState === "walk" || p.animState === "run"
+              ? p.animState
+              : "idle",
+          chopDuration: keepChop ? activeChopPlaybackSecRef.current : undefined,
+          chopSwingId: keepChop ? chopSwingSerialRef.current : undefined,
+          isManualMove: keepChop ? false : hasInput,
         };
         tpsVelocityRef.current = { x: 0, y: 0 };
         inputStuckTimerRef.current = 0;
@@ -1196,10 +1574,16 @@ export function useCharacterMovement(
           }
           if (inputStuckTimerRef.current >= INPUT_STUCK_UNSTICK_SEC) {
             const safe = findNearestValidCell(p.gx, p.gy, walkable, blocked);
+            const safeWorldY = getSurfaceYAtWorldGrid(surfaceDataRef.current, safe.gx, safe.gy);
+            lastSafeGroundRef.current = { gx: safe.gx, gy: safe.gy, worldY: safeWorldY };
             poseRef.current = {
               ...poseRef.current,
               gx: safe.gx,
               gy: safe.gy,
+              surfaceY: safeWorldY,
+              worldY: safeWorldY,
+              verticalVelocity: 0,
+              grounded: true,
               animState: "idle",
               isManualMove: false,
             };
@@ -1216,26 +1600,78 @@ export function useCharacterMovement(
       }
     }
 
-    const next = { ...poseRef.current };
+    const next = syncPoseWithSurface({ ...poseRef.current });
+
+    {
+      const sfx01 = Math.max(0, Math.min(100, playerSfxVolumeRef.current)) / 100;
+      const shouldFootstep =
+        (next.grounded ?? true) && (next.animState === "walk" || next.animState === "run");
+
+      if (shouldFootstep) {
+        const pGx = footstepPrevGxRef.current;
+        const pGy = footstepPrevGyRef.current;
+        const deltaWorld = Math.hypot(next.gx - pGx, next.gy - pGy) * TILE_UNIT_SIZE;
+        footstepDistAccumRef.current += deltaWorld;
+        const threshold =
+          TILE_UNIT_SIZE *
+          (next.animState === "run" ? FOOTSTEP_RUN_DIST_SCALE : FOOTSTEP_WALK_DIST_SCALE);
+        if (footstepDistAccumRef.current >= threshold && sfx01 > 0) {
+          const cam = tpsCameraStateRefRef.current?.current;
+          const tpsAudible = cam?.active === true && cam.viewYaw != null;
+          const camGain = tpsAudible ? FOOTSTEP_TPS_CAMERA_GAIN : FOOTSTEP_ISO_CAMERA_GAIN;
+          playPlayerFootstep(sfx01 * FOOTSTEP_VOLUME_GAIN * camGain);
+          footstepDistAccumRef.current -= threshold;
+        }
+        footstepPrevGxRef.current = next.gx;
+        footstepPrevGyRef.current = next.gy;
+      } else {
+        footstepDistAccumRef.current = 0;
+        footstepPrevGxRef.current = next.gx;
+        footstepPrevGyRef.current = next.gy;
+      }
+    }
+
     const prev = prevPoseRef.current;
+    const surfaceChanged = Math.abs((next.surfaceY ?? 0) - (prev.surfaceY ?? 0)) > 0.001;
+    const worldYChanged = Math.abs((next.worldY ?? 0) - (prev.worldY ?? 0)) > 0.001;
+    const groundedChanged = (next.grounded ?? true) !== (prev.grounded ?? true);
     const facingChanged =
       (next.facingAngle == null && prev.facingAngle != null) ||
       (next.facingAngle != null && prev.facingAngle == null) ||
       (next.facingAngle != null &&
         prev.facingAngle != null &&
         Math.abs(next.facingAngle - prev.facingAngle) > 0.001);
+    const chopSwingChanged = (next.chopSwingId ?? 0) !== (prev.chopSwingId ?? 0);
     if (
       next.gx !== prev.gx ||
       next.gy !== prev.gy ||
       next.direction !== prev.direction ||
       next.animState !== prev.animState ||
       next.isManualMove !== prev.isManualMove ||
-      facingChanged
+      facingChanged ||
+      surfaceChanged ||
+      worldYChanged ||
+      groundedChanged ||
+      chopSwingChanged
     ) {
       prevPoseRef.current = next;
       setRenderPose(next);
     }
   });
+
+  useFrame(() => {
+    const out = movementDebugRefRef.current;
+    if (!out) return;
+    const ts = tpsCameraStateRefRef.current?.current;
+    out.current = {
+      animState: poseRef.current.animState,
+      chopTimer: chopTimerRef.current,
+      chopPlaybackSec: activeChopPlaybackSecRef.current,
+      rollTimer: rollTimerRef.current,
+      mouseForwardActive: Boolean(ts?.mouseForwardActive),
+      steeringActive: Boolean(ts?.steeringActive),
+    };
+  }, -10);
 
   return renderPose;
 }

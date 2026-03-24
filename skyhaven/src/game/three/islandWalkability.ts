@@ -1,4 +1,5 @@
-import type { IslandMap } from "../types";
+import type { AssetKey, IslandMap } from "../types";
+import { MINE_TILES } from "../types";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../assets";
 
 export function buildWalkableCellSet(island: IslandMap): Set<string> {
@@ -24,6 +25,38 @@ export function buildBlockedFootprintSet(island: IslandMap): Set<string> {
       }
     }
   }
+  return set;
+}
+
+function addManifestGridFootprintForTiles(
+  island: IslandMap,
+  typePredicate: (type: AssetKey) => boolean,
+  into: Set<string>,
+): void {
+  for (const t of island.tiles) {
+    if (!typePredicate(t.type)) continue;
+    const span = SKYHAVEN_SPRITE_MANIFEST.tile[t.type]?.gridSpan;
+    const w = span?.w ?? 2;
+    const h = span?.h ?? 2;
+    for (let dy = 0; dy < h; dy += 1) {
+      for (let dx = 0; dx < w; dx += 1) {
+        into.add(`${t.gx + dx},${t.gy + dy}`);
+      }
+    }
+  }
+}
+
+/** User-blocked POI cells + full mine mesh footprint (2×2), even when the tile is not marked blocked. */
+export function buildMiningManPatrolBlockedSet(island: IslandMap): Set<string> {
+  const set = buildBlockedFootprintSet(island);
+  addManifestGridFootprintForTiles(island, (ty) => (MINE_TILES as readonly AssetKey[]).includes(ty), set);
+  return set;
+}
+
+/** User-blocked POI cells + magic tower 2×2 footprint, even when the tile is not marked blocked. */
+export function buildMagicManPatrolBlockedSet(island: IslandMap): Set<string> {
+  const set = buildBlockedFootprintSet(island);
+  addManifestGridFootprintForTiles(island, (ty) => ty === "magicTower", set);
   return set;
 }
 
@@ -106,6 +139,103 @@ export function findNearestValidCell(
   }
   if (best) return best;
   return { gx: sx, gy: sy };
+}
+
+/**
+ * 4-neighbor BFS on grid cells that pass `isAvatarCellValid` (for NPC patrol target picking).
+ */
+export function isPatrolCellReachable(
+  walkable: Set<string>,
+  blockedFootprint: Set<string>,
+  fromGx: number,
+  fromGy: number,
+  toGx: number,
+  toGy: number,
+  maxExpanded = 260,
+): boolean {
+  if (!isAvatarCellValid(walkable, blockedFootprint, toGx, toGy)) return false;
+
+  const sx = Math.round(fromGx);
+  const sy = Math.round(fromGy);
+  const startKey = `${sx},${sy}`;
+  if (!isAvatarCellValid(walkable, blockedFootprint, sx, sy)) return false;
+
+  const goalKey = `${toGx},${toGy}`;
+  if (startKey === goalKey) return true;
+
+  const visited = new Set<string>([startKey]);
+  const queue: string[] = [startKey];
+  let qi = 0;
+  let expanded = 0;
+
+  while (qi < queue.length && expanded < maxExpanded) {
+    const cur = queue[qi++]!;
+    const p = parseKey(cur);
+    expanded++;
+
+    const neigh: [number, number][] = [
+      [p.gx + 1, p.gy],
+      [p.gx - 1, p.gy],
+      [p.gx, p.gy + 1],
+      [p.gx, p.gy - 1],
+    ];
+    for (const [nx, ny] of neigh) {
+      const nk = `${nx},${ny}`;
+      if (visited.has(nk)) continue;
+      if (!isAvatarCellValid(walkable, blockedFootprint, nx, ny)) continue;
+      if (nk === goalKey) return true;
+      visited.add(nk);
+      queue.push(nk);
+    }
+  }
+  return false;
+}
+
+/**
+ * Random patrol cell that is actually reachable from the NPC (avoids unreachable picks across gaps / bad layouts).
+ */
+export function pickReachablePatrolCell(
+  walkableTiles: { gx: number; gy: number }[],
+  walkable: Set<string>,
+  blockedFootprint: Set<string>,
+  anchorGx: number,
+  anchorGy: number,
+  fromGx: number,
+  fromGy: number,
+  opts?: { anchorRadius?: number; maxBfsNodes?: number },
+): { gx: number; gy: number } {
+  const anchorRadius = opts?.anchorRadius ?? 16;
+  const maxBfs = opts?.maxBfsNodes ?? 280;
+
+  let pool = walkableTiles.filter(
+    (t) => Math.abs(t.gx - anchorGx) + Math.abs(t.gy - anchorGy) <= anchorRadius,
+  );
+  if (pool.length <= 1) pool = walkableTiles;
+
+  const roundFx = Math.round(fromGx);
+  const roundFy = Math.round(fromGy);
+
+  const shuffled = pool.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = shuffled[i]!;
+    shuffled[i] = shuffled[j]!;
+    shuffled[j] = tmp;
+  }
+
+  for (const t of shuffled) {
+    if (t.gx === roundFx && t.gy === roundFy) continue;
+    if (
+      isPatrolCellReachable(walkable, blockedFootprint, fromGx, fromGy, t.gx, t.gy, maxBfs)
+    ) {
+      return t;
+    }
+  }
+
+  const safe = findNearestValidCell(anchorGx, anchorGy, walkable, blockedFootprint);
+  const alt = shuffled.find((t) => t.gx !== roundFx || t.gy !== roundFy);
+  if (safe.gx === roundFx && safe.gy === roundFy && alt) return alt;
+  return safe;
 }
 
 /** Like line-of-sampling toward a target, but stops at first invalid (walkable + not blocked footprint) cell. */

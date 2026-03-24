@@ -1,24 +1,30 @@
 import { useGLTF, useAnimations } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useRef, useEffect, useMemo, useCallback } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import * as THREE from "three";
 import { TILE_UNIT_SIZE, MAGIC_MAN_MODELS } from "./assets3d";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
+import { getNpcGroundProfile } from "./avatarGrounding";
 import type { IslandMap } from "../types";
 import {
-  buildBlockedFootprintSet,
+  buildMagicManPatrolBlockedSet,
   buildWalkableCellSet,
   findNearestValidCell,
   getWalkableTileList,
   isAvatarCellValid,
+  pickReachablePatrolCell,
 } from "./islandWalkability";
+import {
+  buildIslandSurfaceData,
+  canNpcPatrolStepBetweenCells,
+  getNpcSupportWorldY,
+} from "./islandSurface";
 
 Object.values(MAGIC_MAN_MODELS).forEach((p) => useGLTF.preload(p));
 
 const CHAR_SCALE = 0.294;
-const TILE_SURFACE_Y = 0.82;
 const BASE_ROT_Y = -Math.PI / 4;
 const CROSSFADE_DURATION = 0.2;
 const PATROL_SPEED = 0.55;
@@ -28,12 +34,14 @@ const SPELL_INTERVAL_MIN = 8;
 const SPELL_INTERVAL_MAX = 15;
 const SPELL_FALLBACK_DURATION = 2.4;
 const TALK_DURATION = 6;
-const NPC_TILE_DWELL_RESET_SEC = 8;
+const NPC_TILE_DWELL_RESET_SEC = 4;
+const MAGIC_GROUND_OFFSET_Y = getNpcGroundProfile("magicMan").visualGroundOffsetY;
 
 type NpcState = "walk" | "idle" | "spell" | "talk";
 
 type Props = {
   island: IslandMap;
+  patrolIslandKey: string;
   isTalking: boolean;
   npcPosRef: React.MutableRefObject<{ gx: number; gy: number } | null>;
   playerGx: number;
@@ -47,20 +55,10 @@ function findMagicTowerTile(island: IslandMap): { gx: number; gy: number } | nul
   return null;
 }
 
-function pickRandomNearby(
-  tiles: { gx: number; gy: number }[],
-  cx: number,
-  cy: number,
-  radius: number,
-): { gx: number; gy: number } {
-  const nearby = tiles.filter(
-    (t) => Math.abs(t.gx - cx) + Math.abs(t.gy - cy) <= radius && (t.gx !== Math.round(cx) || t.gy !== Math.round(cy)),
-  );
-  const pool = nearby.length > 0 ? nearby : tiles;
-  return pool[Math.floor(Math.random() * pool.length)];
-}
+export function MagicManNPC({ island, patrolIslandKey, isTalking, npcPosRef, playerGx, playerGy }: Props) {
+  const islandRef = useRef(island);
+  islandRef.current = island;
 
-export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }: Props) {
   const baseGltf = useGLTF(MAGIC_MAN_MODELS.base);
   const walkGltf = useGLTF(MAGIC_MAN_MODELS.walk);
   const idleGltf = useGLTF(MAGIC_MAN_MODELS.idle);
@@ -83,27 +81,72 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
   );
   const spellTimerRef = useRef(0);
   const talkTimerRef = useRef(0);
-  const spawnedRef = useRef(false);
   const dwellTimerRef = useRef(0);
   const lastDwellRoundedKeyRef = useRef("");
 
   const magicTowerTile = useMemo(() => findMagicTowerTile(island), [island]);
   const walkableTiles = useMemo(() => getWalkableTileList(island), [island]);
   const walkableCells = useMemo(() => buildWalkableCellSet(island), [island]);
-  const blockedFootprint = useMemo(() => buildBlockedFootprintSet(island), [island]);
+  const patrolBlockedFootprint = useMemo(() => buildMagicManPatrolBlockedSet(island), [island]);
+  const patrolTiles = useMemo(() => {
+    const filtered = walkableTiles.filter((t) => !patrolBlockedFootprint.has(`${t.gx},${t.gy}`));
+    return filtered.length > 0 ? filtered : walkableTiles;
+  }, [walkableTiles, patrolBlockedFootprint]);
+  const surfaceData = useMemo(() => buildIslandSurfaceData(island), [island]);
 
-  useEffect(() => {
-    if (!magicTowerTile || walkableTiles.length === 0) return;
-    if (!spawnedRef.current) {
-      const safe = findNearestValidCell(magicTowerTile.gx, magicTowerTile.gy, walkableCells, blockedFootprint);
-      gxRef.current = safe.gx;
-      gyRef.current = safe.gy;
-      targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
-      lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
-      dwellTimerRef.current = 0;
-      spawnedRef.current = true;
+  const towerLayoutKey = useMemo(() => {
+    const mt = findMagicTowerTile(island);
+    return mt ? `${patrolIslandKey}:${mt.gx},${mt.gy}` : "";
+  }, [island, patrolIslandKey]);
+
+  useLayoutEffect(() => {
+    if (!towerLayoutKey) return;
+    const isl = islandRef.current;
+    const tower = findMagicTowerTile(isl);
+    if (!tower) return;
+    const rawWt = getWalkableTileList(isl);
+    const bf = buildMagicManPatrolBlockedSet(isl);
+    let wt = rawWt.filter((t) => !bf.has(`${t.gx},${t.gy}`));
+    if (wt.length === 0) wt = rawWt;
+    if (wt.length === 0) return;
+    const wc = buildWalkableCellSet(isl);
+    const sd = buildIslandSurfaceData(isl);
+    const safe = findNearestValidCell(tower.gx, tower.gy, wc, bf);
+    gxRef.current = safe.gx;
+    gyRef.current = safe.gy;
+    targetRef.current = pickReachablePatrolCell(
+      wt,
+      wc,
+      bf,
+      tower.gx,
+      tower.gy,
+      safe.gx,
+      safe.gy,
+    );
+    lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
+    dwellTimerRef.current = 0;
+    const ox = outerRef.current;
+    if (ox) {
+      const y = getNpcSupportWorldY(sd, safe.gx, safe.gy) + MAGIC_GROUND_OFFSET_Y;
+      ox.position.set(safe.gx * TILE_UNIT_SIZE, y, safe.gy * TILE_UNIT_SIZE);
     }
-  }, [magicTowerTile, walkableTiles, walkableCells, blockedFootprint]);
+  }, [towerLayoutKey]);
+
+  const pickPatrolTarget = useCallback(
+    (cx: number, cy: number) => {
+      if (!magicTowerTile) return { gx: Math.round(cx), gy: Math.round(cy) };
+      return pickReachablePatrolCell(
+        patrolTiles,
+        walkableCells,
+        patrolBlockedFootprint,
+        magicTowerTile.gx,
+        magicTowerTile.gy,
+        cx,
+        cy,
+      );
+    },
+    [magicTowerTile, patrolTiles, walkableCells, patrolBlockedFootprint],
+  );
 
   useMemo(() => {
     baseGltf.scene.traverse((child) => {
@@ -194,16 +237,21 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
   }, [isTalking, playClip]);
 
   useFrame((_, delta) => {
-    if (!outerRef.current || !magicTowerTile || walkableTiles.length === 0) return;
+    if (!outerRef.current || !magicTowerTile || walkableCells.size === 0) return;
     const dt = Math.min(0.05, delta);
 
     npcPosRef.current = { gx: gxRef.current, gy: gyRef.current };
 
-    if (!isAvatarCellValid(walkableCells, blockedFootprint, gxRef.current, gyRef.current)) {
-      const safe = findNearestValidCell(gxRef.current, gyRef.current, walkableCells, blockedFootprint);
+    if (!isAvatarCellValid(walkableCells, patrolBlockedFootprint, gxRef.current, gyRef.current)) {
+      const safe = findNearestValidCell(
+        magicTowerTile.gx,
+        magicTowerTile.gy,
+        walkableCells,
+        patrolBlockedFootprint,
+      );
       gxRef.current = safe.gx;
       gyRef.current = safe.gy;
-      targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
+      targetRef.current = pickPatrolTarget(safe.gx, safe.gy);
       dwellTimerRef.current = 0;
       lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
       if (stateRef.current === "idle") {
@@ -217,7 +265,7 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
       talkTimerRef.current -= dt;
       if (talkTimerRef.current <= 0) {
         stateRef.current = "walk";
-        targetRef.current = pickRandomNearby(walkableTiles, gxRef.current, gyRef.current, 3);
+        targetRef.current = pickPatrolTarget(gxRef.current, gyRef.current);
         playClip("walk", true);
       }
     } else if (state === "spell") {
@@ -232,7 +280,7 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
 
       if (pauseTimerRef.current <= 0) {
         stateRef.current = "walk";
-        targetRef.current = pickRandomNearby(walkableTiles, gxRef.current, gyRef.current, 3);
+        targetRef.current = pickPatrolTarget(gxRef.current, gyRef.current);
         playClip("walk", true);
       } else if (spellIntervalTimerRef.current <= 0 && actions["zauber"]) {
         stateRef.current = "spell";
@@ -256,9 +304,12 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
         const step = (PATROL_SPEED * dt) / dist;
         const newGx = gxRef.current + dx * step;
         const newGy = gyRef.current + dy * step;
-        if (!isAvatarCellValid(walkableCells, blockedFootprint, newGx, newGy)) {
+        if (
+          !isAvatarCellValid(walkableCells, patrolBlockedFootprint, newGx, newGy) ||
+          !canNpcPatrolStepBetweenCells(surfaceData, gxRef.current, gyRef.current, newGx, newGy)
+        ) {
           stateRef.current = "walk";
-          targetRef.current = pickRandomNearby(walkableTiles, gxRef.current, gyRef.current, 3);
+          targetRef.current = pickPatrolTarget(gxRef.current, gyRef.current);
           playClip("walk", true);
           const ndx = targetRef.current.gx - gxRef.current;
           const ndy = targetRef.current.gy - gyRef.current;
@@ -288,10 +339,10 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
       } else {
         dwellTimerRef.current += dt;
         if (dwellTimerRef.current >= NPC_TILE_DWELL_RESET_SEC) {
-          const safe = findNearestValidCell(magicTowerTile.gx, magicTowerTile.gy, walkableCells, blockedFootprint);
+          const safe = findNearestValidCell(magicTowerTile.gx, magicTowerTile.gy, walkableCells, patrolBlockedFootprint);
           gxRef.current = safe.gx;
           gyRef.current = safe.gy;
-          targetRef.current = pickRandomNearby(walkableTiles, safe.gx, safe.gy, 3);
+          targetRef.current = pickPatrolTarget(safe.gx, safe.gy);
           dwellTimerRef.current = 0;
           lastDwellRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
           if (endState === "idle") {
@@ -311,7 +362,10 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
     const sm = 1 - Math.exp(-10 * delta);
     pos.x += (tx - pos.x) * sm;
     pos.z += (tz - pos.z) * sm;
-    pos.y = TILE_SURFACE_Y;
+    const rgx = Math.round(gxRef.current);
+    const rgy = Math.round(gyRef.current);
+    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + MAGIC_GROUND_OFFSET_Y;
+    pos.y += (targetY - pos.y) * sm;
 
     if (modelRef.current) {
       let targetRot = facingAngleRef.current;
@@ -331,17 +385,10 @@ export function MagicManNPC({ island, isTalking, npcPosRef, playerGx, playerGy }
     }
   });
 
-  if (!magicTowerTile || walkableTiles.length === 0) return null;
+  if (!magicTowerTile) return null;
 
   return (
-    <group
-      ref={outerRef}
-      position={[
-        magicTowerTile.gx * TILE_UNIT_SIZE,
-        TILE_SURFACE_Y,
-        magicTowerTile.gy * TILE_UNIT_SIZE,
-      ]}
-    >
+    <group ref={outerRef}>
       <group ref={modelRef}>
         <group scale={CHAR_SCALE}>
           <primitive ref={baseSceneRef} object={baseGltf.scene} />

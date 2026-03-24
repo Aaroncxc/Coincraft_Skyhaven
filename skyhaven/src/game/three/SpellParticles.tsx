@@ -4,7 +4,6 @@ import * as THREE from "three";
 import type { MutableRefObject } from "react";
 import type { SpellCastEvent } from "./useCharacterMovement";
 
-const TILE_SURFACE_Y = 0.82;
 const BALL_SPEED = 5;
 const BALL_LIFETIME = 1.4;
 const BALL_INITIAL_RADIUS = 0.2;
@@ -68,7 +67,7 @@ export function SpellParticles({ spellCastRef }: SpellParticlesProps) {
       lastEventRef.current = event;
       ballRef.current = {
         x: event.posX,
-        y: TILE_SURFACE_Y + 0.55,
+        y: event.posY + 0.55,
         z: event.posZ,
         dirX: event.dirX,
         dirZ: event.dirZ,

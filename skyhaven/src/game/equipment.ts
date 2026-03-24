@@ -1,3 +1,5 @@
+import type { PlayableCharacterId } from "./playableCharacters";
+
 export type EquippableItemId = "wood_axe_placeholder";
 
 export type Vec3Tuple = [number, number, number];
@@ -8,23 +10,85 @@ export type ItemSocketTransform = {
   scale: Vec3Tuple;
 };
 
+export type ItemSocketTransformByVariant = Record<PlayableCharacterId, ItemSocketTransform>;
+
 export type EquippableItemDef = {
   id: EquippableItemId;
   label: string;
-  rightHand: ItemSocketTransform;
+  /** Optional inventory / UI thumbnail (profile slots, drag ghost). */
+  thumbnailSrc?: string;
+  rightHandByVariant: ItemSocketTransformByVariant;
 };
 
+export const WOOD_AXE_ITEM_ID: EquippableItemId = "wood_axe_placeholder";
+
+export function cloneItemSocketTransform(transform: ItemSocketTransform): ItemSocketTransform {
+  return {
+    position: [...transform.position] as Vec3Tuple,
+    rotation: [...transform.rotation] as Vec3Tuple,
+    scale: [...transform.scale] as Vec3Tuple,
+  };
+}
+
+export function cloneItemSocketTransformByVariant(
+  transforms: ItemSocketTransformByVariant,
+): ItemSocketTransformByVariant {
+  return {
+    default: cloneItemSocketTransform(transforms.default),
+    fight_man: cloneItemSocketTransform(transforms.fight_man),
+    mining_man: cloneItemSocketTransform(transforms.mining_man),
+    magic_man: cloneItemSocketTransform(transforms.magic_man),
+  };
+}
+
 export const EQUIPPABLE_ITEMS: Record<EquippableItemId, EquippableItemDef> = {
-  wood_axe_placeholder: {
-    id: "wood_axe_placeholder",
+  [WOOD_AXE_ITEM_ID]: {
+    id: WOOD_AXE_ITEM_ID,
     label: "Wood Axe",
-    rightHand: {
-      position: [0.03, -0.05, 0.04],
-      rotation: [Math.PI * 0.5, 0, Math.PI * 0.35],
-      scale: [0.22, 0.22, 0.22],
+    thumbnailSrc: "/ingame_assets/3d/Waffen/Axt_Inventar_Thumbnail.png",
+    rightHandByVariant: {
+      default: {
+        position: [28.1172, 18.552, 9.7968],
+        rotation: [1.6403, 0.0699, 3.1069],
+        scale: [56.24, 63.47, 46.94],
+      },
+      fight_man: {
+        position: [2, -2, 6],
+        rotation: [1.6336, -0.12, 1.1938],
+        scale: [20, 20, 20],
+      },
+      mining_man: {
+        position: [2, -2, 6],
+        rotation: [1.6336, -0.12, 1.1938],
+        scale: [20, 20, 20],
+      },
+      magic_man: {
+        position: [2, -2, 6],
+        rotation: [1.6336, -0.12, 1.1938],
+        scale: [20, 20, 20],
+      },
     },
   },
 };
+
+export function getEquippableItemRightHandTransform(
+  itemId: EquippableItemId,
+  playableVariant: PlayableCharacterId,
+): ItemSocketTransform | null {
+  const itemDef = EQUIPPABLE_ITEMS[itemId];
+  if (!itemDef) return null;
+  return cloneItemSocketTransform(
+    itemDef.rightHandByVariant[playableVariant] ?? itemDef.rightHandByVariant.default,
+  );
+}
+
+export function getEquippableItemDefaultRightHandByVariant(
+  itemId: EquippableItemId,
+): ItemSocketTransformByVariant | null {
+  const itemDef = EQUIPPABLE_ITEMS[itemId];
+  if (!itemDef) return null;
+  return cloneItemSocketTransformByVariant(itemDef.rightHandByVariant);
+}
 
 export type ActionBarState = {
   primary: EquippableItemId | null;
@@ -44,10 +108,9 @@ export type EquipmentSlotRef = "inventory_slot_4" | "action_primary";
 
 export const EQUIPMENT_STORAGE_KEY = "skyhaven.equipment.v2";
 
-const AXE_ID: EquippableItemId = "wood_axe_placeholder";
 const DEFAULT_EQUIPMENT: EquipmentState = {
   actionBar: { primary: null },
-  inventoryItems: { slot4: AXE_ID },
+  inventoryItems: { slot4: WOOD_AXE_ITEM_ID },
   equippedRightHand: null,
 };
 
@@ -82,12 +145,12 @@ function withDerivedRightHand(state: EquipmentState): EquipmentState {
 }
 
 function normalizeEquipment(state: EquipmentState): EquipmentState {
-  const hasAxeInAction = state.actionBar.primary === AXE_ID;
-  const hasAxeInInventory = state.inventoryItems.slot4 === AXE_ID;
+  const hasAxeInAction = state.actionBar.primary === WOOD_AXE_ITEM_ID;
+  const hasAxeInInventory = state.inventoryItems.slot4 === WOOD_AXE_ITEM_ID;
 
   let next: EquipmentState = {
-    actionBar: { primary: hasAxeInAction ? AXE_ID : null },
-    inventoryItems: { slot4: hasAxeInInventory ? AXE_ID : null },
+    actionBar: { primary: hasAxeInAction ? WOOD_AXE_ITEM_ID : null },
+    inventoryItems: { slot4: hasAxeInInventory ? WOOD_AXE_ITEM_ID : null },
     equippedRightHand: null,
   };
 
@@ -103,7 +166,7 @@ function normalizeEquipment(state: EquipmentState): EquipmentState {
   if (!hasAxeInAction && !hasAxeInInventory) {
     next = {
       ...next,
-      inventoryItems: { slot4: AXE_ID },
+      inventoryItems: { slot4: WOOD_AXE_ITEM_ID },
     };
   }
 

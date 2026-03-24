@@ -18,8 +18,8 @@ const STATUS_COLORS: Record<QuestStatus, string> = {
 const ACTION_LABELS: Record<string, string> = {
   mining: "Mining",
   farming: "Farming",
-  roaming: "Roaming",
-  cooking: "Cooking",
+  magic: "Magic",
+  fight: "Fight",
 };
 
 export function QuestCard({ quest, compact = false, onStatusChange, onDelete, onEdit }: QuestCardProps) {

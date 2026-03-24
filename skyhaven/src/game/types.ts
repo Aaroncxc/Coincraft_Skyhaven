@@ -1,4 +1,6 @@
-export type ActionType = "mining" | "farming" | "roaming" | "cooking" | "woodcutting" | "harvesting";
+export type ActionType = "mining" | "farming" | "magic" | "fight" | "woodcutting" | "harvesting";
+export type LegacyActionType = "roaming" | "cooking";
+export type PoiActionType = "mining" | "farming" | "magic" | "fight";
 
 export type ResourceId = "ore" | "wheat" | "wood";
 
@@ -95,6 +97,13 @@ export type FocusSession = {
   startedAt: number;
   endsAt: number;
   durationMin: FocusDuration;
+  sourceIslandId?: IslandId;
+  sourcePoiType?: AssetKey;
+  sourceTileGx?: number;
+  sourceTileGy?: number;
+  anchorGx?: number;
+  anchorGy?: number;
+  facingAngle?: number;
   pomodoroMode?: boolean;
   pomodoroRound?: number;
   pomodoroTotalRounds?: number;
@@ -123,6 +132,8 @@ export type TileDef = {
   offsetY?: number;
   /** 3D position override set via debug gizmo */
   pos3d?: { x: number; y: number; z: number };
+  /** Walk surface height above tile origin for character placement */
+  walkSurfaceOffsetY?: number;
   /** 3D scale override set via debug gizmo */
   scale3d?: { x: number; y: number; z: number };
   /** Y-axis rotation in radians (multiples of π/2) */

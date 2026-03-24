@@ -12,12 +12,12 @@ export const SESSION_REWARDS: Record<ActionType, Partial<Record<FocusDuration, P
     60: { wheat: 14 },
     120: { wheat: 32 },
   },
-  roaming: {
+  magic: {
     30: { wood: 2 },
     60: { wood: 5 },
     120: { wood: 12 },
   },
-  cooking: {
+  fight: {
     30: { wood: 3 },
     60: { wood: 7 },
     120: { wood: 16 },

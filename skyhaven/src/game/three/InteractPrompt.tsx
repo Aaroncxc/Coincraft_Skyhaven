@@ -38,9 +38,10 @@ function createPromptTexture(): THREE.CanvasTexture {
 type InteractPromptProps = {
   tileGx: number;
   tileGy: number;
+  surfaceY?: number;
 };
 
-export function InteractPrompt({ tileGx, tileGy }: InteractPromptProps) {
+export function InteractPrompt({ tileGx, tileGy, surfaceY = 0.82 }: InteractPromptProps) {
   const spriteRef = useRef<THREE.Sprite>(null);
   const texture = useMemo(() => createPromptTexture(), []);
   const material = useMemo(
@@ -58,14 +59,14 @@ export function InteractPrompt({ tileGx, tileGy }: InteractPromptProps) {
     const sprite = spriteRef.current;
     if (!sprite) return;
     const t = state.clock.elapsedTime;
-    sprite.position.set(tileGx, PROMPT_Y + Math.sin(t * BOB_FREQ) * BOB_AMP, tileGy);
+    sprite.position.set(tileGx, surfaceY + (PROMPT_Y - 0.82) + Math.sin(t * BOB_FREQ) * BOB_AMP, tileGy);
   });
 
   return (
     <sprite
       ref={spriteRef}
       material={material}
-      position={[tileGx, PROMPT_Y, tileGy]}
+      position={[tileGx, surfaceY + (PROMPT_Y - 0.82), tileGy]}
       scale={[0.28, 0.28, 1]}
     />
   );

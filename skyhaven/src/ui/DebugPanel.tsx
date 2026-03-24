@@ -26,9 +26,14 @@ export type DebugPanelProps = {
   onPasteTransform?: () => void;
   hasClipboard?: boolean;
   onToggleBlocked?: () => void;
+  onWalkSurfaceOffsetChange?: (value: number | undefined) => void;
   islandLighting: IslandLightingParams;
   onIslandLightingChange: (next: IslandLightingParams) => void;
 };
+
+const WALK_SURFACE_MIN = -0.5;
+const WALK_SURFACE_MAX = 2;
+const WALK_SURFACE_STEP = 0.01;
 
 const panelBaseStyle: React.CSSProperties = {
   position: "absolute",
@@ -225,6 +230,7 @@ export function DebugPanel({
   onPasteTransform,
   hasClipboard = false,
   onToggleBlocked,
+  onWalkSurfaceOffsetChange,
   islandLighting,
   onIslandLightingChange,
 }: DebugPanelProps) {
@@ -277,6 +283,8 @@ export function DebugPanel({
     pointerEvents: isDragging ? "none" as const : "auto" as const,
     transition: "opacity 0.25s ease",
   };
+  const walkSurfaceValue = selectedTile?.walkSurfaceOffsetY;
+  const walkSurfaceLabel = walkSurfaceValue == null ? "Auto" : walkSurfaceValue.toFixed(2);
 
   const collapseTabStyle: React.CSSProperties = {
     position: "absolute",
@@ -331,6 +339,21 @@ export function DebugPanel({
             Reset
           </button>
         </div>
+        <div style={sliderLabelStyle}>
+          <span>Day warmth (day mode)</span>
+          <span style={valStyle}>
+            {(islandLighting.dayLightWarmth ?? DEFAULT_ISLAND_LIGHTING.dayLightWarmth).toFixed(2)}
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.02}
+          value={islandLighting.dayLightWarmth ?? DEFAULT_ISLAND_LIGHTING.dayLightWarmth}
+          onChange={(e) => patchLighting("dayLightWarmth", Number(e.target.value))}
+          style={rangeStyle}
+        />
         <div style={sliderLabelStyle}>
           <span>Sun azimuth (°)</span>
           <span style={valStyle}>{islandLighting.sunAzimuthDeg.toFixed(0)}</span>
@@ -542,6 +565,10 @@ export function DebugPanel({
               </span>
             </div>
           )}
+          <div style={infoRowStyle}>
+            <span>Walk Surface</span>
+            <span style={valStyle}>{walkSurfaceLabel}</span>
+          </div>
           {selectedTile.rotY != null && selectedTile.rotY !== 0 && (
             <div style={infoRowStyle}>
               <span>Rotation</span>
@@ -623,6 +650,35 @@ export function DebugPanel({
           >
             {selectedTile.blocked ? "Unblock Tile" : "Block Tile"}
           </button>
+          <div style={{ marginTop: 6 }}>
+            <div style={{ ...infoRowStyle, marginBottom: 4 }}>
+              <span>Walk Surface Y</span>
+              <button
+                type="button"
+                className="debug-panel-btn"
+                onClick={() => onWalkSurfaceOffsetChange?.(undefined)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#88ccff",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  padding: 0,
+                }}
+              >
+                Reset
+              </button>
+            </div>
+            <input
+              type="range"
+              min={WALK_SURFACE_MIN}
+              max={WALK_SURFACE_MAX}
+              step={WALK_SURFACE_STEP}
+              value={walkSurfaceValue ?? 0.92}
+              onChange={(event) => onWalkSurfaceOffsetChange?.(Number(event.target.value))}
+              style={rangeStyle}
+            />
+          </div>
         </div>
       ) : (
         <div

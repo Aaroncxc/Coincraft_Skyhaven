@@ -3,10 +3,15 @@ import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { TileDef } from "../types";
-import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { getModelKeyForAsset, getModelPath, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
 import { isTileFadeEligible, type CameraOccluderEntry } from "./cameraOcclusion";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
+import {
+  MULTI_CELL,
+  computeTileGltfNormalization,
+  getNormalizationModelKey,
+} from "./tileGltfNormalization";
 
 const DECORATION_SIZE_FACTOR = 0.45;
 const CAMERA_OCCLUDER_PAD = 0.12;
@@ -27,29 +32,6 @@ type TileModelProps = {
   cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 };
 
-const SCALE_OVERRIDES: Record<string, number> = {
-  tree: 1.35,
-};
-
-const MULTI_CELL: Record<string, { w: number; h: number }> = {
-  mine: { w: 2, h: 2 },
-  poisFarming: { w: 2, h: 2 },
-  taverne: { w: 2, h: 2 },
-  floatingForge: { w: 2, h: 2 },
-  farmingChicken: { w: 2, h: 2 },
-  magicTower: { w: 2, h: 2 },
-  cottaTile: { w: 2, h: 2 },
-  ancientTempleTile: { w: 2, h: 2 },
-  kaserneTile: { w: 2, h: 2 },
-};
-
-type NormalizationInfo = {
-  scale: number;
-  offsetY: number;
-  size: THREE.Vector3;
-  center: THREE.Vector3;
-};
-
 type FadableMaterialState = {
   material: THREE.Material;
   transparent: boolean;
@@ -57,28 +39,6 @@ type FadableMaterialState = {
   depthWrite: boolean;
   alphaTest: number;
 };
-
-const normalizeCache = new Map<string, NormalizationInfo>();
-
-function computeNormalization(scene: THREE.Object3D, path: string, modelKey: string): NormalizationInfo {
-  const cached = normalizeCache.get(path);
-  if (cached) return cached;
-
-  const box = new THREE.Box3().setFromObject(scene);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const multi = MULTI_CELL[modelKey];
-  const footprint = multi ? Math.max(multi.w, multi.h) * TILE_UNIT_SIZE : TILE_UNIT_SIZE;
-  const maxDim = Math.max(size.x, size.z);
-  let scale = maxDim > 0 ? footprint / maxDim : 1;
-  const override = SCALE_OVERRIDES[modelKey];
-  if (override) scale *= override;
-  const offsetY = -box.min.y * scale;
-
-  const result = { scale, offsetY, size, center };
-  normalizeCache.set(path, result);
-  return result;
-}
 
 const _emissiveColor = new THREE.Color(0x88ccff);
 const _blockedColor = new THREE.Color(0xff4444);
@@ -128,6 +88,9 @@ export function TileModel({
   const modelKey = getModelKeyForAsset(tile.type);
   const modelPath = getModelPathForAsset(tile.type);
   const { scene } = useGLTF(modelPath);
+  const normalizationModelKey = getNormalizationModelKey(modelKey);
+  const normalizationPath = getModelPath(normalizationModelKey);
+  const { scene: normalizationScene } = useGLTF(normalizationPath);
   const groupRef = useRef<THREE.Group>(null);
   const cameraOccluderRef = useRef<THREE.Mesh>(null);
   const hoveredRef = useRef(false);
@@ -139,8 +102,8 @@ export function TileModel({
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
   const { scale, offsetY, size, center } = useMemo(
-    () => computeNormalization(scene, modelPath, modelKey),
-    [scene, modelPath, modelKey],
+    () => computeTileGltfNormalization(normalizationScene, normalizationPath, normalizationModelKey),
+    [normalizationScene, normalizationPath, normalizationModelKey],
   );
 
   const multi = MULTI_CELL[modelKey];

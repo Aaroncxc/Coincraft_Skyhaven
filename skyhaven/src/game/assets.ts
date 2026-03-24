@@ -216,6 +216,7 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       anchorY: 0.8,
       layerOrder: 300,
       localYOffset: 80,
+      gridSpan: { w: 2, h: 2 },
     },
     mineTileV2: {
       src: "/ingame_assets/expanded/island/poi_mine_tile_v2.png",
@@ -225,6 +226,7 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       anchorY: 0.8,
       layerOrder: 300,
       localYOffset: 80,
+      gridSpan: { w: 2, h: 2 },
     },
     farmEmpty: {
       src: "/ingame_assets/expanded/farming/tile_farm_empty.png",
@@ -308,7 +310,7 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       localYOffset: 80,
       gridSpan: { w: 2, h: 2 },
     },
-    dirt: { src: "", drawW: 222, drawH: 222, anchorX: 0.5, anchorY: 0.65, layerOrder: 100 },
+    dirt: { src: "", drawW: 208, drawH: 208, anchorX: 0.5, anchorY: 0.71, layerOrder: 0 },
     treeMiddle: { src: "", drawW: 222, drawH: 222, anchorX: 0.5, anchorY: 0.65, layerOrder: 100 },
     farm2x2: { src: "/ingame_assets/expanded/toolbox/farm2x2_tile.png", drawW: 222, drawH: 222, anchorX: 0.5, anchorY: 0.65, layerOrder: 100 },
     poisFarming: { src: "/ingame_assets/expanded/farming/tile_farm_poi.png", drawW: 444, drawH: 444, anchorX: 0.5, anchorY: 0.65, layerOrder: 300, gridSpan: { w: 2, h: 2 } },

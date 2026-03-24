@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { OrthographicCamera as ThreeOrthographicCamera, PerspectiveCamera as ThreePerspectiveCamera } from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { TILE_UNIT_SIZE } from "./assets3d";
+import { DEFAULT_WALK_SURFACE_OFFSET_Y } from "./islandSurface";
 import type { CharacterPose3D, TpsCameraState } from "./useCharacterMovement";
 import type { CameraOccluderEntry } from "./cameraOcclusion";
 
@@ -14,6 +15,9 @@ const CAMERA_DISTANCE = 20;
 const DEFAULT_ZOOM = 80;
 const MIN_ZOOM = 30;
 const MAX_ZOOM = 250;
+/** Ortho depth range (cannot disable clipping; widen so large / panned home islands stay in frustum). */
+const ISO_ORTHO_NEAR = 0.001;
+const ISO_ORTHO_FAR = 25_000;
 const FOLLOW_ZOOM_THRESHOLD = 140;
 const FOLLOW_STIFFNESS = 6;
 const FOLLOW_DEAD_ZONE = 0.02;
@@ -21,14 +25,17 @@ const FOLLOW_DEAD_ZONE = 0.02;
 const TPS_FOV = 55;
 const TPS_ENTER_ZOOM = 170;
 const TPS_EXIT_TO_ISO_ZOOM = 164;
-const TPS_MIN_DISTANCE = 2.75;
+/** Closer = stronger zoom-in (world units from look target). */
+const TPS_MIN_DISTANCE = 1.38;
 const TPS_MAX_DISTANCE = 6.5;
 const TPS_EXIT_DISTANCE = 7.25;
-const TPS_TARGET_Y = 1.15;
-const TPS_PITCH_MIN = 0.16;
+const TPS_TARGET_OFFSET_Y = 0.33;
+const DEFAULT_TPS_TARGET_Y = DEFAULT_WALK_SURFACE_OFFSET_Y + TPS_TARGET_OFFSET_Y;
+/** Lower = flatter orbit behind character (camera closer to “ground line”). */
+const TPS_PITCH_MIN = 0.05;
 const TPS_PITCH_MAX = 1.2;
 const TPS_LOOK_SENSITIVITY = 0.0024;
-const TPS_WHEEL_SPEED = 0.01;
+const TPS_WHEEL_SPEED = 0.012;
 /** Must not collide with postprocessing `OutlineEffect` selection layers (starts at 2). */
 const CAMERA_OCCLUSION_LAYER = 11;
 /** Ray must get this close to the look target before we treat LOS as clear (character radius). */
@@ -99,6 +106,13 @@ function buildIsoOffset(out: THREE.Vector3): THREE.Vector3 {
   );
 }
 
+/** Initial iso camera position (matches former JSX props). Do not pass as R3F props — re-renders would stomp TPS→iso restore. */
+const ISO_INITIAL_POSITION = new THREE.Vector3(
+  CAMERA_DISTANCE * Math.sin(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X),
+  CAMERA_DISTANCE * Math.sin(ISO_ANGLE_X),
+  CAMERA_DISTANCE * Math.cos(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X),
+);
+
 export function IslandCamera({
   characterPose,
   followCharacter = false,
@@ -112,7 +126,7 @@ export function IslandCamera({
   const perspectiveCameraRef = useRef<ThreePerspectiveCamera>(null);
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const [mode, setMode] = useState<CameraMode>("iso");
-  const targetRef = useRef(new THREE.Vector3(1.5, TPS_TARGET_Y, 1.5));
+  const targetRef = useRef(new THREE.Vector3(1.5, DEFAULT_TPS_TARGET_Y, 1.5));
   const viewYawRef = useRef(wrapAngle(ISO_ANGLE_Y + Math.PI));
   const pitchRef = useRef(ISO_ANGLE_X);
   const distanceRef = useRef(TPS_MAX_DISTANCE);
@@ -146,9 +160,14 @@ export function IslandCamera({
   useEffect(() => {
     const camera = orthoCameraRef.current;
     if (!camera) return;
+    camera.position.copy(ISO_INITIAL_POSITION);
     camera.zoom = DEFAULT_ZOOM;
     camera.updateProjectionMatrix();
     targetZoomRef.current = camera.zoom;
+    const raf = requestAnimationFrame(() => {
+      controlsRef.current?.update();
+    });
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   useEffect(() => {
@@ -309,7 +328,7 @@ export function IslandCamera({
       offset: isoRestoreOffsetRef.current.clone(),
     };
     tpsEnterBlendTRef.current = 0;
-    targetRef.current.set(controls.target.x, TPS_TARGET_Y, controls.target.z);
+    targetRef.current.set(controls.target.x, DEFAULT_TPS_TARGET_Y, controls.target.z);
     viewYawRef.current = wrapAngle(controls.getAzimuthalAngle() + Math.PI);
     pitchRef.current = clamp(Math.PI / 2 - controls.getPolarAngle(), TPS_PITCH_MIN, TPS_PITCH_MAX);
     distanceRef.current = TPS_MAX_DISTANCE;
@@ -583,7 +602,8 @@ export function IslandCamera({
 
     if (shouldFollowTarget) {
       const desiredTargetX = characterPose.gx * TILE_UNIT_SIZE;
-      const desiredTargetY = TPS_TARGET_Y;
+      const desiredTargetY =
+        (characterPose.worldY ?? characterPose.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + TPS_TARGET_OFFSET_Y;
       const desiredTargetZ = characterPose.gy * TILE_UNIT_SIZE;
 
       const dx = desiredTargetX - targetRef.current.x;
@@ -631,7 +651,7 @@ export function IslandCamera({
         controls.target.copy(targetRef.current);
         controls.update();
       } else {
-        targetRef.current.set(controls.target.x, TPS_TARGET_Y, controls.target.z);
+        targetRef.current.set(controls.target.x, DEFAULT_TPS_TARGET_Y, controls.target.z);
       }
       return;
     }
@@ -765,25 +785,18 @@ export function IslandCamera({
     }
   }, -1);
 
-  const camX = CAMERA_DISTANCE * Math.sin(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X);
-  const camY = CAMERA_DISTANCE * Math.sin(ISO_ANGLE_X);
-  const camZ = CAMERA_DISTANCE * Math.cos(ISO_ANGLE_Y) * Math.cos(ISO_ANGLE_X);
-
   return (
     <>
       <OrthographicCamera
         ref={orthoCameraRef}
         makeDefault={mode === "iso"}
-        position={[camX, camY, camZ]}
-        zoom={DEFAULT_ZOOM}
-        near={0.1}
-        far={1000}
+        near={ISO_ORTHO_NEAR}
+        far={ISO_ORTHO_FAR}
       />
       <PerspectiveCamera
         ref={perspectiveCameraRef}
         makeDefault={mode === "tps" || mode === "tps_exit"}
         fov={TPS_FOV}
-        position={[0, 0, 0]}
         near={0.1}
         far={1000}
       />
@@ -807,7 +820,7 @@ export function IslandCamera({
         maxZoom={MAX_ZOOM}
         maxPolarAngle={Math.PI / 2.2}
         minPolarAngle={0.2}
-        target={[1.5, TPS_TARGET_Y, 1.5]}
+        target={[1.5, DEFAULT_TPS_TARGET_Y, 1.5]}
         enableDamping
         dampingFactor={0.1}
         rotateSpeed={0.5}

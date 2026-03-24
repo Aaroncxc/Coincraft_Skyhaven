@@ -12,7 +12,7 @@ type QuickAddQuestProps = {
   }) => void;
 };
 
-const ACTIONS: ActionType[] = ["mining", "farming", "roaming", "cooking"];
+const ACTIONS: ActionType[] = ["mining", "farming", "magic", "fight"];
 
 export function QuickAddQuest({ date, onAdd }: QuickAddQuestProps) {
   const [title, setTitle] = useState("");

@@ -19,6 +19,7 @@ import {
   type EquipmentSlotRef,
   type EquippableItemId,
 } from "../game/equipment";
+import type { PlayableCharacterId } from "../game/playableCharacters";
 
 type ProfileTab = "loadout" | "stats";
 
@@ -35,14 +36,15 @@ type ProfileOverlayProps = {
   actionStats: ActionStats;
   inventory: Inventory;
   equipmentState: EquipmentState;
+  playableVariant: PlayableCharacterId;
   onMoveItem: (from: EquipmentSlotRef, to: EquipmentSlotRef) => void;
 };
 
 const ACTION_LABELS: Record<ActionType, string> = {
   mining: "Mining",
   farming: "Farming",
-  roaming: "Roaming",
-  cooking: "Cooking",
+  magic: "Magic",
+  fight: "Fight",
   woodcutting: "Woodcutting",
   harvesting: "Harvesting",
 };
@@ -50,8 +52,8 @@ const ACTION_LABELS: Record<ActionType, string> = {
 const ACTION_ORDER: ActionType[] = [
   "mining",
   "farming",
-  "roaming",
-  "cooking",
+  "magic",
+  "fight",
   "woodcutting",
   "harvesting",
 ];
@@ -109,10 +111,12 @@ function formatDate(ts: number): string {
 
 function ProfileCharacterScene({
   equippedRightHand,
+  playableVariant,
   onOrbitStart,
   onOrbitEnd,
 }: {
   equippedRightHand: EquippableItemId | null;
+  playableVariant: PlayableCharacterId;
   onOrbitStart: () => void;
   onOrbitEnd: () => void;
 }) {
@@ -147,7 +151,11 @@ function ProfileCharacterScene({
       <directionalLight position={[2, 4, 3]} intensity={1.55} />
       <directionalLight position={[-2, 3, -1]} intensity={0.58} />
       <group position={[0, -0.8, 0]} scale={PROFILE_CHARACTER_PREVIEW_SCALE}>
-        <CharacterModel pose={PROFILE_IDLE_POSE} equippedRightHand={equippedRightHand} />
+        <CharacterModel
+          pose={PROFILE_IDLE_POSE}
+          equippedRightHand={equippedRightHand}
+          playableVariant={playableVariant}
+        />
       </group>
     </>
   );
@@ -161,6 +169,7 @@ export function ProfileOverlay({
   actionStats,
   inventory,
   equipmentState,
+  playableVariant,
   onMoveItem,
 }: ProfileOverlayProps) {
   const [activeTab, setActiveTab] = useState<ProfileTab>("loadout");
@@ -191,7 +200,13 @@ export function ProfileOverlay({
   const actionItemId = equipmentState.actionBar.primary;
   const inventoryAxeItemId = equipmentState.inventoryItems.slot4;
   const actionItemLabel = actionItemId ? EQUIPPABLE_ITEMS[actionItemId].label : null;
+  const actionItemThumb = actionItemId ? EQUIPPABLE_ITEMS[actionItemId].thumbnailSrc : undefined;
+  const inventoryAxeThumb =
+    inventoryAxeItemId != null ? EQUIPPABLE_ITEMS[inventoryAxeItemId].thumbnailSrc : undefined;
   const pointerDragLabel = pointerDrag ? EQUIPPABLE_ITEMS[pointerDrag.itemId].label : null;
+  const pointerDragThumb = pointerDrag
+    ? EQUIPPABLE_ITEMS[pointerDrag.itemId].thumbnailSrc
+    : undefined;
   const canMoveInventoryToAction = inventoryAxeItemId !== null && actionItemId === null;
   const canMoveActionToInventory = actionItemId !== null && inventoryAxeItemId === null;
 
@@ -358,6 +373,7 @@ export function ProfileOverlay({
                   >
                     <ProfileCharacterScene
                       equippedRightHand={equipmentState.equippedRightHand}
+                      playableVariant={playableVariant}
                       onOrbitStart={handleOrbitStart}
                       onOrbitEnd={handleOrbitEnd}
                     />
@@ -372,12 +388,29 @@ export function ProfileOverlay({
                     actionItemId ? "is-equipped" : "is-empty"
                   } ${dropTarget === "action_primary" ? "is-drop-target" : ""} ${
                     dragSource === "action_primary" ? "is-dragging-source" : ""
-                  } ${actionItemId ? "is-draggable" : ""}`}
+                  } ${actionItemId ? "is-draggable" : ""} ${
+                    actionItemThumb ? "has-glass-tile" : ""
+                  }`}
                   ref={actionSlotRef}
                   data-no-window-drag="true"
                   onPointerDown={handleActionPointerDown}
                 >
-                  {actionItemLabel ? (
+                  {actionItemLabel && actionItemThumb ? (
+                    <div className="profile-equip-glass-tile profile-equip-glass-tile--action">
+                      <img
+                        src={actionItemThumb}
+                        alt=""
+                        className="profile-equip-glass-thumb"
+                        draggable={false}
+                      />
+                      <div className="profile-equip-glass-text">
+                        <span className="profile-action-slot-item">{actionItemLabel}</span>
+                        <span className="profile-action-slot-state">
+                          Drag back to Slot 4 to unequip
+                        </span>
+                      </div>
+                    </div>
+                  ) : actionItemLabel ? (
                     <>
                       <span className="profile-action-slot-item">{actionItemLabel}</span>
                       <span className="profile-action-slot-state">Drag back to Slot 4 to unequip</span>
@@ -417,14 +450,31 @@ export function ProfileOverlay({
                           hasAxe ? "is-item" : "is-empty"
                         } ${dropTarget === "inventory_slot_4" ? "is-drop-target" : ""} ${
                           dragSource === "inventory_slot_4" ? "is-dragging-source" : ""
-                        }`}
+                        } ${hasAxe && inventoryAxeThumb ? "has-glass-tile" : ""}`}
                         ref={inventoryAxeSlotRef}
                         data-no-window-drag="true"
                         onPointerDown={handleInventoryAxePointerDown}
                       >
-                        {hasAxe ? (
+                        {hasAxe && inventoryAxeThumb ? (
+                          <div className="profile-equip-glass-tile profile-equip-glass-tile--inventory">
+                            <img
+                              src={inventoryAxeThumb}
+                              alt=""
+                              className="profile-equip-glass-thumb"
+                              draggable={false}
+                            />
+                            <div className="profile-equip-glass-text">
+                              <span className="profile-inventory-resource">
+                                {EQUIPPABLE_ITEMS[inventoryAxeItemId].label}
+                              </span>
+                              <span className="profile-inventory-item-hint">Drag to Action Slot</span>
+                            </div>
+                          </div>
+                        ) : hasAxe ? (
                           <>
-                            <span className="profile-inventory-resource">{EQUIPPABLE_ITEMS[inventoryAxeItemId].label}</span>
+                            <span className="profile-inventory-resource">
+                              {EQUIPPABLE_ITEMS[inventoryAxeItemId].label}
+                            </span>
                             <span className="profile-inventory-item-hint">Drag to Action Slot</span>
                           </>
                         ) : (
@@ -483,11 +533,21 @@ export function ProfileOverlay({
       </div>
       {pointerDrag ? (
         <div
-          className="profile-drag-ghost"
+          className={`profile-drag-ghost ${pointerDragThumb ? "profile-drag-ghost--with-thumb" : ""}`}
           style={{ left: pointerDrag.x + 12, top: pointerDrag.y + 14 }}
           data-no-window-drag="true"
         >
-          {pointerDragLabel}
+          {pointerDragThumb ? (
+            <img
+              src={pointerDragThumb}
+              alt=""
+              className="profile-drag-ghost-thumb"
+              draggable={false}
+            />
+          ) : null}
+          {pointerDragLabel ? (
+            <span className="profile-drag-ghost-label">{pointerDragLabel}</span>
+          ) : null}
         </div>
       ) : null}
     </section>

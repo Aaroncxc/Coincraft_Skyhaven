@@ -2,18 +2,26 @@ import { TransformControls, useGLTF } from "@react-three/drei";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { TileDef } from "../types";
-import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
+import { getModelKeyForAsset, getModelPath, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
+import {
+  MULTI_CELL,
+  computeTileGltfNormalization,
+  getNormalizationModelKey,
+} from "./tileGltfNormalization";
 
 export type DebugTileWrapperProps = {
   tile: TileDef;
   selected: boolean;
+  batchSelected?: boolean;
+  batchPickMode?: boolean;
   gizmoMode: "translate" | "scale";
   uniformScale?: boolean;
   editingDecoration?: boolean;
   buildMode?: boolean;
   onSelect: () => void;
+  onBatchToggle?: () => void;
   onHoverEnter?: (ref?: THREE.Group) => void;
   onHoverLeave?: () => void;
   onChange: (pos3d: { x: number; y: number; z: number }, scale3d: { x: number; y: number; z: number }, rotY: number) => void;
@@ -21,27 +29,14 @@ export type DebugTileWrapperProps = {
   onDraggingChange?: (dragging: boolean) => void;
 };
 
-const SCALE_OVERRIDES: Record<string, number> = {
-  tree: 1.35,
-};
-
-const MULTI_CELL: Record<string, { w: number; h: number }> = {
-  mine: { w: 2, h: 2 },
-  poisFarming: { w: 2, h: 2 },
-  taverne: { w: 2, h: 2 },
-  floatingForge: { w: 2, h: 2 },
-  farmingChicken: { w: 2, h: 2 },
-  magicTower: { w: 2, h: 2 },
-  cottaTile: { w: 2, h: 2 },
-  ancientTempleTile: { w: 2, h: 2 },
-  kaserneTile: { w: 2, h: 2 },
-};
-
 export function DebugTileWrapper({
   tile,
   selected,
+  batchSelected = false,
+  batchPickMode = false,
   gizmoMode,
   onSelect,
+  onBatchToggle,
   onChange,
   onDecoChange,
   onDraggingChange,
@@ -53,7 +48,10 @@ export function DebugTileWrapper({
 }: DebugTileWrapperProps) {
   const modelKey = getModelKeyForAsset(tile.type);
   const modelPath = getModelPathForAsset(tile.type);
+  const normalizationModelKey = getNormalizationModelKey(modelKey);
+  const normalizationPath = getModelPath(normalizationModelKey);
   const { scene } = useGLTF(modelPath);
+  const { scene: normalizationScene } = useGLTF(normalizationPath);
   const objRef = useRef<THREE.Group>(null!);
   const controlsRef = useRef<any>(null);
   const prevUniformRef = useRef<number | null>(null);
@@ -63,18 +61,13 @@ export function DebugTileWrapper({
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
   const { normScale, offsetY } = useMemo(() => {
-    const box = new THREE.Box3().setFromObject(scene);
-    const size = box.getSize(new THREE.Vector3());
-    const multi = MULTI_CELL[modelKey];
-    const footprint = multi
-      ? Math.max(multi.w, multi.h) * TILE_UNIT_SIZE
-      : TILE_UNIT_SIZE;
-    const maxDim = Math.max(size.x, size.z);
-    let s = maxDim > 0 ? footprint / maxDim : 1;
-    const override = SCALE_OVERRIDES[modelKey];
-    if (override) s *= override;
-    return { normScale: s, offsetY: -box.min.y * s };
-  }, [scene, modelKey]);
+    const info = computeTileGltfNormalization(
+      normalizationScene,
+      normalizationPath,
+      normalizationModelKey,
+    );
+    return { normScale: info.scale, offsetY: info.offsetY };
+  }, [normalizationScene, normalizationPath, normalizationModelKey]);
 
   const multi = MULTI_CELL[modelKey];
   const gridOffX = multi ? ((multi.w - 1) * TILE_UNIT_SIZE) / 2 : 0;
@@ -204,8 +197,9 @@ export function DebugTileWrapper({
   }, [onChange, defaultX, defaultZ, uniformScale, gizmoMode, initX, initY, initZ]);
 
   const selectedColor = selected ? 0xffdd44 : undefined;
-  const showTileGizmo = selected && !editingDecoration && !buildMode;
-  const showDecoGizmo = selected && editingDecoration && !!tile.decoration && !buildMode;
+  const showTileGizmo = selected && !editingDecoration && !buildMode && !batchPickMode;
+  const showDecoGizmo = selected && editingDecoration && !!tile.decoration && !buildMode && !batchPickMode;
+  const batchRingVisible = batchSelected && !selected;
 
   return (
     <>
@@ -217,7 +211,11 @@ export function DebugTileWrapper({
               ? undefined
               : (e) => {
                   e.stopPropagation();
-                  onSelect();
+                  if (batchPickMode) {
+                    onBatchToggle?.();
+                  } else {
+                    onSelect();
+                  }
                 }
           }
           onPointerOver={onHoverEnter ? (e) => { e.stopPropagation(); onHoverEnter(objRef.current); } : undefined}
@@ -233,6 +231,12 @@ export function DebugTileWrapper({
           <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[TILE_UNIT_SIZE * 0.44, TILE_UNIT_SIZE * 0.56, 48]} />
             <meshBasicMaterial color={selectedColor} transparent opacity={0.82} side={THREE.DoubleSide} />
+          </mesh>
+        )}
+        {batchRingVisible && (
+          <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[TILE_UNIT_SIZE * 0.5, TILE_UNIT_SIZE * 0.6, 48]} />
+            <meshBasicMaterial color={0xfff0b5} transparent opacity={0.78} side={THREE.DoubleSide} />
           </mesh>
         )}
         {tile.blocked && (

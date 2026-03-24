@@ -1,4 +1,4 @@
-import type { ActionType, FocusDuration, FocusSession, PomodoroPhase } from "./types";
+import type { ActionType, FocusDuration, FocusSession, LegacyActionType, PomodoroPhase } from "./types";
 
 export const SESSION_STORAGE_KEY = "skyhaven.focusSession.v1";
 export const DURATION_OPTIONS: FocusDuration[] = [30, 60, 120];
@@ -16,30 +16,43 @@ const DURATION_TO_MS: Record<FocusDuration, number> = {
   120: 120 * 60 * 1000,
 };
 
+const ACTION_MIGRATION: Record<LegacyActionType, ActionType> = {
+  roaming: "magic",
+  cooking: "fight",
+};
+
+export function normalizeActionType(actionType: ActionType | LegacyActionType): ActionType {
+  return ACTION_MIGRATION[actionType as LegacyActionType] ?? (actionType as ActionType);
+}
+
 export function startSession(
   actionType: ActionType,
   durationMin: FocusDuration,
-  now = Date.now()
+  now = Date.now(),
+  metadata: Partial<FocusSession> = {},
 ): FocusSession {
   return {
     active: true,
-    actionType,
+    actionType: normalizeActionType(actionType),
     startedAt: now,
     endsAt: now + DURATION_TO_MS[durationMin],
     durationMin,
+    ...metadata,
   };
 }
 
 export function startPomodoroSession(
   actionType: ActionType,
-  now = Date.now()
+  now = Date.now(),
+  metadata: Partial<FocusSession> = {},
 ): FocusSession {
   return {
     active: true,
-    actionType,
+    actionType: normalizeActionType(actionType),
     startedAt: now,
     endsAt: now + POMODORO_WORK_MS,
     durationMin: 30,
+    ...metadata,
     pomodoroMode: true,
     pomodoroRound: 1,
     pomodoroTotalRounds: POMODORO_TOTAL_ROUNDS,
@@ -95,15 +108,17 @@ function isValidFocusSession(value: unknown): value is FocusSession {
   if (!value || typeof value !== "object") {
     return false;
   }
-  const candidate = value as Partial<FocusSession>;
+  const candidate = value as Partial<FocusSession> & { actionType?: ActionType | LegacyActionType };
+  const normalizedActionType =
+    candidate.actionType != null ? normalizeActionType(candidate.actionType) : null;
   return (
     candidate.active === true &&
-    (candidate.actionType === "mining" ||
-      candidate.actionType === "farming" ||
-      candidate.actionType === "roaming" ||
-      candidate.actionType === "cooking" ||
-      candidate.actionType === "woodcutting" ||
-      candidate.actionType === "harvesting") &&
+    (normalizedActionType === "mining" ||
+      normalizedActionType === "farming" ||
+      normalizedActionType === "magic" ||
+      normalizedActionType === "fight" ||
+      normalizedActionType === "woodcutting" ||
+      normalizedActionType === "harvesting") &&
     typeof candidate.startedAt === "number" &&
     typeof candidate.endsAt === "number" &&
     (candidate.durationMin === 15 || candidate.durationMin === 30 || candidate.durationMin === 60 || candidate.durationMin === 120)
@@ -130,7 +145,14 @@ export function hydrateSession(now = Date.now()): FocusSession | null {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
       return null;
     }
-    return parsed;
+    const next: FocusSession = {
+      ...(parsed as FocusSession),
+      actionType: normalizeActionType((parsed as FocusSession & { actionType: ActionType | LegacyActionType }).actionType),
+    };
+    if (next.actionType !== (parsed as FocusSession).actionType) {
+      persistSession(next);
+    }
+    return next;
   } catch {
     window.localStorage.removeItem(SESSION_STORAGE_KEY);
     return null;

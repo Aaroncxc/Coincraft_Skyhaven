@@ -7,12 +7,13 @@ import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import type { CharacterPose3D } from "./useCharacterMovement";
+import { DEFAULT_WALK_SURFACE_OFFSET_Y } from "./islandSurface";
 
 useGLTF.preload(SKULLY_MODEL_PATH);
 
 const SKULLY_SCALE = 0.04;
 const FOLLOW_OFFSET = { x: -0.3, z: 0.3 };
-const HOVER_BASE_Y = 1.15;
+const HOVER_OFFSET_Y = 0.33;
 const HOVER_AMPLITUDE = 0.035;
 const HOVER_PERIOD = 3.2;
 const FOLLOW_SMOOTHING = 3.8;
@@ -65,7 +66,9 @@ export function SkullyCompanion({ pose }: Props) {
 
     const targetX = pose.gx * TILE_UNIT_SIZE + FOLLOW_OFFSET.x;
     const targetZ = pose.gy * TILE_UNIT_SIZE + FOLLOW_OFFSET.z;
-    const hoverY = HOVER_BASE_Y + Math.sin(timeRef.current / HOVER_PERIOD * Math.PI * 2) * HOVER_AMPLITUDE;
+    const baseSurfaceY = pose.worldY ?? pose.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y;
+    const hoverY =
+      baseSurfaceY + HOVER_OFFSET_Y + Math.sin((timeRef.current / HOVER_PERIOD) * Math.PI * 2) * HOVER_AMPLITUDE;
 
     const prevTarget = prevTargetRef.current;
     const targetDx = targetX - prevTarget.x;
@@ -120,7 +123,7 @@ export function SkullyCompanion({ pose }: Props) {
       ref={groupRef}
       position={[
         pose.gx * TILE_UNIT_SIZE + FOLLOW_OFFSET.x,
-        HOVER_BASE_Y,
+        (pose.worldY ?? pose.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + HOVER_OFFSET_Y,
         pose.gy * TILE_UNIT_SIZE + FOLLOW_OFFSET.z,
       ]}
     >

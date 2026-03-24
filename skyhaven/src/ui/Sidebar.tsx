@@ -1,20 +1,15 @@
 import { useState } from "react";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../game/assets";
-import { DURATION_OPTIONS } from "../game/session";
-import type { ActionType, AssetKey, CloneLineState, FocusDuration, IslandId, TileDef } from "../game/types";
+import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types";
 import type { Inventory } from "../game/inventory";
 import { useMenuSfx } from "../game/useMenuSfx";
 import { BaukastenPanel } from "./BaukastenPanel";
 
-export type SidebarSection = "Main Menu" | "Focus Actions" | "Shop" | "Islands" | "Options" | "Toolbox";
+export type SidebarSection = "Main Menu" | "Shop" | "Islands" | "Options" | "Toolbox";
 
 type SidebarProps = {
   selectedSection: SidebarSection | null;
   onSelectSection: (section: SidebarSection) => void;
-  selectedDuration: FocusDuration;
-  onSelectDuration: (duration: FocusDuration) => void;
-  activeAction: ActionType | null;
-  onStartAction: (action: ActionType) => void;
   selectedIslandId: IslandId;
   islandPreviewById: Record<IslandId, string>;
   islandNameById: Record<IslandId, string>;
@@ -49,11 +44,6 @@ type SidebarProps = {
   editUniformScale?: boolean;
   onEditUniformScaleChange?: (v: boolean) => void;
   onProfileOpen?: () => void;
-  onStartPomodoro?: (action: ActionType) => void;
-  isPomodoroActive?: boolean;
-  pomodoroRound?: number;
-  pomodoroTotalRounds?: number;
-  pomodoroPhase?: string;
   onDailyQuestsOpen?: () => void;
   onBuildUndo?: () => void;
   buildCanUndo?: boolean;
@@ -64,16 +54,14 @@ type SidebarProps = {
   cloneDisabledReason?: string | null;
 };
 
-type SidebarPanelKind = "main" | "focus" | "shop" | "islands" | "options" | "toolbox";
+type SidebarPanelKind = "main" | "shop" | "islands" | "options" | "toolbox";
 
-const ALL_SECTIONS: SidebarSection[] = ["Main Menu", "Focus Actions", "Shop", "Islands", "Options", "Toolbox"];
-const ACTIONS: ActionType[] = ["mining", "farming", "roaming", "cooking"];
+const ALL_SECTIONS: SidebarSection[] = ["Main Menu", "Shop", "Islands", "Options", "Toolbox"];
 const MAIN_MENU_ITEMS = ["Profile", "Daily Quests", "Achievements"];
 const SHOP_ITEMS = ["Starter Pack", "Boost Booster", "Skin Crate"];
 
 const LABEL_KEYS: Record<SidebarSection, keyof typeof SKYHAVEN_SPRITE_MANIFEST.ui.labels> = {
   "Main Menu": "mainMenu",
-  "Focus Actions": "focusActions",
   Shop: "shop",
   Islands: "islands",
   Options: "options",
@@ -83,10 +71,6 @@ const LABEL_KEYS: Record<SidebarSection, keyof typeof SKYHAVEN_SPRITE_MANIFEST.u
 export function Sidebar({
   selectedSection,
   onSelectSection,
-  selectedDuration,
-  onSelectDuration,
-  activeAction,
-  onStartAction,
   selectedIslandId,
   islandPreviewById,
   islandNameById,
@@ -121,11 +105,6 @@ export function Sidebar({
   editUniformScale,
   onEditUniformScaleChange,
   onProfileOpen,
-  onStartPomodoro,
-  isPomodoroActive = false,
-  pomodoroRound = 1,
-  pomodoroTotalRounds = 4,
-  pomodoroPhase,
   onDailyQuestsOpen,
   onBuildUndo,
   buildCanUndo = false,
@@ -149,13 +128,8 @@ export function Sidebar({
     onSelectSection(section);
   };
 
-  const baseSections =
-    selectedSection === "Focus Actions"
-      ? ALL_SECTIONS.filter((section) => section !== "Shop" && section !== "Options")
-      : ALL_SECTIONS;
-
   const showToolbox = selectedIslandId === "custom" && windowMode === "expanded";
-  const visibleSections = showToolbox ? baseSections : baseSections.filter((s) => s !== "Toolbox");
+  const visibleSections = showToolbox ? ALL_SECTIONS : ALL_SECTIONS.filter((s) => s !== "Toolbox");
   const isToolboxOpen = selectedSection === "Toolbox" && showToolbox;
 
   return (
@@ -245,65 +219,6 @@ export function Sidebar({
               <div className={`sidebar-dropdown kind-${panelKind} ${isPanelOpen ? "is-open" : ""}`} aria-hidden={!isPanelOpen}>
                 <section className={`section-panel panel-${panelKind}`}>
                   <div className="panel-glass-bg" />
-
-                  {panelKind === "focus" ? (
-                    <>
-                      <div className="duration-row">
-                        {DURATION_OPTIONS.map((duration) => (
-                          <button
-                            key={duration}
-                            type="button"
-                            className={`duration-pill ${selectedDuration === duration && !isPomodoroActive ? "is-selected" : ""}`}
-                            onClick={() => {
-                              menuSfx.playTapPrimary();
-                              onSelectDuration(duration);
-                            }}
-                          >
-                            {duration}m
-                          </button>
-                        ))}
-                        <button
-                          type="button"
-                          className={`duration-pill is-pomodoro ${isPomodoroActive ? "is-selected" : ""}`}
-                          onClick={() => {
-                            menuSfx.playPopUp();
-                            onStartPomodoro?.(ACTIONS[0]);
-                          }}
-                          title="Pomodoro: 25min work / 5min break x4"
-                        >
-                          {isPomodoroActive ? `P ${pomodoroRound}/${pomodoroTotalRounds}` : "Pomo"}
-                        </button>
-                      </div>
-
-                      {isPomodoroActive && pomodoroPhase && (
-                        <div className="pomodoro-status">
-                          {pomodoroPhase === "work"
-                            ? `Work ${pomodoroRound}/${pomodoroTotalRounds}`
-                            : pomodoroPhase === "break"
-                              ? "Short Break"
-                              : "Long Break"}
-                        </div>
-                      )}
-
-                      <div className="action-list">
-                        {ACTIONS.map((action) => (
-                          <button
-                            key={action}
-                            type="button"
-                            className={`action-item ${activeAction === action ? "is-active" : ""}`}
-                            onClick={() => {
-                              menuSfx.playTapSecondary();
-                              if (isPomodoroActive) onStartPomodoro?.(action);
-                              else onStartAction(action);
-                            }}
-                          >
-                            - {action[0].toUpperCase()}
-                            {action.slice(1)}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
 
                   {panelKind === "main" ? (
                     <div className="generic-list">
@@ -499,9 +414,6 @@ export function Sidebar({
 function toPanelKind(section: SidebarSection): SidebarPanelKind | null {
   if (section === "Main Menu") {
     return "main";
-  }
-  if (section === "Focus Actions") {
-    return "focus";
   }
   if (section === "Shop") {
     return "shop";

@@ -13,6 +13,7 @@ export type VisualCloneTemplate = {
   anchorY?: number;
   offsetX?: number;
   offsetY?: number;
+  walkSurfaceOffsetY?: number;
   pos3dOffset?: { x: number; y: number; z: number };
   scale3d?: { x: number; y: number; z: number };
   rotY?: number;
@@ -189,6 +190,7 @@ export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
     anchorY: tile.anchorY,
     offsetX: tile.offsetX,
     offsetY: tile.offsetY,
+    walkSurfaceOffsetY: tile.walkSurfaceOffsetY,
     pos3dOffset: tile.pos3d
       ? {
           x: tile.pos3d.x - basePosX,
@@ -210,13 +212,13 @@ export function instantiateVisualCloneTile(
 ): Partial<
   Pick<
     TileDef,
-    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
+    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
   >
 > {
   const nextTile: Partial<
     Pick<
       TileDef,
-      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
+      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
     >
   > = {
     type: template.type,
@@ -225,6 +227,7 @@ export function instantiateVisualCloneTile(
     anchorY: template.anchorY,
     offsetX: template.offsetX,
     offsetY: template.offsetY,
+    walkSurfaceOffsetY: template.walkSurfaceOffsetY,
     scale3d: template.scale3d ? { ...template.scale3d } : undefined,
     rotY: template.rotY,
     blocked: template.blocked,
@@ -339,7 +342,7 @@ export function updateTile(
   island: IslandMap,
   gx: number,
   gy: number,
-  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY" | "vfxEnabled" | "runeVfxLit">>
+  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY" | "vfxEnabled" | "runeVfxLit">>
 ): IslandMap {
   const key = coordKey(gx, gy);
   return {

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MutableRefObject,
+} from "react";
 import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
 import { LogicalSize } from "@tauri-apps/api/dpi";
@@ -32,13 +40,18 @@ import {
 } from "./game/inventory";
 import { LEVEL_CAP, awardExp, hydrateProgression, persistProgression, xpToNextLevel } from "./game/progression";
 import { getSessionExp, getSessionRewards, getTileRecipe, scaleRewardsForLevel } from "./game/resources";
-import { advancePomodoroPhase, formatDurationHms, getRemainingMs, hydrateSession, MINI_ACTION_DURATION, persistSession, startPomodoroSession, startSession } from "./game/session";
+import { advancePomodoroPhase, formatDurationHms, getRemainingMs, hydrateSession, MINI_ACTION_DURATION, persistSession, startSession } from "./game/session";
 import { useGameClock } from "./game/useGameClock";
 import type { TileEditAnchor } from "./game/useSkyhavenLoop";
 import { IslandScene } from "./game/three/IslandScene";
-import { DEFAULT_ISLAND_LIGHTING, type IslandLightingParams } from "./game/three/islandLighting";
+import type { CharacterMovementDebugSnapshot } from "./game/three/useCharacterMovement";
+import {
+  DEBUG_NIGHT_SKY_BG_URL,
+  DEFAULT_ISLAND_LIGHTING,
+  type IslandLightingAmbiance,
+  type IslandLightingParams,
+} from "./game/three/islandLighting";
 import type {
-  ActionType,
   AssetKey,
   CloneLineState,
   FocusDuration,
@@ -51,7 +64,7 @@ import type {
 } from "./game/types";
 import { DECORATION_TILES } from "./game/types";
 import { ClockOverlay } from "./ui/ClockOverlay";
-import { DebugPanel } from "./ui/DebugPanel";
+import { DebugDock, type DebugSurfaceScope, type DebugSurfaceVizMode } from "./ui/DebugDock";
 import { Hud } from "./ui/Hud";
 import { Sidebar, type SidebarSection } from "./ui/Sidebar";
 import { StatusTag } from "./ui/StatusTag";
@@ -59,12 +72,16 @@ import { CompactInventoryOverlay } from "./ui/CompactInventoryOverlay";
 import { ProfileOverlay } from "./ui/ProfileOverlay";
 import { WindowChrome } from "./ui/WindowChrome";
 import { CanvasGizmoSheet } from "./ui/CanvasGizmoSheet";
+import { PoiActionOverlay } from "./ui/PoiActionOverlay";
 import { useIslandMusic, MUSIC_PLAYLIST_LENGTH } from "./game/useIslandMusic";
+import { useWorldAmbience } from "./game/useWorldAmbience";
 import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats } from "./game/actionStats";
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
 import { PlannerOverlay } from "./ui/planner/PlannerOverlay";
 import { CharacterSelectOverlay } from "./ui/CharacterSelectOverlay";
+import { LuxTpsDialogueOverlay } from "./ui/LuxTpsDialogueOverlay";
+import { CharacterDebugOverlay } from "./ui/CharacterDebugOverlay";
 import {
   hydratePlayableCharacter,
   persistPlayableCharacter,
@@ -79,11 +96,74 @@ import {
   type EquipmentSlotRef,
   type EquipmentState,
 } from "./game/equipment";
+import { type PoiActionRequest } from "./game/poiActions";
+import { DEFAULT_WALK_SURFACE_OFFSET_Y, getTileWalkSurfaceOffsetY } from "./game/three/islandSurface";
 
 const EXPANDED_WINDOW_SIZE = { width: 960, height: 618 };
 const COMPACT_WINDOW_SIZE = { width: 520, height: 520 };
 const APP_ENTRANCE_DURATION_MS = 1500;
 const XP_GAIN_PULSE_MS = 900;
+
+function MovementDebugHud({
+  snapshotRef,
+  open,
+}: {
+  snapshotRef: MutableRefObject<CharacterMovementDebugSnapshot | null>;
+  open: boolean;
+}) {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setInterval(() => bump((n) => n + 1), 110);
+    return () => window.clearInterval(id);
+  }, [open]);
+  if (!open) return null;
+  const s = snapshotRef.current;
+  const panel: CSSProperties = {
+    position: "absolute",
+    bottom: 12,
+    left: 12,
+    zIndex: 200,
+    minWidth: 168,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid rgba(136, 204, 255, 0.28)",
+    background: "rgba(10, 14, 22, 0.88)",
+    color: "#c8d4e0",
+    fontFamily: "ui-monospace, Consolas, monospace",
+    fontSize: 10,
+    lineHeight: 1.45,
+    pointerEvents: "none",
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+  };
+  const row = (label: string, value: string) => (
+    <div key={label}>
+      <span style={{ color: "#6a7a8c" }}>{label}: </span>
+      {value}
+    </div>
+  );
+  return (
+    <div data-no-window-drag="true" style={panel}>
+      <div style={{ fontWeight: 700, color: "#88ccff", marginBottom: 4, fontSize: 11 }}>
+        Movement debug
+      </div>
+      {!s ? (
+        <div style={{ opacity: 0.65 }}>No snapshot yet</div>
+      ) : (
+        <>
+          {row("anim", s.animState)}
+          {row("chopTimer", s.chopTimer.toFixed(3))}
+          {row("chopPlaySec", s.chopPlaybackSec.toFixed(3))}
+          {row("rollTimer", s.rollTimer.toFixed(3))}
+          {row("mouseFwd", s.mouseForwardActive ? "1" : "0")}
+          {row("steer", s.steeringActive ? "1" : "0")}
+        </>
+      )}
+    </div>
+  );
+}
 
 type WindowMode = "expanded" | "compact";
 
@@ -112,7 +192,7 @@ export default function App() {
     () => ({
       mining: "Mining",
       farming: "Farming",
-      custom: "Meine Insel",
+      custom: "Home",
     }),
     []
   );
@@ -128,14 +208,27 @@ export default function App() {
   const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
   const [isPlannerOpen, setIsPlannerOpen] = useState<boolean>(false);
   const [characterSelectOpen, setCharacterSelectOpen] = useState(false);
+  const [characterDebugOpen, setCharacterDebugOpen] = useState(false);
   const [playableCharacterId, setPlayableCharacterId] = useState<PlayableCharacterId>(() =>
     hydratePlayableCharacter(),
   );
   const [tpsModeActive, setTpsModeActive] = useState(false);
+  const [luxTpsDialogue, setLuxTpsDialogue] = useState<{ open: boolean; text: string }>({
+    open: false,
+    text: "",
+  });
+  const handleLuxTpsDialogueChange = useCallback((payload: { open: boolean; text: string }) => {
+    setLuxTpsDialogue((prev) =>
+      prev.open === payload.open && prev.text === payload.text ? prev : payload,
+    );
+  }, []);
+  const tpsNpcDialogueDismissRef = useRef<(() => boolean) | null>(null);
+  const characterMovementDebugRef = useRef<CharacterMovementDebugSnapshot | null>(null);
+  const [movementDebugHudOpen, setMovementDebugHudOpen] = useState(false);
   const [dailyQuests, setDailyQuests] = useState<DailyQuest[]>(() => hydrateQuests());
   const [actionStats, setActionStats] = useState<ActionStats>(() => hydrateActionStats());
   const [profile] = useState<PlayerProfile>(() => hydrateProfile());
-  const [selectedSection, setSelectedSection] = useState<SidebarSection | null>("Focus Actions");
+  const [selectedSection, setSelectedSection] = useState<SidebarSection | null>("Main Menu");
   const [selectedIslandId, setSelectedIslandId] = useState<IslandId>("mining");
   const [musicEnabled, setMusicEnabled] = useState(false);
   const [musicTrackIndex, setMusicTrackIndex] = useState(0);
@@ -143,8 +236,9 @@ export default function App() {
   const [sfxVolume, setSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 78 : 0));
   const [menuSfxVolume, setMenuSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 74 : 0));
   useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, sfxVolume);
-  const [selectedDuration, setSelectedDuration] = useState<FocusDuration>(30);
+  useWorldAmbience(tpsModeActive, masterVolume, sfxVolume);
   const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
+  const [pendingPoiAction, setPendingPoiAction] = useState<PoiActionRequest | null>(null);
   const [inventory, setInventory] = useState(() => hydrateInventory());
   const [equipment, setEquipment] = useState<EquipmentState>(() => hydrateEquipment());
   const [progression, setProgression] = useState<ProgressionState>(() => hydrateProgression());
@@ -160,13 +254,21 @@ export default function App() {
   const [noResourcesHint, setNoResourcesHint] = useState(false);
   const noResourcesTimerRef = useRef<number | null>(null);
   const [debugMode, setDebugMode] = useState(false);
-  const [debugIslandLighting, setDebugIslandLighting] = useState<IslandLightingParams>(() => ({
+  /** Sun/sky/POI lighting + day/night; edited in Debug Dock, persists after leaving debug. */
+  const [sceneIslandLighting, setSceneIslandLighting] = useState<IslandLightingParams>(() => ({
     ...DEFAULT_ISLAND_LIGHTING,
   }));
+  const [sceneLightingAmbiance, setSceneLightingAmbiance] = useState<IslandLightingAmbiance>("day");
   const [debugGizmoMode, setDebugGizmoMode] = useState<"translate" | "scale">("translate");
   const [debugSelectedTileId, setDebugSelectedTileId] = useState<string | null>(null);
+  const [debugBatchSelectionIds, setDebugBatchSelectionIds] = useState<Set<string>>(() => new Set());
+  const [debugSurfaceScope, setDebugSurfaceScope] = useState<DebugSurfaceScope>("all");
+  const [debugSurfaceVizMode, setDebugSurfaceVizMode] = useState<DebugSurfaceVizMode>("single");
+  const [debugSurfaceTypeFilter, setDebugSurfaceTypeFilter] = useState<string | null>(null);
+  const [debugBatchPickMode, setDebugBatchPickMode] = useState(false);
   const [debugIsland, setDebugIsland] = useState<IslandMap | null>(null);
   const debugIslandRef = useRef<IslandMap | null>(null);
+  const debugSurfaceEditSessionRef = useRef<{ active: boolean; pushed: boolean }>({ active: false, pushed: false });
   const debugPendingRef = useRef<Map<string, { pos3d: { x: number; y: number; z: number }; scale3d: { x: number; y: number; z: number } }>>(new Map());
   const debugUndoStackRef = useRef<IslandMap[]>([]);
   const debugRedoStackRef = useRef<IslandMap[]>([]);
@@ -247,8 +349,38 @@ export default function App() {
   }, [isFullscreen]);
 
   useEffect(() => {
+    if (windowMode !== "expanded" || debugMode) {
+      setCharacterDebugOpen(false);
+    }
+  }, [debugMode, windowMode]);
+
+  useEffect(() => {
     selectedTileForEditRef.current = selectedTileForEdit;
   }, [selectedTileForEdit]);
+
+  useEffect(() => {
+    if (!debugIsland) return;
+    const validIds = new Set(debugIsland.tiles.map((tile) => tile.id));
+    const validTypes = new Set<string>(debugIsland.tiles.map((tile) => tile.type));
+    setDebugBatchSelectionIds((previous) => {
+      let changed = false;
+      const next = new Set<string>();
+      previous.forEach((tileId) => {
+        if (validIds.has(tileId)) {
+          next.add(tileId);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : previous;
+    });
+    if (debugSelectedTileId && !validIds.has(debugSelectedTileId)) {
+      setDebugSelectedTileId(null);
+    }
+    if (debugSurfaceTypeFilter && !validTypes.has(debugSurfaceTypeFilter)) {
+      setDebugSurfaceTypeFilter(null);
+    }
+  }, [debugIsland, debugSelectedTileId, debugSurfaceTypeFilter]);
 
   useEffect(() => {
     return () => {
@@ -444,6 +576,13 @@ export default function App() {
     }
     setDebugMode(false);
     setDebugSelectedTileId(null);
+    setDebugBatchSelectionIds(new Set());
+    setDebugSurfaceScope("all");
+    setDebugSurfaceVizMode("single");
+    setDebugSurfaceTypeFilter(null);
+    setDebugBatchPickMode(false);
+    debugSurfaceEditSessionRef.current.active = false;
+    debugSurfaceEditSessionRef.current.pushed = false;
     setDebugPlacementType(null);
     debugIslandRef.current = null;
     setDebugIsland(null);
@@ -485,6 +624,46 @@ export default function App() {
       setDebugIsland(nextIsland);
     }
   }, [debugSelectedTileId, debugPushUndo]);
+
+  const applyDebugWalkSurfaceOffsetToTileIds = useCallback(
+    (tileIds: readonly string[], value: number | undefined, mode: "session" | "immediate" = "immediate") => {
+      if (!debugIslandRef.current || tileIds.length === 0) return;
+      const idSet = new Set(tileIds);
+      let changed = false;
+      const nextTiles = debugIslandRef.current.tiles.map((tile) => {
+        if (!idSet.has(tile.id) || tile.walkSurfaceOffsetY === value) {
+          return tile;
+        }
+        changed = true;
+        return { ...tile, walkSurfaceOffsetY: value };
+      });
+      if (!changed) return;
+      if (mode === "session") {
+        if (!debugSurfaceEditSessionRef.current.pushed) {
+          debugPushUndo();
+          debugSurfaceEditSessionRef.current.pushed = true;
+        }
+      } else {
+        debugPushUndo();
+      }
+      const nextIsland = { ...debugIslandRef.current, tiles: nextTiles };
+      debugIslandRef.current = nextIsland;
+      setDebugIsland(nextIsland);
+    },
+    [debugPushUndo],
+  );
+
+  const handleDebugBatchTileToggle = useCallback((tileId: string) => {
+    setDebugBatchSelectionIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(tileId)) {
+        next.delete(tileId);
+      } else {
+        next.add(tileId);
+      }
+      return next;
+    });
+  }, []);
 
   const [debugPlacementType, setDebugPlacementType] = useState<string | null>(null);
   const [debugGizmoDragging, setDebugGizmoDragging] = useState(false);
@@ -606,6 +785,108 @@ export default function App() {
     }
     return debugIsland.tiles.find((tile) => tile.id === debugSelectedTileId) ?? null;
   }, [debugIsland, debugMode, debugSelectedTileId]);
+
+  const debugBatchSelectionIdArray = useMemo(() => Array.from(debugBatchSelectionIds), [debugBatchSelectionIds]);
+  const debugSurfaceTypeOptions = useMemo(
+    () => (debugIsland ? Array.from(new Set(debugIsland.tiles.map((tile) => tile.type))).sort() : []),
+    [debugIsland],
+  );
+
+  const debugSurfaceAuditTargetTileIds = useMemo(() => {
+    if (!debugIsland) return [] as string[];
+    if (debugSurfaceScope === "selection") {
+      return debugIsland.tiles
+        .filter((tile) => debugBatchSelectionIds.has(tile.id))
+        .map((tile) => tile.id);
+    }
+    if (debugSurfaceScope === "sameType") {
+      if (!activeDebugTile) return [] as string[];
+      return debugIsland.tiles
+        .filter((tile) => tile.type === activeDebugTile.type)
+        .map((tile) => tile.id);
+    }
+    return debugIsland.tiles
+      .filter((tile) => !debugSurfaceTypeFilter || tile.type === debugSurfaceTypeFilter)
+      .map((tile) => tile.id);
+  }, [activeDebugTile, debugBatchSelectionIds, debugIsland, debugSurfaceScope, debugSurfaceTypeFilter]);
+
+  const debugSurfaceEditableTileIds = useMemo(() => {
+    if (debugSurfaceVizMode === "audit") {
+      return debugSurfaceAuditTargetTileIds;
+    }
+    return activeDebugTile ? [activeDebugTile.id] : [];
+  }, [activeDebugTile, debugSurfaceAuditTargetTileIds, debugSurfaceVizMode]);
+
+  const debugSurfaceEditableTiles = useMemo(() => {
+    if (!debugIsland || debugSurfaceEditableTileIds.length === 0) return [] as TileDef[];
+    const idSet = new Set(debugSurfaceEditableTileIds);
+    return debugIsland.tiles.filter((tile) => idSet.has(tile.id));
+  }, [debugIsland, debugSurfaceEditableTileIds]);
+
+  const debugSurfaceValueMixed = useMemo(() => {
+    if (debugSurfaceEditableTiles.length <= 1) return false;
+    const baseline = getTileWalkSurfaceOffsetY(debugSurfaceEditableTiles[0]);
+    return debugSurfaceEditableTiles.some((tile) => Math.abs(getTileWalkSurfaceOffsetY(tile) - baseline) > 0.0001);
+  }, [debugSurfaceEditableTiles]);
+
+  const debugSurfaceControlValue = useMemo(() => {
+    if (activeDebugTile && debugSurfaceEditableTileIds.includes(activeDebugTile.id)) {
+      return getTileWalkSurfaceOffsetY(activeDebugTile);
+    }
+    if (debugSurfaceEditableTiles.length > 0) {
+      return getTileWalkSurfaceOffsetY(debugSurfaceEditableTiles[0]);
+    }
+    return DEFAULT_WALK_SURFACE_OFFSET_Y;
+  }, [activeDebugTile, debugSurfaceEditableTileIds, debugSurfaceEditableTiles]);
+
+  const handleDebugClearBatchSelection = useCallback(() => {
+    setDebugBatchSelectionIds(new Set());
+  }, []);
+
+  const handleDebugAddSameTypeToBatchSelection = useCallback(() => {
+    if (!activeDebugTile || !debugIsland) return;
+    setDebugBatchSelectionIds(
+      new Set(debugIsland.tiles.filter((tile) => tile.type === activeDebugTile.type).map((tile) => tile.id)),
+    );
+  }, [activeDebugTile, debugIsland]);
+
+  const handleDebugSelectAllBatchTiles = useCallback(() => {
+    if (!debugIsland) return;
+    setDebugBatchSelectionIds(new Set(debugIsland.tiles.map((tile) => tile.id)));
+  }, [debugIsland]);
+
+  const handleDebugSurfaceEditStart = useCallback(() => {
+    debugSurfaceEditSessionRef.current.active = true;
+    debugSurfaceEditSessionRef.current.pushed = false;
+  }, []);
+
+  const handleDebugSurfaceEditEnd = useCallback(() => {
+    debugSurfaceEditSessionRef.current.active = false;
+    debugSurfaceEditSessionRef.current.pushed = false;
+  }, []);
+
+  const handleDebugLiveSurfaceChange = useCallback(
+    (value: number) => {
+      applyDebugWalkSurfaceOffsetToTileIds(
+        debugSurfaceEditableTileIds,
+        value,
+        debugSurfaceEditSessionRef.current.active ? "session" : "immediate",
+      );
+    },
+    [applyDebugWalkSurfaceOffsetToTileIds, debugSurfaceEditableTileIds],
+  );
+
+  const handleDebugBatchMatchSelected = useCallback(() => {
+    if (!activeDebugTile) return;
+    applyDebugWalkSurfaceOffsetToTileIds(
+      debugSurfaceEditableTileIds,
+      getTileWalkSurfaceOffsetY(activeDebugTile),
+    );
+  }, [activeDebugTile, applyDebugWalkSurfaceOffsetToTileIds, debugSurfaceEditableTileIds]);
+
+  const handleDebugBatchResetToAuto = useCallback(() => {
+    applyDebugWalkSurfaceOffsetToTileIds(debugSurfaceEditableTileIds, undefined);
+  }, [applyDebugWalkSurfaceOffsetToTileIds, debugSurfaceEditableTileIds]);
 
   const cloneDisabledReason = useMemo(
     () => getDirectionalCloneDisabledReason(activeEditTile),
@@ -930,19 +1211,26 @@ export default function App() {
       let handled = false;
 
       if (event.key === "Escape") {
-        if (cloneState) {
+        if (tpsModeActive && tpsNpcDialogueDismissRef.current?.()) {
+          handled = true;
+        }
+        if (!handled && pendingPoiAction) {
+          setPendingPoiAction(null);
+          handled = true;
+        }
+        if (!handled && cloneState) {
           cancelDirectionalClone();
           handled = true;
         }
-        if (selectedTileForEditRef.current) {
+        if (!handled && selectedTileForEditRef.current) {
           selectedTileForEditRef.current = null;
           setSelectedTileForEdit(null);
           handled = true;
         }
-        if (session?.active) {
+        if (!handled && session?.active) {
           setSession(null);
           persistSession(null);
-          setSelectedSection("Focus Actions");
+          setSelectedSection("Main Menu");
           handled = true;
         }
       } else if (event.key === "Delete" || event.key === "Backspace") {
@@ -981,6 +1269,7 @@ export default function App() {
     handleEditDeleteTile,
     isCustomEditing,
     session?.active,
+    tpsModeActive,
   ]);
 
   useEffect(() => {
@@ -1138,6 +1427,32 @@ export default function App() {
     [session, island, selectedIslandId],
   );
 
+  const handlePoiActionRequest = useCallback((request: PoiActionRequest) => {
+    if (session?.active) return;
+    setPendingPoiAction(request);
+    setIsInventoryOverlayOpen(false);
+  }, [session]);
+
+  const handleClosePoiAction = useCallback(() => {
+    setPendingPoiAction(null);
+  }, []);
+
+  const handleStartPoiAction = useCallback((durationMin: FocusDuration) => {
+    if (!pendingPoiAction || session?.active) return;
+    const nextSession = startSession(pendingPoiAction.actionType, durationMin, Date.now(), {
+      sourceIslandId: pendingPoiAction.islandId,
+      sourcePoiType: pendingPoiAction.tileType,
+      sourceTileGx: pendingPoiAction.tileGx,
+      sourceTileGy: pendingPoiAction.tileGy,
+      anchorGx: pendingPoiAction.anchorGx,
+      anchorGy: pendingPoiAction.anchorGy,
+      facingAngle: pendingPoiAction.facingAngle,
+    });
+    setSession(nextSession);
+    persistSession(nextSession);
+    setPendingPoiAction(null);
+  }, [pendingPoiAction, session]);
+
   const handleCancelMiniAction = useCallback(() => {
     if (!session) return;
     if (session.actionType !== "woodcutting" && session.actionType !== "harvesting") return;
@@ -1184,22 +1499,17 @@ export default function App() {
     });
   };
 
-  const handleStartAction = (actionType: ActionType): void => {
-    const nextSession = startSession(actionType, selectedDuration);
-    setSession(nextSession);
-    persistSession(nextSession);
-    setSelectedSection("Focus Actions");
-  };
-
-  const handleStartPomodoro = (actionType: ActionType): void => {
-    if (session?.pomodoroMode) return;
-    const nextSession = startPomodoroSession(actionType);
-    setSession(nextSession);
-    persistSession(nextSession);
-    setSelectedSection("Focus Actions");
-  };
-
   const activeAction = session?.active ? session.actionType : null;
+  const activePoiSession =
+    session?.active &&
+    (session.actionType === "mining" ||
+      session.actionType === "farming" ||
+      session.actionType === "magic" ||
+      session.actionType === "fight") &&
+    session.anchorGx != null &&
+    session.anchorGy != null
+      ? session
+      : null;
   const remainingMs = session?.active ? getRemainingMs(session, nowMs) : 0;
   const countdownText = formatDurationHms(remainingMs);
   const pomodoroLabel = session?.pomodoroMode
@@ -1223,7 +1533,9 @@ export default function App() {
   const frameBackground =
     windowMode === "compact"
       ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBackground ?? SKYHAVEN_SPRITE_MANIFEST.ui.background
-      : SKYHAVEN_SPRITE_MANIFEST.ui.background;
+      : sceneLightingAmbiance === "night"
+        ? DEBUG_NIGHT_SKY_BG_URL
+        : SKYHAVEN_SPRITE_MANIFEST.ui.background;
 
   return (
     <div className="skyhaven-shell" ref={shellRef}>
@@ -1270,7 +1582,8 @@ export default function App() {
           >
             <IslandScene
               island={debugMode && debugIsland ? debugIsland : island}
-              islandLighting={debugMode ? debugIslandLighting : DEFAULT_ISLAND_LIGHTING}
+              islandLighting={sceneIslandLighting}
+              lightingAmbiance={sceneLightingAmbiance}
               selectedIslandId={selectedIslandId}
               buildMode={selectedIslandId === "custom" && selectedTileType !== null}
               eraseMode={selectedIslandId === "custom" && eraseMode}
@@ -1292,6 +1605,11 @@ export default function App() {
               debugGizmoMode={debugGizmoMode}
               onDebugTileSelect={handleDebugTileSelect}
               debugSelectedTileId={debugSelectedTileId}
+              debugBatchSelectionIds={debugBatchSelectionIdArray}
+              debugSurfaceTargetTileIds={debugSurfaceAuditTargetTileIds}
+              debugSurfaceVizMode={debugSurfaceVizMode}
+              debugBatchPickMode={debugBatchPickMode}
+              onDebugBatchTileToggle={handleDebugBatchTileToggle}
               onDebugTileChange={handleDebugTileChange}
               debugPlacementType={debugPlacementType}
               onDebugPlaceTile={handleDebugPlaceTile}
@@ -1308,16 +1626,25 @@ export default function App() {
               editingDecoration={editingDecoration}
               onEditDecoChange={handleEditDecoChange}
               onTileAction={handleTileAction}
+              onPoiActionRequest={handlePoiActionRequest}
               onCancelMiniAction={handleCancelMiniAction}
+              poiMenuOpen={pendingPoiAction != null}
+              activePoiSession={activePoiSession}
               isMiniActionActive={session?.actionType === "woodcutting" || session?.actionType === "harvesting"}
               onRuneVfxToggle={handleRuneVfxToggle}
               onOpenCharacterSelect={() => setCharacterSelectOpen(true)}
               playableVariant={playableCharacterId}
+              equippedRightHand={equipment.equippedRightHand}
               onTpsModeChange={setTpsModeActive}
+              onLuxTpsDialogueChange={handleLuxTpsDialogueChange}
+              tpsNpcDialogueDismissRef={tpsNpcDialogueDismissRef}
+              playerSfxVolume={sfxVolume}
               showVignette={(windowMode === "expanded" || isFullscreen) && !isMinimalMode}
+              movementDebugRef={characterMovementDebugRef}
             />
           </Canvas>
         </div>
+        <LuxTpsDialogueOverlay open={luxTpsDialogue.open} text={luxTpsDialogue.text} />
         <CanvasGizmoSheet
           selectedTile={debugMode ? activeDebugTile : activeEditTile}
           gizmoMode={debugMode ? debugGizmoMode : editGizmoMode}
@@ -1340,69 +1667,148 @@ export default function App() {
           contextLabel={debugMode ? "Debug Canvas Editor" : "Canvas Editor"}
         />
         {debugMode && (
-          <DebugPanel
-            selectedTile={null}
-            gizmoMode={debugGizmoMode}
-            onGizmoModeChange={setDebugGizmoMode}
+          <DebugDock
+            selectedTile={activeDebugTile}
+            debugPlacementType={debugPlacementType}
+            onDebugPlacementTypeChange={setDebugPlacementType}
+            surfaceVizMode={debugSurfaceVizMode}
+            onSurfaceVizModeChange={setDebugSurfaceVizMode}
+            surfaceScope={debugSurfaceScope}
+            onSurfaceScopeChange={setDebugSurfaceScope}
+            surfaceTypeFilter={debugSurfaceTypeFilter}
+            surfaceTypeOptions={debugSurfaceTypeOptions}
+            onSurfaceTypeFilterChange={setDebugSurfaceTypeFilter}
+            surfaceValue={debugSurfaceControlValue}
+            surfaceValueMixed={debugSurfaceValueMixed}
+            surfaceTargetCount={debugSurfaceEditableTileIds.length}
+            surfaceVisibleCount={debugIsland?.tiles.length ?? 0}
+            batchPickMode={debugBatchPickMode}
+            onBatchPickModeChange={setDebugBatchPickMode}
+            batchSelectionCount={debugBatchSelectionIdArray.length}
+            onSurfaceChangeStart={handleDebugSurfaceEditStart}
+            onSurfaceChange={handleDebugLiveSurfaceChange}
+            onSurfaceChangeEnd={handleDebugSurfaceEditEnd}
+            onClearBatchSelection={handleDebugClearBatchSelection}
+            onAddSameTypeToBatchSelection={handleDebugAddSameTypeToBatchSelection}
+            onSelectAllBatchTiles={handleDebugSelectAllBatchTiles}
+            onMatchSelectedSurface={handleDebugBatchMatchSelected}
+            onResetSurfaceToAuto={handleDebugBatchResetToAuto}
+            onCopyTransform={handleCopyTransform}
+            onPasteTransform={handlePasteTransform}
+            hasClipboard={debugClipboard !== null}
             onSave={handleDebugSave}
             onExitDebug={handleExitDebug}
             onDeselectTile={() => setDebugSelectedTileId(null)}
-            onDeleteTile={handleDebugDeleteTile}
-            onRotateTile={handleDebugRotateTile}
-            debugPlacementType={debugPlacementType}
-            onDebugPlacementTypeChange={setDebugPlacementType}
             isDragging={debugGizmoDragging}
-            uniformScale={debugUniformScale}
-            onUniformScaleChange={setDebugUniformScale}
             onExportJson={handleExportJson}
             canUndo={debugCanUndo}
             canRedo={debugCanRedo}
             onUndo={handleDebugUndo}
             onRedo={handleDebugRedo}
-            onCopyTransform={handleCopyTransform}
-            onPasteTransform={handlePasteTransform}
-            hasClipboard={debugClipboard !== null}
-            onToggleBlocked={handleDebugToggleBlocked}
-            islandLighting={debugIslandLighting}
-            onIslandLightingChange={setDebugIslandLighting}
+            islandLighting={sceneIslandLighting}
+            onIslandLightingChange={setSceneIslandLighting}
+            lightingAmbiance={sceneLightingAmbiance}
+            onLightingAmbianceChange={setSceneLightingAmbiance}
           />
         )}
 
-        {!debugMode && windowMode === "expanded" && (
-          <button
+        <MovementDebugHud
+          snapshotRef={characterMovementDebugRef}
+          open={movementDebugHudOpen && windowMode === "expanded"}
+        />
+        {!debugMode && windowMode === "expanded" && !characterDebugOpen && (
+          <div
             data-no-window-drag="true"
-            onClick={() => {
-              const snapshot = { ...islandsById[selectedIslandId], tiles: [...islandsById[selectedIslandId].tiles] };
-              debugIslandRef.current = snapshot;
-              setDebugIsland(snapshot);
-              debugUndoStackRef.current = [];
-              debugRedoStackRef.current = [];
-              setDebugCanUndo(false);
-              setDebugCanRedo(false);
-              setDebugMode(true);
-              setSelectedTileForEdit(null);
-              setSelectedTileType(null);
-              setEraseMode(false);
-            }}
             style={{
               position: "absolute",
               bottom: 12,
               right: 12,
               zIndex: 200,
-              background: "rgba(15, 20, 30, 0.85)",
-              border: "1px solid rgba(136, 204, 255, 0.3)",
-              borderRadius: 6,
-              padding: "6px 14px",
-              color: "#88ccff",
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: "pointer",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
               pointerEvents: "auto",
-              backdropFilter: "blur(6px)",
             }}
           >
-            Debug Mode
-          </button>
+            <button
+              data-no-window-drag="true"
+              onClick={() => setMovementDebugHudOpen((v) => !v)}
+              style={{
+                background: movementDebugHudOpen ? "rgba(40, 56, 78, 0.92)" : "rgba(15, 20, 30, 0.85)",
+                border: "1px solid rgba(136, 204, 255, 0.34)",
+                borderRadius: 6,
+                padding: "6px 14px",
+                color: movementDebugHudOpen ? "#b8d8ff" : "#88ccff",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              {movementDebugHudOpen ? "Hide anim debug" : "Anim debug"}
+            </button>
+            <button
+              data-no-window-drag="true"
+              onClick={() => {
+                setCharacterSelectOpen(false);
+                setIsProfileOpen(false);
+                setIsPlannerOpen(false);
+                setCharacterDebugOpen(true);
+              }}
+              style={{
+                background: "rgba(15, 20, 30, 0.85)",
+                border: "1px solid rgba(255, 211, 107, 0.34)",
+                borderRadius: 6,
+                padding: "6px 14px",
+                color: "#ffd36b",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              Character Debug
+            </button>
+            <button
+              data-no-window-drag="true"
+              onClick={() => {
+                const snapshot = { ...islandsById[selectedIslandId], tiles: [...islandsById[selectedIslandId].tiles] };
+                debugIslandRef.current = snapshot;
+                setDebugIsland(snapshot);
+                debugUndoStackRef.current = [];
+                debugRedoStackRef.current = [];
+                setDebugCanUndo(false);
+                setDebugCanRedo(false);
+                setDebugSelectedTileId(null);
+                setDebugBatchSelectionIds(new Set());
+                setDebugSurfaceScope("all");
+                setDebugSurfaceVizMode("single");
+                setDebugSurfaceTypeFilter(null);
+                setDebugBatchPickMode(false);
+                debugSurfaceEditSessionRef.current.active = false;
+                debugSurfaceEditSessionRef.current.pushed = false;
+                setDebugPlacementType(null);
+                setCharacterDebugOpen(false);
+                setDebugMode(true);
+                setSelectedTileForEdit(null);
+                setSelectedTileType(null);
+                setEraseMode(false);
+              }}
+              style={{
+                background: "rgba(15, 20, 30, 0.85)",
+                border: "1px solid rgba(136, 204, 255, 0.3)",
+                borderRadius: 6,
+                padding: "6px 14px",
+                color: "#88ccff",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              Debug Mode
+            </button>
+          </div>
         )}
 
         <CompactInventoryOverlay open={windowMode === "compact" && !isMinimalMode && isInventoryOverlayOpen} />
@@ -1414,7 +1820,14 @@ export default function App() {
           actionStats={actionStats}
           inventory={inventory}
           equipmentState={equipment}
+          playableVariant={playableCharacterId}
           onMoveItem={handleMoveProfileItem}
+        />
+        <CharacterDebugOverlay
+          open={characterDebugOpen}
+          onClose={() => setCharacterDebugOpen(false)}
+          currentPlayableVariant={playableCharacterId}
+          equippedRightHand={equipment.equippedRightHand}
         />
         <CharacterSelectOverlay
           open={characterSelectOpen}
@@ -1449,6 +1862,12 @@ export default function App() {
             }
           }}
         />
+        <PoiActionOverlay
+          open={pendingPoiAction != null}
+          request={pendingPoiAction}
+          onClose={handleClosePoiAction}
+          onStart={handleStartPoiAction}
+        />
 
         <Hud
           expLevel={expLevel}
@@ -1462,10 +1881,6 @@ export default function App() {
           <Sidebar
             selectedSection={selectedSection}
             onSelectSection={handleSelectSection}
-            selectedDuration={selectedDuration}
-            onSelectDuration={setSelectedDuration}
-            activeAction={activeAction}
-            onStartAction={handleStartAction}
             selectedIslandId={selectedIslandId}
             islandPreviewById={islandPreviewById}
             islandNameById={islandNameById}
@@ -1506,11 +1921,6 @@ export default function App() {
             menuSfxVolume={menuSfxVolume}
             onMenuSfxVolumeChange={setMenuSfxVolume}
             onProfileOpen={() => { setIsProfileOpen(true); setIsInventoryOverlayOpen(false); }}
-            onStartPomodoro={handleStartPomodoro}
-            isPomodoroActive={session?.pomodoroMode === true}
-            pomodoroRound={session?.pomodoroRound}
-            pomodoroTotalRounds={session?.pomodoroTotalRounds}
-            pomodoroPhase={session?.pomodoroPhase}
             onDailyQuestsOpen={() => { setIsPlannerOpen(true); setIsInventoryOverlayOpen(false); }}
             onBuildUndo={handleBuildUndo}
             buildCanUndo={buildCanUndo}

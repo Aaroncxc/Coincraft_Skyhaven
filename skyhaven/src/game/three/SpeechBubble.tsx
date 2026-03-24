@@ -5,12 +5,15 @@ import * as THREE from "three";
 type Props = {
   visible: boolean;
   position: THREE.Vector3 | [number, number, number];
+  /** When omitted, uses the default mining/magic NPC line. */
+  text?: string;
 };
 
 const SPEECH_TEXT =
   "Hey du, ich hab gehört es soll hier eine ultra Mine geben. In der gibts safe DIAMONDS zu holen. Ich bin gespannt wer von uns beiden sie zuerst findet!";
 
-export function SpeechBubble({ visible, position }: Props) {
+export function SpeechBubble({ visible, position, text }: Props) {
+  const displayText = text ?? SPEECH_TEXT;
   const [opacity, setOpacity] = useState(0);
   const fadeRef = useRef<number | null>(null);
 
@@ -70,7 +73,7 @@ export function SpeechBubble({ visible, position }: Props) {
           userSelect: "none",
         }}
       >
-        {SPEECH_TEXT}
+        {displayText}
         <div
           style={{
             position: "absolute",
