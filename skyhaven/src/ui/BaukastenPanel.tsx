@@ -111,6 +111,7 @@ export const BAUKASTEN_TILES: Array<{ type: AssetKey; label: string }> = [
   { type: "farmingChicken", label: "Chicken" },
   { type: "bushTile", label: "Bush" },
   { type: "statueAaron", label: "Statue" },
+  { type: "torchDecoration", label: "Fackel" },
   { type: "magicTower", label: "Magic Tower" },
   { type: "wellTile", label: "Well" },
   { type: "well2Tile", label: "Well (Square)" },

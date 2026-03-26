@@ -235,7 +235,8 @@ export default function App() {
   const [masterVolume, setMasterVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 72 : 0));
   const [sfxVolume, setSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 78 : 0));
   const [menuSfxVolume, setMenuSfxVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 74 : 0));
-  useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, sfxVolume);
+  const [musicVolume, setMusicVolume] = useState(() => (isSkyhavenWidgetRuntime() ? 100 : 0));
+  useIslandMusic(selectedIslandId, musicEnabled, musicTrackIndex, masterVolume, musicVolume);
   useWorldAmbience(tpsModeActive, masterVolume, sfxVolume);
   const [session, setSession] = useState<FocusSession | null>(() => hydrateSession());
   const [pendingPoiAction, setPendingPoiAction] = useState<PoiActionRequest | null>(null);
@@ -1916,6 +1917,8 @@ export default function App() {
             }}
             masterVolume={masterVolume}
             onMasterVolumeChange={setMasterVolume}
+            musicVolume={musicVolume}
+            onMusicVolumeChange={setMusicVolume}
             sfxVolume={sfxVolume}
             onSfxVolumeChange={setSfxVolume}
             menuSfxVolume={menuSfxVolume}

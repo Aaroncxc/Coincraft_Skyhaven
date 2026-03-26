@@ -96,6 +96,7 @@ export const TILE_RECIPES: Array<{ tileType: AssetKey; cost: ResourceAmount[] }>
   { tileType: "bushTile", cost: [{ resourceId: "wood", amount: 2 }] },
   { tileType: "dirt", cost: [{ resourceId: "wood", amount: 1 }] },
   { tileType: "statueAaron", cost: [{ resourceId: "ore", amount: 8 }, { resourceId: "wood", amount: 5 }] },
+  { tileType: "torchDecoration", cost: [{ resourceId: "wood", amount: 3 }, { resourceId: "ore", amount: 2 }] },
   { tileType: "magicTower", cost: [{ resourceId: "ore", amount: 10 }, { resourceId: "wood", amount: 12 }, { resourceId: "wheat", amount: 6 }] },
   { tileType: "wellTile", cost: [{ resourceId: "ore", amount: 6 }, { resourceId: "wood", amount: 4 }] },
   { tileType: "well2Tile", cost: [{ resourceId: "ore", amount: 6 }, { resourceId: "wood", amount: 4 }] },

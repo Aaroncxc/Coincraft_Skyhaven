@@ -1,5 +1,5 @@
 import { useGLTF, useAnimations, useTexture } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useLoader } from "@react-three/fiber";
 import {
   useRef,
   useEffect,
@@ -16,7 +16,13 @@ import {
   MAIN_CHAR_ALBEDO_MAP,
   MINING_MAN_MODELS,
   MAGIC_MAN_MODELS,
-  FIGHT_MAN_MODELS,
+  FIGHT_MAN_SWORD_MODELS,
+  FIGHT_MAN_ADV_MODELS,
+  FIGHT_MAN_SWORD_FBX_URLS,
+  FIGHT_MAN_ADV_FBX_URLS,
+  FIGHT_MAN_ALBEDO_MAP,
+  FIGHT_MAN_ADV_IDLE_COUNT,
+  FIGHT_MAN_SWORD_IDLE_COUNT,
   AXE_PROP_GLB,
   MAIN_CHAR_AXE_CHOP_ANIM_GLB,
   AXE_CHOP_PLAYBACK_SEC,
@@ -33,6 +39,7 @@ import {
   type ItemSocketTransform,
 } from "../equipment";
 import type { PlayableCharacterId } from "../playableCharacters";
+import { FBXLoader } from "./fbxLoader";
 
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 useGLTF.preload(AXE_PROP_GLB);
@@ -41,7 +48,52 @@ useGLTF.preload(MAIN_CHAR_AXE_CHOP_ANIM_GLB);
 const CROSSFADE_DURATION = 0.14;
 const BASE_ROT_Y = -Math.PI / 4;
 
+function isPrevClipJump(prevClipName: string): boolean {
+  return prevClipName === "jump" || prevClipName.endsWith("_jump");
+}
+
+/** Only use `crossFadeFrom(..., warp: true)` when the outgoing clip is not jump (jump uses timeScale≠1; warp breaks the fade). */
+function allowCrossfadeWarpFrom(prevClipName: string): boolean {
+  return !isPrevClipJump(prevClipName);
+}
+
+/** Same clip name as last time only skips a replay if that layer still drives the mixer (avoids T-pose after jump when `prevClipRef` stayed `*_walk` but the action was stopped). */
+function isClipLayerActive(action: THREE.AnimationAction | null | undefined): boolean {
+  if (!action) return false;
+  return action.isRunning() && action.getEffectiveWeight() > 0.02;
+}
+
+/**
+ * Never `crossFadeFrom` when prev and next are the same action (same ref) — three.js breaks the clip and walk/run stay dead after jump.
+ */
+function transitionAnimationAction(
+  nextAction: THREE.AnimationAction,
+  prevAction: THREE.AnimationAction | null,
+  prevClipName: string,
+  leavingJump: boolean,
+): void {
+  if (prevAction === nextAction) {
+    nextAction.stopFading();
+    nextAction.setEffectiveWeight(1);
+    nextAction.play();
+    return;
+  }
+  if (leavingJump && prevAction) {
+    prevAction.stop();
+    nextAction.setEffectiveWeight(0);
+    nextAction.play();
+    nextAction.fadeIn(Math.max(CROSSFADE_DURATION * 1.5, 0.22));
+    return;
+  }
+  if (prevAction && prevAction.isRunning()) {
+    nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, allowCrossfadeWarpFrom(prevClipName));
+  }
+  nextAction.play();
+}
+
 const CHAR_SCALE = 0.294;
+/** FBX from Mixamo uses centimetres (1 unit = 1 cm); GLB characters use metres. */
+const FIGHT_MAN_FBX_SCALE = CHAR_SCALE * 0.01;
 const JUMP_ARC_HEIGHT = 0.5;
 const JUMP_DURATION_DEFAULT = 0.38;
 const SPELL_DURATION_DEFAULT = 1.05;
@@ -147,6 +199,35 @@ function makeEquippedToolObject(itemId: EquippableItemId, axeTemplate: THREE.Obj
   return createToolObject(itemId);
 }
 
+/** GLB rigs use `RightHand`; Mixamo FBX often uses `mixamorigRightHand` / `mixamorig:RightHand`. */
+function findRightHandAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D | null {
+  const exact = [
+    "RightHand",
+    "mixamorigRightHand",
+    "MixamorigRightHand",
+    "mixamorig:RightHand",
+    "Mixamorig:RightHand",
+  ];
+  for (const name of exact) {
+    const o = modelRoot.getObjectByName(name);
+    if (o) return o;
+  }
+  let found: THREE.Object3D | null = null;
+  modelRoot.traverse((child) => {
+    if (found) return;
+    const n = child.name;
+    if (/(^|[.:])RightHand$/i.test(n)) {
+      found = child;
+      return;
+    }
+    const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
+    if (/^mixamorigRightHand$/i.test(leaf) || /^RightHand$/i.test(leaf)) {
+      found = child;
+    }
+  });
+  return found;
+}
+
 function useAttachRightHandSocket(
   modelRef: RefObject<THREE.Group | null>,
   rightHandSocket: THREE.Group,
@@ -157,7 +238,7 @@ function useAttachRightHandSocket(
     const modelRoot = modelRef.current;
     if (!modelRoot) return;
 
-    const rightHand = modelRoot.getObjectByName("RightHand");
+    const rightHand = findRightHandAttachmentBone(modelRoot);
     if (!rightHand) {
       if (!warnedMissingRightHandSocketVariants.has(playableVariant)) {
         warnedMissingRightHandSocketVariants.add(playableVariant);
@@ -292,6 +373,7 @@ function useCharacterFrame(
   useFrame((_, delta) => {
     if (!outerRef.current) return;
     const p = poseRef.current;
+    const offsetY = groundOffsetY;
     const tx = p.gx * TILE_UNIT_SIZE;
     const tz = p.gy * TILE_UNIT_SIZE;
     const pos = outerRef.current.position;
@@ -313,7 +395,7 @@ function useCharacterFrame(
 
     let targetY: number;
     if (p.worldY != null) {
-      targetY = p.worldY + groundOffsetY;
+      targetY = p.worldY + offsetY;
     } else {
       let arcY = 0;
       if (isJumping) {
@@ -331,7 +413,7 @@ function useCharacterFrame(
         }
         arcY = JUMP_ARC_HEIGHT * Math.max(0, arcNorm);
       }
-      targetY = (p.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + arcY + groundOffsetY;
+      targetY = (p.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + arcY + offsetY;
     }
     if (p.worldY != null && p.grounded === false) {
       pos.y = targetY;
@@ -536,8 +618,12 @@ function DefaultCharacterModel({
         break;
       default: {
         const prev = prevClipRef.current;
-        const wasIdle = prev === "idle" || prev === "idle2";
-        if (wasIdle) return;
+        if (
+          (prev === "idle" || prev === "idle2") &&
+          isClipLayerActive(actions[prev])
+        ) {
+          return;
+        }
         idleToggleRef.current = !idleToggleRef.current;
         target = idleToggleRef.current ? "idle2" : "idle";
         break;
@@ -551,7 +637,13 @@ function DefaultCharacterModel({
     if (chopSwingReplay) {
       lastChopSwingIdRef.current = pose.chopSwingId;
     }
-    if (target === prevClipRef.current && !chopSwingReplay) return;
+    if (
+      target === prevClipRef.current &&
+      !chopSwingReplay &&
+      isClipLayerActive(actions[target])
+    ) {
+      return;
+    }
 
     const nextAction = actions[target];
     const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
@@ -586,12 +678,12 @@ function DefaultCharacterModel({
     } else {
       nextAction.setLoop(THREE.LoopRepeat, Infinity);
       nextAction.timeScale = 1;
+      nextAction.clampWhenFinished = false;
     }
 
-    if (prevAction && prevAction.isRunning()) {
-      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
-    }
-    nextAction.play();
+    const prevName = prevClipRef.current;
+    const leavingJump = isPrevClipJump(prevName) && pose.animState !== "jump";
+    transitionAnimationAction(nextAction, prevAction, prevName, leavingJump);
     prevClipRef.current = target;
   }, [
     pose.animState,
@@ -616,22 +708,48 @@ function DefaultCharacterModel({
   );
 }
 
-/** Merged Fight Man GLB lists clips by name (order is not stable); never map by array index. */
-function cloneFightManMergedClip(
+const ROOT_TRANSLATION_TRACK_FIGHT = /(^|[.:])(armature|root|hips|mixamorighips)\.position$/i;
+
+function cloneFirstAnimationClip(
   animations: THREE.AnimationClip[],
-  gltfName: string,
   outName: string,
-  stripRootTranslation = false,
+  options: { stripRootTranslation?: boolean } = {},
 ): THREE.AnimationClip | null {
-  const src = animations.find((c) => c.name === gltfName);
-  if (!src) return null;
-  const c = src.clone();
+  if (animations.length === 0) return null;
+  const c = animations[0].clone();
   c.name = outName;
-  if (stripRootTranslation) {
-    const ROOT_TRANSLATION_TRACK = /(^|\.)(armature|root|hips|mixamorighips)\.position$/i;
-    c.tracks = c.tracks.filter((track) => !ROOT_TRANSLATION_TRACK.test(track.name));
+  if (options.stripRootTranslation) {
+    c.tracks = c.tracks.filter((track) => !ROOT_TRANSLATION_TRACK_FIGHT.test(track.name));
   }
   return c;
+}
+
+function fightManLocomotionActionName(
+  prefix: string,
+  animState: "walk" | "run",
+  locomotionStrafe: CharacterPose3D["locomotionStrafe"],
+): string {
+  const s = locomotionStrafe ?? "none";
+  if (animState === "walk") {
+    if (s === "left") return `${prefix}_strafeWalkL`;
+    if (s === "right") return `${prefix}_strafeWalkR`;
+    return `${prefix}_walk`;
+  }
+  if (s === "left") return `${prefix}_strafeL`;
+  if (s === "right") return `${prefix}_strafeR`;
+  return `${prefix}_run`;
+}
+
+function pickRandomIdleClipName(
+  prefix: string,
+  idleCount: number,
+  lastIndex: number,
+): { name: string; index: number } {
+  let next: number;
+  do {
+    next = Math.floor(Math.random() * idleCount);
+  } while (next === lastIndex && idleCount > 1);
+  return { name: `${prefix}_idle${next}`, index: next };
 }
 
 function FightManPlayableModel({
@@ -649,15 +767,27 @@ function FightManPlayableModel({
   const prevClipRef = useRef("");
   const lastChopSwingIdRef = useRef<number | undefined>(undefined);
   const initDoneRef = useRef(false);
-  const idleToggleRef = useRef(false);
+  const lastIdleIndexRef = useRef(-1);
 
-  const baseGltf = useGLTF(FIGHT_MAN_MODELS.base);
-  const animsGltf = useGLTF(FIGHT_MAN_MODELS.anims);
-  const sprintGltf = useGLTF(FIGHT_MAN_MODELS.sprint);
+  /** Split loaders: one huge `useLoader(url[])` was crashing the WebView; two stable arrays are OK. */
+  const swordFbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
+  const advFbxRoots = useLoader(FBXLoader, FIGHT_MAN_ADV_FBX_URLS) as THREE.Group[];
+  const fbxByUrl = useMemo(() => {
+    const m = new Map<string, THREE.Group>();
+    for (let i = 0; i < FIGHT_MAN_SWORD_FBX_URLS.length; i++) {
+      m.set(FIGHT_MAN_SWORD_FBX_URLS[i], swordFbxRoots[i]);
+    }
+    for (let i = 0; i < FIGHT_MAN_ADV_FBX_URLS.length; i++) {
+      m.set(FIGHT_MAN_ADV_FBX_URLS[i], advFbxRoots[i]);
+    }
+    return m;
+  }, [swordFbxRoots, advFbxRoots]);
+
+  const baseRoot = fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.base)!;
   const axePropGltf = useGLTF(AXE_PROP_GLB);
   const modelScene = useMemo(
-    () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
-    [baseGltf.scene],
+    () => SkeletonUtils.clone(baseRoot) as THREE.Group,
+    [baseRoot],
   );
 
   const rightHandSocket = useMemo(() => {
@@ -670,36 +800,76 @@ function FightManPlayableModel({
     tuneSkinnedSceneMaterials(modelScene);
   }, [modelScene]);
 
+  const bodyAlbedo = useTexture(FIGHT_MAN_ALBEDO_MAP, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.flipY = false;
+  });
+
+  useLayoutEffect(() => {
+    bodyAlbedo.colorSpace = THREE.SRGBColorSpace;
+    bodyAlbedo.flipY = false;
+    bodyAlbedo.needsUpdate = true;
+    modelScene.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
+          mat.map = bodyAlbedo;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+  }, [modelScene, bodyAlbedo]);
+
   const allClips = useMemo(() => {
-    const merged = animsGltf.animations;
     const clips: THREE.AnimationClip[] = [];
-    const push = (out: string, gltf: string, strip = false) => {
-      const c = cloneFightManMergedClip(merged, gltf, out, strip);
+    const IN_PLACE = { stripRootTranslation: true };
+
+    const advAnimsFor = (key: keyof typeof FIGHT_MAN_ADV_MODELS) =>
+      fbxByUrl.get(FIGHT_MAN_ADV_MODELS[key])?.animations ?? [];
+    const pushAdv = (key: keyof typeof FIGHT_MAN_ADV_MODELS, name: string, opts = {}) => {
+      const c = cloneFirstAnimationClip(advAnimsFor(key), `adv_${name}`, opts);
       if (c) clips.push(c);
     };
-    push("walk", "Walking");
-    const sprintPick =
-      sprintGltf.animations.find((c) => /sprint|run/i.test(c.name)) ?? sprintGltf.animations[0];
-    if (sprintPick) {
-      const runClip = sprintPick.clone();
-      runClip.name = "run";
-      clips.push(runClip);
-    } else {
-      push("run", "Running");
-    }
-    push("idle", "Walking");
-    push("idle2", "Checkout_Gesture");
-    if (!clips.some((x) => x.name === "idle2")) {
-      const fallback = cloneFightManMergedClip(merged, "Walking", "idle2", false);
-      if (fallback) clips.push(fallback);
-    }
-    push("attack", "Counterstrike");
-    push("skill", "Charged_Upward_Slash");
-    push("jump", "Running");
-    push("spell", "Charged_Upward_Slash");
-    push("roll", "Running", true);
+    /** Same root translation strip as locomotion so idle vs walk share hip height vs mesh origin (Mixamo FBX varies clip-to-clip otherwise). */
+    pushAdv("idle0", "idle0", IN_PLACE);
+    pushAdv("walk", "walk", IN_PLACE);
+    pushAdv("strafeWalkL", "strafeWalkL", IN_PLACE);
+    pushAdv("strafeWalkR", "strafeWalkR", IN_PLACE);
+    pushAdv("run", "run", IN_PLACE);
+    pushAdv("strafeRunL", "strafeL", IN_PLACE);
+    pushAdv("strafeRunR", "strafeR", IN_PLACE);
+    pushAdv("turn90L", "turn90L", IN_PLACE);
+    pushAdv("turn90R", "turn90R", IN_PLACE);
+    /** Vertical arc comes from pose `worldY`; strip hips/root translation like other adv clips or mesh stays levitated after landing. */
+    pushAdv("jump", "jump", IN_PLACE);
+    pushAdv("roll", "roll", IN_PLACE);
+    pushAdv("spell", "spell");
+
+    const swordAnimsFor = (key: keyof typeof FIGHT_MAN_SWORD_MODELS) =>
+      fbxByUrl.get(FIGHT_MAN_SWORD_MODELS[key])?.animations ?? [];
+    const pushSword = (key: keyof typeof FIGHT_MAN_SWORD_MODELS, name: string, opts = {}) => {
+      const c = cloneFirstAnimationClip(swordAnimsFor(key), `sword_${name}`, opts);
+      if (c) clips.push(c);
+    };
+    pushSword("idle0", "idle0", IN_PLACE);
+    pushSword("walk", "walk", IN_PLACE);
+    pushSword("strafeWalkL", "strafeWalkL", IN_PLACE);
+    pushSword("strafeWalkR", "strafeWalkR", IN_PLACE);
+    pushSword("run", "run", IN_PLACE);
+    pushSword("strafeRunL", "strafeL", IN_PLACE);
+    pushSword("strafeRunR", "strafeR", IN_PLACE);
+    pushSword("turn90L", "turn90L", IN_PLACE);
+    pushSword("turn90R", "turn90R", IN_PLACE);
+    pushSword("jump", "jump", IN_PLACE);
+    pushSword("attack", "attack");
+    pushSword("skill", "skill");
+    pushSword("spell", "spell");
+    pushSword("roll", "roll", IN_PLACE);
+
     return clips;
-  }, [animsGltf.animations, sprintGltf.animations]);
+  }, [fbxByUrl]);
 
   const { actions } = useAnimations(allClips, modelRef);
 
@@ -720,47 +890,60 @@ function FightManPlayableModel({
   );
 
   useEffect(() => {
-    if (initDoneRef.current) return;
-    const idle = actions["idle"];
+    initDoneRef.current = false;
+    prevClipRef.current = "";
+    lastIdleIndexRef.current = -1;
+    const idleAdv = actions["adv_idle0"];
+    const idleSword = actions["sword_idle0"];
+    const idle = idleAdv ?? idleSword;
+    const startName = idleAdv ? "adv_idle0" : "sword_idle0";
     if (idle) {
       idle.reset().setLoop(THREE.LoopRepeat, Infinity).play();
-      idle.timeScale = 0.22;
-      prevClipRef.current = "idle";
+      idle.timeScale = 1;
+      prevClipRef.current = startName;
       initDoneRef.current = true;
     }
   }, [actions]);
 
   useEffect(() => {
     if (!initDoneRef.current) return;
+    const prefix = equippedRightHand ? "sword" : "adv";
+    const idleCount = equippedRightHand ? FIGHT_MAN_SWORD_IDLE_COUNT : FIGHT_MAN_ADV_IDLE_COUNT;
+
     let target: string;
     switch (pose.animState) {
       case "walk":
-        target = "walk";
+        target = fightManLocomotionActionName(prefix, "walk", pose.locomotionStrafe);
         break;
       case "run":
-        target = "run";
+        target = fightManLocomotionActionName(prefix, "run", pose.locomotionStrafe);
         break;
       case "attack":
-        target = "attack";
+        target = `${prefix}_attack`;
         break;
       case "chop":
-        target = "skill";
+        target = `${prefix}_skill`;
         break;
       case "jump":
-        target = "jump";
+        target = `${prefix}_jump`;
         break;
       case "spell":
-        target = "spell";
+        target = `${prefix}_spell`;
         break;
       case "roll":
-        target = "roll";
+        target = `${prefix}_roll`;
         break;
       default: {
-        const prev = prevClipRef.current;
-        const wasIdle = prev === "idle" || prev === "idle2";
-        if (wasIdle) return;
-        idleToggleRef.current = !idleToggleRef.current;
-        target = idleToggleRef.current ? "idle2" : "idle";
+        const prevIdleClip = prevClipRef.current;
+        if (
+          prevIdleClip.startsWith(`${prefix}_idle`) &&
+          isClipLayerActive(actions[prevIdleClip])
+        ) {
+          return;
+        }
+        const pick = pickRandomIdleClipName(prefix, idleCount, lastIdleIndexRef.current);
+        lastIdleIndexRef.current = pick.index;
+        target = pick.name;
         break;
       }
     }
@@ -780,9 +963,21 @@ function FightManPlayableModel({
       lastChopSwingIdRef.current = pose.chopSwingId;
     }
     if (!isOneShot) {
-      if (target === prevClipRef.current && !chopSwingReplay) return;
+      if (
+        target === prevClipRef.current &&
+        !chopSwingReplay &&
+        isClipLayerActive(actions[target])
+      ) {
+        return;
+      }
     } else if (pose.animState === "chop") {
-      if (target === prevClipRef.current && !chopSwingReplay) return;
+      if (
+        target === prevClipRef.current &&
+        !chopSwingReplay &&
+        isClipLayerActive(actions[target])
+      ) {
+        return;
+      }
     }
 
     const nextAction = actions[target];
@@ -813,30 +1008,31 @@ function FightManPlayableModel({
       }
     } else {
       nextAction.setLoop(THREE.LoopRepeat, Infinity);
-      if (target === "run") {
-        nextAction.timeScale = 1.55;
-      } else if (target === "idle") {
-        nextAction.timeScale = 0.22;
-      } else if (target === "idle2") {
-        nextAction.timeScale = 1;
-      } else {
-        nextAction.timeScale = 1;
-      }
+      nextAction.timeScale = 1;
+      nextAction.clampWhenFinished = false;
     }
 
-    if (prevAction && prevAction.isRunning()) {
-      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
-    }
-    nextAction.play();
+    const prevName = prevClipRef.current;
+    const leavingJump = isPrevClipJump(prevName) && pose.animState !== "jump";
+    transitionAnimationAction(nextAction, prevAction, prevName, leavingJump);
     prevClipRef.current = target;
-  }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration, pose.chopDuration, pose.chopSwingId]);
+  }, [
+    pose.animState,
+    pose.locomotionStrafe,
+    actions,
+    equippedRightHand,
+    pose.jumpDuration,
+    pose.rollDuration,
+    pose.chopDuration,
+    pose.chopSwingId,
+  ]);
 
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
 
   return (
     <group ref={outerRef}>
       <group ref={modelRef}>
-        <group scale={CHAR_SCALE}>
+        <group scale={FIGHT_MAN_FBX_SCALE}>
           <primitive object={modelScene} />
         </group>
       </group>
@@ -959,8 +1155,12 @@ function MiningPlayableModel({
         break;
       default: {
         const prev = prevClipRef.current;
-        const wasIdle = prev === "idle" || prev === "idle2";
-        if (wasIdle) return;
+        if (
+          (prev === "idle" || prev === "idle2") &&
+          isClipLayerActive(actions[prev])
+        ) {
+          return;
+        }
         idleToggleRef.current = !idleToggleRef.current;
         target = idleToggleRef.current ? "idle2" : "idle";
         break;
@@ -974,7 +1174,13 @@ function MiningPlayableModel({
     if (chopSwingReplay) {
       lastChopSwingIdRef.current = pose.chopSwingId;
     }
-    if (target === prevClipRef.current && !chopSwingReplay) return;
+    if (
+      target === prevClipRef.current &&
+      !chopSwingReplay &&
+      isClipLayerActive(actions[target])
+    ) {
+      return;
+    }
 
     const nextAction = actions[target];
     const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
@@ -1018,12 +1224,12 @@ function MiningPlayableModel({
     } else {
       nextAction.setLoop(THREE.LoopRepeat, Infinity);
       nextAction.timeScale = 1;
+      nextAction.clampWhenFinished = false;
     }
 
-    if (prevAction && prevAction.isRunning()) {
-      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
-    }
-    nextAction.play();
+    const prevName = prevClipRef.current;
+    const leavingJump = isPrevClipJump(prevName) && pose.animState !== "jump";
+    transitionAnimationAction(nextAction, prevAction, prevName, leavingJump);
     prevClipRef.current = target;
   }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration, pose.chopDuration, pose.chopSwingId]);
 
@@ -1153,8 +1359,12 @@ function MagicPlayableModel({
         break;
       default: {
         const prev = prevClipRef.current;
-        const wasIdle = prev === "idle" || prev === "idle2";
-        if (wasIdle) return;
+        if (
+          (prev === "idle" || prev === "idle2") &&
+          isClipLayerActive(actions[prev])
+        ) {
+          return;
+        }
         idleToggleRef.current = !idleToggleRef.current;
         target = idleToggleRef.current ? "idle2" : "idle";
         break;
@@ -1168,7 +1378,13 @@ function MagicPlayableModel({
     if (chopSwingReplay) {
       lastChopSwingIdRef.current = pose.chopSwingId;
     }
-    if (target === prevClipRef.current && !chopSwingReplay) return;
+    if (
+      target === prevClipRef.current &&
+      !chopSwingReplay &&
+      isClipLayerActive(actions[target])
+    ) {
+      return;
+    }
 
     const nextAction = actions[target];
     const prevAction = prevClipRef.current ? actions[prevClipRef.current] : null;
@@ -1206,12 +1422,12 @@ function MagicPlayableModel({
     } else {
       nextAction.setLoop(THREE.LoopRepeat, Infinity);
       nextAction.timeScale = 1;
+      nextAction.clampWhenFinished = false;
     }
 
-    if (prevAction && prevAction.isRunning()) {
-      nextAction.crossFadeFrom(prevAction, CROSSFADE_DURATION, true);
-    }
-    nextAction.play();
+    const prevName = prevClipRef.current;
+    const leavingJump = isPrevClipJump(prevName) && pose.animState !== "jump";
+    transitionAnimationAction(nextAction, prevAction, prevName, leavingJump);
     prevClipRef.current = target;
   }, [pose.animState, actions, pose.jumpDuration, pose.rollDuration, pose.chopDuration, pose.chopSwingId]);
 

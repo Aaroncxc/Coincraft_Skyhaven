@@ -21,6 +21,7 @@ export const TILE_3D_MODELS: Record<string, string> = {
   ancientStoneWall: "/ingame_assets/3d/AncientStoneWall_Tile.glb",
   ancientCornerWall: "/ingame_assets/3d/AncientCornerWall_Til.glb",
   statueAaron: "/ingame_assets/3d/Statue_Aaron.glb",
+  torchDecoration: "/ingame_assets/3d/Torch_Decoration.glb",
   magicTower: "/ingame_assets/3d/MagicTowerTile_POI.glb",
   wellTile: "/ingame_assets/3d/Ancient_Stone_Well_Tile.glb",
   well2Tile: "/ingame_assets/3d/Well2_Tile.glb",
@@ -85,6 +86,7 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   farmingChicken: "farmingChicken",
   bushTile: "bushTile",
   statueAaron: "statueAaron",
+  torchDecoration: "torchDecoration",
   magicTower: "magicTower",
   wellTile: "wellTile",
   well2Tile: "well2Tile",
@@ -126,17 +128,69 @@ export const MAGIC_MAN_MODELS = {
   zauber: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Call_Gesture_withSkin.glb",
 };
 
-export const FIGHT_MAN_MODELS = {
-  base: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Character_output.glb",
-  /** Playable fight_man + fallback clip assembly. */
-  anims: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Meshy_AI_mainy_biped_Meshy_AI_Meshy_Merged_Animations.glb",
-  /** Shift-sprint for playable fight_man (separate GLB). */
-  sprint: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/fightman_sprint.glb",
-  /** Fight Man NPC: patrol picks walk or counterstrike at random; E-interact plays taunt. */
-  npcWalk: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Animation_Walking_withSkin.glb",
-  npcCounterstrike: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Counterstrike_withSkin.glb",
-  npcTaunt: "/ingame_assets/3d/Fight_Man_Real/Meshy_AI_mainy_biped/Chest_Pound_Taunt_withSkin.glb",
-};
+const FIGHT_MAN_SWORD_DIR = "/ingame_assets/3d/Fight_Man_Real/Main_Movement/FBX";
+const FIGHT_MAN_ADV_DIR = "/ingame_assets/3d/Fight_Man_Real/Main_Movement/FBX_Adventure";
+
+/** Sword-and-shield animation set (active when axe is equipped). */
+export const FIGHT_MAN_SWORD_MODELS = {
+  base: `${FIGHT_MAN_SWORD_DIR}/Meshy_AI_mainy_0321192423_texture.fbx`,
+  idle0: `${FIGHT_MAN_SWORD_DIR}/sword and shield idle.fbx`,
+  walk: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe.fbx`,
+  strafeWalkL: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe.fbx`,
+  strafeWalkR: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe (2).fbx`,
+  run: `${FIGHT_MAN_SWORD_DIR}/sword and shield run.fbx`,
+  strafeRunL: `${FIGHT_MAN_SWORD_DIR}/sword and shield run.fbx`,
+  strafeRunR: `${FIGHT_MAN_SWORD_DIR}/sword and shield run (2).fbx`,
+  turn90L: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
+  turn90R: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn (2).fbx`,
+  attack: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack.fbx`,
+  skill: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (2).fbx`,
+  spell: `${FIGHT_MAN_SWORD_DIR}/draw sword 1.fbx`,
+  roll: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
+  /** Same Mixamo jump as adventure set; sword pack has no dedicated jump FBX. */
+  jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
+} as const;
+
+/** Adventure animation set (default, no weapon). idle (2).fbx excluded (corrupt). Second idles omitted for consistent foot height vs walk. */
+export const FIGHT_MAN_ADV_MODELS = {
+  base: `${FIGHT_MAN_ADV_DIR}/Meshy_AI_mainy_0321192423_texture.fbx`,
+  idle0: `${FIGHT_MAN_ADV_DIR}/idle.fbx`,
+  walk: `${FIGHT_MAN_ADV_DIR}/walking.fbx`,
+  strafeWalkL: `${FIGHT_MAN_ADV_DIR}/crouched sneaking left.fbx`,
+  strafeWalkR: `${FIGHT_MAN_ADV_DIR}/crouched sneaking right.fbx`,
+  run: `${FIGHT_MAN_ADV_DIR}/running.fbx`,
+  strafeRunL: `${FIGHT_MAN_ADV_DIR}/crouched sneaking left.fbx`,
+  strafeRunR: `${FIGHT_MAN_ADV_DIR}/crouched sneaking right.fbx`,
+  turn90L: `${FIGHT_MAN_ADV_DIR}/left turn.fbx`,
+  turn90R: `${FIGHT_MAN_ADV_DIR}/right turn.fbx`,
+  jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
+  roll: `${FIGHT_MAN_ADV_DIR}/falling to roll.fbx`,
+  spell: `${FIGHT_MAN_ADV_DIR}/stand to cover.fbx`,
+} as const;
+
+export const FIGHT_MAN_ADV_IDLE_COUNT = 1;
+export const FIGHT_MAN_SWORD_IDLE_COUNT = 1;
+
+/** Sword-only unique URLs (NPC + preload). */
+export const FIGHT_MAN_SWORD_FBX_URLS: string[] = Array.from(new Set(Object.values(FIGHT_MAN_SWORD_MODELS)));
+
+/** Adventure-only unique URLs (animations only, excludes base mesh — playable shares sword base). */
+export const FIGHT_MAN_ADV_FBX_URLS: string[] = Array.from(
+  new Set(
+    Object.entries(FIGHT_MAN_ADV_MODELS)
+      .filter(([k]) => k !== "base")
+      .map(([, v]) => v),
+  ),
+);
+
+/** All unique URLs for the playable model (sword + adventure animations). */
+export const FIGHT_MAN_FBX_UNIQUE_URLS: string[] = Array.from(
+  new Set([...FIGHT_MAN_SWORD_FBX_URLS, ...FIGHT_MAN_ADV_FBX_URLS]),
+);
+
+/** Albedo for Aaron / fight_man (GLB often ships without embedded `map`; filename as on disk). */
+export const FIGHT_MAN_ALBEDO_MAP =
+  "/ingame_assets/3d/Fight_Man_Real/Fighting_Man_Terxture.png";
 
 /** Shared albedo atlas for the playable character (overrides embedded GLB `map` in CharacterModel). */
 export const MAIN_CHAR_ALBEDO_MAP = "/ingame_assets/3d/Main_Char/texture_0.png";
@@ -166,13 +220,12 @@ export const CHAR_3D_MODELS = {
   roll: "/ingame_assets/3d/Main_Char/Meshy_AI_Animation_Roll_Dodge_1_withSkin.glb",
 };
 
-/** Every .glb used in the main island Canvas (tiles, player, NPCs, Skully). */
+/** Every .glb used in the main island Canvas (tiles, player, NPCs, Skully). Fight Man uses FBX, not listed here. */
 export const ALL_GAME_GLTF_PATHS = Array.from(
   new Set([
     ...ALL_MODEL_PATHS,
     ...Object.values(MINING_MAN_MODELS),
     ...Object.values(MAGIC_MAN_MODELS),
-    ...Object.values(FIGHT_MAN_MODELS),
     ...Object.values(CHAR_3D_MODELS),
     SKULLY_MODEL_PATH,
     AXE_PROP_GLB,
@@ -180,3 +233,6 @@ export const ALL_GAME_GLTF_PATHS = Array.from(
     CLOUDS_GLB,
   ]),
 );
+
+/** Sword FBX preloaded eagerly; adventure FBX loaded on demand by playable model. */
+export const ALL_GAME_FBX_PATHS: string[] = [...FIGHT_MAN_SWORD_FBX_URLS];

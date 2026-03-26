@@ -353,6 +353,14 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       anchorY: 0.65,
       layerOrder: 300,
     },
+    torchDecoration: {
+      src: "",
+      drawW: 222,
+      drawH: 222,
+      anchorX: 0.5,
+      anchorY: 0.65,
+      layerOrder: 300,
+    },
     magicTower: {
       src: "/ingame_assets/3d/Magic_Tower.png",
       drawW: 444,

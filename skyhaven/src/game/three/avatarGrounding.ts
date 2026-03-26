@@ -26,7 +26,8 @@ const PLAYER_GROUND_PROFILES: Record<PlayableCharacterId, AvatarGroundProfile> =
   },
   fight_man: {
     ...DEFAULT_PLAYER_PROFILE,
-    visualGroundOffsetY: 0.08,
+    /** Single offset for all clips after dropping mismatched idle variants; tune in-game if feet float/sink. */
+    visualGroundOffsetY: 0.24,
   },
 };
 
@@ -46,7 +47,7 @@ const NPC_GROUND_PROFILES = {
   },
   fightMan: {
     ...DEFAULT_PLAYER_PROFILE,
-    visualGroundOffsetY: 0.03,
+    visualGroundOffsetY: 0.1,
   },
 } as const;
 

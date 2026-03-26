@@ -62,6 +62,7 @@ export type AssetKey =
   | "farmingChicken"
   | "bushTile"
   | "statueAaron"
+  | "torchDecoration"
   | "magicTower"
   | "wellTile"
   | "well2Tile"
@@ -74,7 +75,10 @@ export type AssetKey =
 export const TREE_TILES: readonly AssetKey[] = ["treeMiddle"];
 export const FARM_TILES: readonly AssetKey[] = ["farm2x2"];
 export const MINE_TILES: readonly AssetKey[] = ["mineTile", "mineTileV2"];
-export const DECORATION_TILES: readonly AssetKey[] = ["statueAaron"];
+export const DECORATION_TILES: readonly AssetKey[] = ["statueAaron", "torchDecoration"];
+
+/** Decorations with optional particles + point light; toggle with tile `vfxEnabled` (gizmo VFX button). */
+export const DECORATION_VFX_TYPES: readonly AssetKey[] = ["statueAaron", "torchDecoration"];
 export const NO_DECORATION_TILES: readonly AssetKey[] = [
   "mineTile", "mineTileV2", "farmPoi", "poisFarming",
   "farm2x2", "farmSlot", "farmHalf", "farmFull", "farmEmpty",

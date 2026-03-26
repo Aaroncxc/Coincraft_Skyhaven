@@ -1,5 +1,5 @@
-import { useGLTF, useAnimations } from "@react-three/drei";
-import { useFrame } from "@react-three/fiber";
+import { useAnimations, useTexture } from "@react-three/drei";
+import { useFrame, useLoader } from "@react-three/fiber";
 import {
   Suspense,
   useRef,
@@ -10,7 +10,13 @@ import {
   type MutableRefObject,
 } from "react";
 import * as THREE from "three";
-import { TILE_UNIT_SIZE, FIGHT_MAN_MODELS } from "./assets3d";
+import {
+  TILE_UNIT_SIZE,
+  FIGHT_MAN_SWORD_MODELS,
+  FIGHT_MAN_SWORD_FBX_URLS,
+  FIGHT_MAN_ALBEDO_MAP,
+} from "./assets3d";
+import { FBXLoader } from "./fbxLoader";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../assets";
 import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
@@ -31,9 +37,9 @@ import {
   getNpcSupportWorldY,
 } from "./islandSurface";
 
-Object.values(FIGHT_MAN_MODELS).forEach((p) => useGLTF.preload(p));
-
 const CHAR_SCALE = 0.294;
+/** FBX from Mixamo uses centimetres; match the GLB-based characters. */
+const FIGHT_MAN_FBX_SCALE = CHAR_SCALE * 0.01;
 const BASE_ROT_Y = -Math.PI / 4;
 const CROSSFADE_DURATION = 0.2;
 const PATROL_SPEED = 0.55;
@@ -41,7 +47,8 @@ const PATROL_PAUSE_MIN = 2;
 const PATROL_PAUSE_MAX = 4;
 const TALK_DURATION_FALLBACK = 6;
 const NPC_TILE_DWELL_RESET_SEC = 4;
-const FIGHT_GROUND_OFFSET_Y = getNpcGroundProfile("fightMan").visualGroundOffsetY;
+const FIGHT_NPC_GROUND_OFFSET_Y = getNpcGroundProfile("fightMan").visualGroundOffsetY;
+const ROOT_TRANSLATION_TRACK_NPC = /(^|[.:])(armature|root|hips|mixamorighips)\.position$/i;
 
 type NpcState = "walk" | "pause" | "talk";
 
@@ -86,10 +93,15 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
   const islandRef = useRef(island);
   islandRef.current = island;
 
-  const baseGltf = useGLTF(FIGHT_MAN_MODELS.base);
-  const walkGltf = useGLTF(FIGHT_MAN_MODELS.npcWalk);
-  const counterGltf = useGLTF(FIGHT_MAN_MODELS.npcCounterstrike);
-  const tauntGltf = useGLTF(FIGHT_MAN_MODELS.npcTaunt);
+  const fbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
+  const fbxByUrl = useMemo(() => {
+    const m = new Map<string, THREE.Group>();
+    for (let i = 0; i < FIGHT_MAN_SWORD_FBX_URLS.length; i++) {
+      m.set(FIGHT_MAN_SWORD_FBX_URLS[i], fbxRoots[i]);
+    }
+    return m;
+  }, [fbxRoots]);
+  const baseRoot = fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.base)!;
 
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -152,7 +164,7 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     dwellTimerRef.current = 0;
     const ox = outerRef.current;
     if (ox) {
-      const y = getNpcSupportWorldY(sd, safe.gx, safe.gy) + FIGHT_GROUND_OFFSET_Y;
+      const y = getNpcSupportWorldY(sd, safe.gx, safe.gy) + FIGHT_NPC_GROUND_OFFSET_Y;
       ox.position.set(safe.gx * TILE_UNIT_SIZE, y, safe.gy * TILE_UNIT_SIZE);
     }
   }, [kaserneLayoutKey]);
@@ -174,7 +186,7 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
   );
 
   useMemo(() => {
-    baseGltf.scene.traverse((child) => {
+    baseRoot.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       child.castShadow = true;
       child.receiveShadow = true;
@@ -197,22 +209,47 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
         mat.needsUpdate = true;
       }
     });
-  }, [baseGltf.scene]);
+  }, [baseRoot]);
+
+  const bodyAlbedo = useTexture(FIGHT_MAN_ALBEDO_MAP, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.flipY = false;
+  });
+
+  useLayoutEffect(() => {
+    bodyAlbedo.colorSpace = THREE.SRGBColorSpace;
+    bodyAlbedo.flipY = false;
+    bodyAlbedo.needsUpdate = true;
+    baseRoot.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
+          mat.map = bodyAlbedo;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+  }, [baseRoot, bodyAlbedo]);
 
   const allClips = useMemo(() => {
     const clips: THREE.AnimationClip[] = [];
-    const add = (anims: THREE.AnimationClip[], name: string) => {
+    const add = (anims: THREE.AnimationClip[], name: string, stripRoot = false) => {
       if (anims.length > 0) {
         const c = anims[0].clone();
         c.name = name;
+        if (stripRoot) {
+          c.tracks = c.tracks.filter((t) => !ROOT_TRANSLATION_TRACK_NPC.test(t.name));
+        }
         clips.push(c);
       }
     };
-    add(walkGltf.animations, "walk");
-    add(counterGltf.animations, "counterstrike");
-    add(tauntGltf.animations, "taunt");
+    add(fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.walk)?.animations ?? [], "walk", true);
+    add(fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.run)?.animations ?? [], "counterstrike", true);
+    add(fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.idle0)?.animations ?? [], "taunt");
     return clips;
-  }, [walkGltf.animations, counterGltf.animations, tauntGltf.animations]);
+  }, [fbxByUrl]);
 
   const { actions } = useAnimations(allClips, baseSceneRef);
 
@@ -244,7 +281,8 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
   }, [playClip]);
 
   useEffect(() => {
-    if (initDoneRef.current) return;
+    initDoneRef.current = false;
+    prevClipRef.current = "";
     const w = actions["walk"];
     const c = actions["counterstrike"];
     if (w || c) {
@@ -372,7 +410,7 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     pos.z += (tz - pos.z) * sm;
     const rgx = Math.round(gxRef.current);
     const rgy = Math.round(gyRef.current);
-    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + FIGHT_GROUND_OFFSET_Y;
+    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + FIGHT_NPC_GROUND_OFFSET_Y;
     pos.y += (targetY - pos.y) * sm;
 
     if (modelRef.current) {
@@ -398,8 +436,8 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
   return (
     <group ref={outerRef}>
       <group ref={modelRef}>
-        <group scale={CHAR_SCALE}>
-          <primitive ref={baseSceneRef} object={baseGltf.scene} />
+        <group scale={FIGHT_MAN_FBX_SCALE}>
+          <primitive ref={baseSceneRef} object={baseRoot} />
         </group>
       </group>
     </group>

@@ -30,6 +30,8 @@ type SidebarProps = {
   onMusicNext?: () => void;
   masterVolume?: number;
   onMasterVolumeChange?: (v: number) => void;
+  musicVolume?: number;
+  onMusicVolumeChange?: (v: number) => void;
   sfxVolume?: number;
   onSfxVolumeChange?: (v: number) => void;
   menuSfxVolume?: number;
@@ -91,6 +93,8 @@ export function Sidebar({
   onMusicNext,
   masterVolume = 72,
   onMasterVolumeChange,
+  musicVolume = 100,
+  onMusicVolumeChange,
   sfxVolume = 78,
   onSfxVolumeChange,
   menuSfxVolume = 72,
@@ -356,6 +360,20 @@ export function Sidebar({
                           </button>
                         </div>
                       </div>
+
+                      <label className="settings-row">
+                        <span className="settings-label">Music Vol</span>
+                        <input
+                          className="settings-slider"
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={musicVolume}
+                          onChange={(event) => onMusicVolumeChange?.(Number(event.target.value))}
+                          onMouseDown={() => menuSfx.playTapSecondary()}
+                        />
+                      </label>
 
                       <label className="settings-row">
                         <span className="settings-label">Master Vol</span>

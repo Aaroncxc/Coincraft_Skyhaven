@@ -11,7 +11,8 @@ const FLOAT_AMPLITUDE = 0.03;
 const FLOAT_FREQ = 2;
 const BASE_SIZE = 0.018;
 const SPAWN_INTERVAL = 0.15;
-const ORANGE_BASE_OFFSET_Y = 0.9;
+/** Spawn height above island surface — well above tower mesh so dots aren’t hidden inside the GLB. */
+const ORANGE_BASE_OFFSET_Y = 2.65;
 
 const RING_COUNT = 3;
 const RING_CYCLE_DURATION = 5.6;
@@ -27,6 +28,13 @@ const RING_DOWNWARD_SHRINK = 0.32;
 const RING_LIGHT_HEIGHT_OFFSET = -0.58;
 const RING_LIGHT_INTENSITY = 3.05;
 const RING_LIGHT_DISTANCE = 6.4;
+
+/** World Y above tile surface — orange point light + glow core (rings unchanged). */
+const TOWER_TOP_BEACON_OFFSET_Y = 2.78;
+const TOP_BEACON_LIGHT_INTENSITY = 11;
+const TOP_BEACON_LIGHT_DISTANCE = 14;
+const TOP_BEACON_COLOR = "#ff6a18";
+const TOP_BEACON_CORE_RADIUS = 0.11;
 const RING_BURST_PROGRESS_THRESHOLD = 0.84;
 const BURST_PARTICLE_CAPACITY = 72;
 const BURST_PARTICLES_PER_RING = 10;
@@ -85,6 +93,8 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
   const ringRefs = useRef<Array<THREE.Mesh | null>>([]);
   const ringGlowRefs = useRef<Array<THREE.Mesh | null>>([]);
   const glowLightRef = useRef<THREE.PointLight>(null);
+  const topBeaconLightRef = useRef<THREE.PointLight>(null);
+  const topBeaconCoreRef = useRef<THREE.Mesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const burstDummy = useMemo(() => new THREE.Object3D(), []);
   const particlesRef = useRef<Particle[]>([]);
@@ -131,11 +141,25 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
     const ringMidY = tower.surfaceY + (RING_START_OFFSET_Y + RING_END_OFFSET_Y) * 0.5;
     const elapsed = state.clock.elapsedTime;
     const glowLight = glowLightRef.current;
+    const topBeaconLight = topBeaconLightRef.current;
+    const topBeaconCore = topBeaconCoreRef.current;
+    const topBeaconY = tower.surfaceY + TOWER_TOP_BEACON_OFFSET_Y;
 
     if (glowLight) {
       const pulse = 0.9 + 0.1 * Math.sin(elapsed * 0.75 + tower.gx * 0.7 + tower.gy * 0.9);
       glowLight.position.set(cx, ringMidY + RING_LIGHT_HEIGHT_OFFSET, cz);
       glowLight.intensity = RING_LIGHT_INTENSITY * pulse;
+    }
+
+    if (topBeaconLight) {
+      const pulse = 0.88 + 0.12 * Math.sin(elapsed * 1.15 + tower.gx * 0.5 + tower.gy * 0.6);
+      topBeaconLight.position.set(cx, topBeaconY, cz);
+      topBeaconLight.intensity = TOP_BEACON_LIGHT_INTENSITY * pulse;
+    }
+    if (topBeaconCore) {
+      topBeaconCore.position.set(cx, topBeaconY, cz);
+      const breathe = 1 + 0.14 * Math.sin(elapsed * 2.2 + tower.gx);
+      topBeaconCore.scale.setScalar(TOP_BEACON_CORE_RADIUS * breathe);
     }
 
     for (let i = 0; i < RING_COUNT; i++) {
@@ -452,6 +476,29 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
         distance={RING_LIGHT_DISTANCE}
         decay={2}
       />
+      <pointLight
+        ref={topBeaconLightRef}
+        color={TOP_BEACON_COLOR}
+        intensity={TOP_BEACON_LIGHT_INTENSITY}
+        distance={TOP_BEACON_LIGHT_DISTANCE}
+        decay={2}
+      />
+      <mesh
+        ref={topBeaconCoreRef}
+        scale={TOP_BEACON_CORE_RADIUS}
+        frustumCulled={false}
+        renderOrder={26}
+      >
+        <sphereGeometry args={[1, 20, 20]} />
+        <meshBasicMaterial
+          color={TOP_BEACON_COLOR}
+          toneMapped={false}
+          transparent
+          opacity={0.98}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </mesh>
     </group>
   );
 }

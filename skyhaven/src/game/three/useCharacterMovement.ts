@@ -37,6 +37,8 @@ export type CharacterPose3D = {
   animState: "idle" | "walk" | "run" | "jump" | "attack" | "chop" | "spell" | "roll";
   /** true when moving from WASD; false when patrol or idle (used so look direction follows mouse only on manual move) */
   isManualMove: boolean;
+  /** Mouse-steering lateral move vs look (fight_man strafe clips); TPS / grid-cardinal uses "none". */
+  locomotionStrafe?: "none" | "left" | "right";
   /** set during jump; used by CharacterModel for arc timing */
   jumpDuration?: number;
   /** set during roll; used by CharacterModel for clip timing */
@@ -70,8 +72,10 @@ const TPS_STOP_EPSILON = 0.001;
 const TPS_MOVE_ANIM_EPSILON = 0.03;
 const PATROL_GRID_SPEED = 0.62;
 
+/** Wood-axe swing WAV is loud vs. footsteps; applied after sidebar SFX 0–100. */
+const AXE_SWING_SFX_GAIN = 0.36;
 function axeSwingVolume01(playerSfxVolume: number): number {
-  return Math.max(0, Math.min(100, playerSfxVolume)) / 100;
+  return (Math.max(0, Math.min(100, playerSfxVolume)) / 100) * AXE_SWING_SFX_GAIN;
 }
 const IDLE_AUTOPATROL_DELAY_SEC = 7;
 const PATROL_PAUSE_MIN = 2;
@@ -94,7 +98,8 @@ const FOOTSTEP_RUN_DIST_SCALE = FOOTSTEP_WALK_DIST_SCALE * 0.72;
 const FOOTSTEP_VOLUME_GAIN = 0.31;
 /** Extra trim by camera: ortho / isometric very quiet; TPS full level. */
 const FOOTSTEP_ISO_CAMERA_GAIN = 0.1;
-const FOOTSTEP_TPS_CAMERA_GAIN = 1;
+/** TPS footsteps were much louder than iso; trim vs. sidebar SFX. */
+const FOOTSTEP_TPS_CAMERA_GAIN = 0.42;
 
 function resolveSpawn(island: IslandMap): { gx: number; gy: number } {
   if (isFinite(island.spawn?.gx) && isFinite(island.spawn?.gy)) {
@@ -443,6 +448,7 @@ export function useCharacterMovement(
     direction: "right",
     animState: "idle",
     isManualMove: false,
+    locomotionStrafe: "none",
   });
   const keysRef = useRef<MovementKeys>({ w: false, a: false, s: false, d: false });
   const actionKeysRef = useRef<ActionKeys>({ shift: false, space: false });
@@ -564,6 +570,7 @@ export function useCharacterMovement(
       direction: "right",
       animState: "idle",
       isManualMove: false,
+      locomotionStrafe: "none",
     });
     lastSafeGroundRef.current = {
       gx: sp.gx,
@@ -623,6 +630,7 @@ export function useCharacterMovement(
             isManualMove: true,
             jumpDuration: JUMP_DURATION,
             facingAngle: jumpFacingAngle,
+            locomotionStrafe: "none",
           };
           setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
         }
@@ -717,6 +725,7 @@ export function useCharacterMovement(
             isManualMove: true,
             rollDuration: ROLL_DURATION,
             facingAngle: rollFacingAngle,
+            locomotionStrafe: "none",
           };
           setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
         }
@@ -760,6 +769,7 @@ export function useCharacterMovement(
             animState: "spell",
             isManualMove: true,
             facingAngle: spellFacingAngle,
+            locomotionStrafe: "none",
           };
           setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
           if (spellCastRefRef.current) {
@@ -797,6 +807,7 @@ export function useCharacterMovement(
                 direction: dir,
                 isManualMove: false,
                 facingAngle: request.facingAngle,
+                locomotionStrafe: "none",
               };
               setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
               onPoiActionRequestRef.current(request);
@@ -815,7 +826,13 @@ export function useCharacterMovement(
             tpsFacingYawRef.current = facingAngle;
           }
           tpsVelocityRef.current = { x: 0, y: 0 };
-          poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
+          poseRef.current = {
+            ...pose,
+            direction: dir,
+            isManualMove: false,
+            facingAngle,
+            locomotionStrafe: "none",
+          };
           chopSwingSerialRef.current += 1;
           activeChopPlaybackSecRef.current = AXE_CHOP_PLAYBACK_SEC;
           chopTimerRef.current = AXE_CHOP_PLAYBACK_SEC;
@@ -836,7 +853,13 @@ export function useCharacterMovement(
               tpsFacingYawRef.current = facingAngle;
             }
             tpsVelocityRef.current = { x: 0, y: 0 };
-            poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
+            poseRef.current = {
+              ...pose,
+              direction: dir,
+              isManualMove: false,
+              facingAngle,
+              locomotionStrafe: "none",
+            };
             setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
             onRuneVfxToggleRef.current(runeHit.gx, runeHit.gy);
             return;
@@ -852,7 +875,13 @@ export function useCharacterMovement(
               tpsFacingYawRef.current = facingAngle;
             }
             tpsVelocityRef.current = { x: 0, y: 0 };
-            poseRef.current = { ...pose, direction: dir, isManualMove: false, facingAngle };
+            poseRef.current = {
+              ...pose,
+              direction: dir,
+              isManualMove: false,
+              facingAngle,
+              locomotionStrafe: "none",
+            };
             setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
             onOpenCharacterSelectRef.current();
             return;
@@ -869,7 +898,12 @@ export function useCharacterMovement(
                   tpsFacingYawRef.current = angle;
                 }
                 tpsVelocityRef.current = { x: 0, y: 0 };
-                poseRef.current = { ...pose, isManualMove: false, facingAngle: angle };
+                poseRef.current = {
+                  ...pose,
+                  isManualMove: false,
+                  facingAngle: angle,
+                  locomotionStrafe: "none",
+                };
                 setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
                 onNpcInteractRef.current(id);
                 break;
@@ -903,6 +937,7 @@ export function useCharacterMovement(
           grounded: true,
           animState: "idle",
           isManualMove: false,
+          locomotionStrafe: "none",
         };
         inputStuckTimerRef.current = 0;
         inputStuckRoundedKeyRef.current = `${safe.gx},${safe.gy}`;
@@ -1005,7 +1040,8 @@ export function useCharacterMovement(
       activePoiSession &&
       isPoiFocusAction(activePoiSession.actionType) &&
       activePoiSession.anchorGx != null &&
-      activePoiSession.anchorGy != null
+      activePoiSession.anchorGy != null &&
+      (pose.grounded ?? true)
     ) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       const lockedPose = syncPoseWithSurface({
@@ -1015,6 +1051,7 @@ export function useCharacterMovement(
         animState: getPoiActionAnimState(activePoiSession.actionType),
         isManualMove: false,
         facingAngle: activePoiSession.facingAngle ?? pose.facingAngle,
+        locomotionStrafe: "none",
       });
       poseRef.current = lockedPose;
       prevPoseRef.current = lockedPose;
@@ -1022,15 +1059,15 @@ export function useCharacterMovement(
       return;
     }
 
-    if (poiMenuOpenRef.current) {
+    if (poiMenuOpenRef.current && (pose.grounded ?? true)) {
       tpsVelocityRef.current = { x: 0, y: 0 };
-      poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+      poseRef.current = { ...pose, animState: "idle", isManualMove: false, locomotionStrafe: "none" };
       prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
       setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       return;
     }
 
-    if (isMiniActionActiveRef.current) {
+    if (isMiniActionActiveRef.current && (pose.grounded ?? true)) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       if (isChopping) {
         poseRef.current = {
@@ -1039,9 +1076,10 @@ export function useCharacterMovement(
           isManualMove: false,
           chopDuration: activeChopPlaybackSecRef.current,
           chopSwingId: chopSwingSerialRef.current,
+          locomotionStrafe: "none",
         };
       } else {
-        poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+        poseRef.current = { ...pose, animState: "idle", isManualMove: false, locomotionStrafe: "none" };
       }
       if (tpsActive) {
         const facingAngle =
@@ -1072,7 +1110,7 @@ export function useCharacterMovement(
       const easeT = 1 - (1 - t) * (1 - t);
       const gx = start.gx + (target.gx - start.gx) * easeT;
       const gy = start.gy + (target.gy - start.gy) * easeT;
-      poseRef.current = { ...pose, gx, gy, animState: "roll", isManualMove: true };
+      poseRef.current = { ...pose, gx, gy, animState: "roll", isManualMove: true, locomotionStrafe: "none" };
       resolvedTpsFacingAngle = poseRef.current.facingAngle;
       if (rollTimerRef.current <= 0) {
         poseRef.current = {
@@ -1081,6 +1119,7 @@ export function useCharacterMovement(
           gy: target.gy,
           animState: hasInput ? (isRunning ? "run" : "walk") : "idle",
           isManualMove: hasInput,
+          locomotionStrafe: "none",
         };
         prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
         setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
@@ -1092,11 +1131,12 @@ export function useCharacterMovement(
         animState: "chop",
         chopDuration: activeChopPlaybackSecRef.current,
         chopSwingId: chopSwingSerialRef.current,
+        locomotionStrafe: "none",
       };
       resolvedTpsFacingAngle = pose.facingAngle;
     } else if (spellTimerRef.current > 0) {
       tpsVelocityRef.current = { x: 0, y: 0 };
-      poseRef.current = { ...pose, animState: "spell" };
+      poseRef.current = { ...pose, animState: "spell", locomotionStrafe: "none" };
       resolvedTpsFacingAngle = pose.facingAngle;
     } else if (tpsActive) {
       let moveX = 0;
@@ -1196,18 +1236,21 @@ export function useCharacterMovement(
       let dirStr: "left" | "right" = pose.direction;
       if (velX > 0.01) dirStr = "right";
       else if (velX < -0.01) dirStr = "left";
+      const airbornTps = !(pose.grounded ?? true);
       poseRef.current = {
         ...pose,
         gx: nx,
         gy: ny,
         direction: dirStr,
-        animState:
-          actualSpeed > TPS_MOVE_ANIM_EPSILON
+        animState: airbornTps
+          ? "jump"
+          : actualSpeed > TPS_MOVE_ANIM_EPSILON
             ? actualSpeed > MANUAL_GRID_SPEED * 1.5
               ? "run"
               : "walk"
             : "idle",
         isManualMove: hasInput || actualSpeed > TPS_MOVE_ANIM_EPSILON,
+        locomotionStrafe: "none",
       };
       if (actualSpeed > TPS_MOVE_ANIM_EPSILON) {
         resolvedTpsFacingAngle = getFacingAngleFromVector(velX, velY);
@@ -1217,6 +1260,7 @@ export function useCharacterMovement(
     } else if (hasInput) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       let mgx = 0, mgy = 0;
+      let mouseRelativeWasd = false;
       const mousePos = mouseGroundRefRef.current?.current ?? null;
       const charX = pose.gx * TILE_UNIT_SIZE;
       const charZ = pose.gy * TILE_UNIT_SIZE;
@@ -1230,17 +1274,60 @@ export function useCharacterMovement(
           const fwdZ = dz / len;
           const leftX = -fwdZ;
           const leftZ = fwdX;
-          if (keys.w) { mgx += fwdX; mgy += fwdZ; }
-          if (keys.s) { mgx -= fwdX; mgy -= fwdZ; }
-          if (keys.a) { mgx += leftX; mgy += leftZ; }
-          if (keys.d) { mgx -= leftX; mgy -= leftZ; }
+          if (keys.w) {
+            mgx += fwdX;
+            mgy += fwdZ;
+            mouseRelativeWasd = true;
+          }
+          if (keys.s) {
+            mgx -= fwdX;
+            mgy -= fwdZ;
+            mouseRelativeWasd = true;
+          }
+          if (keys.a) {
+            mgx += leftX;
+            mgy += leftZ;
+            mouseRelativeWasd = true;
+          }
+          if (keys.d) {
+            mgx -= leftX;
+            mgy -= leftZ;
+            mouseRelativeWasd = true;
+          }
         }
       }
       if (mgx === 0 && mgy === 0) {
-        if (keys.w) { mgy -= 1; }
-        if (keys.s) { mgy += 1; }
-        if (keys.a) { mgx -= 1; }
-        if (keys.d) { mgx += 1; }
+        mouseRelativeWasd = false;
+        if (keys.w) {
+          mgy -= 1;
+        }
+        if (keys.s) {
+          mgy += 1;
+        }
+        if (keys.a) {
+          mgx -= 1;
+        }
+        if (keys.d) {
+          mgx += 1;
+        }
+      }
+
+      let locomotionStrafe: NonNullable<CharacterPose3D["locomotionStrafe"]> = "none";
+      if (mouseRelativeWasd && mousePos) {
+        const dx = mousePos.x - charX;
+        const dz = mousePos.z - charZ;
+        const flen = Math.hypot(dx, dz);
+        const mlen = Math.hypot(mgx, mgy);
+        if (flen > 1e-5 && mlen > 1e-5) {
+          const fx = dx / flen;
+          const fz = dz / flen;
+          const mx = mgx / mlen;
+          const mz = mgy / mlen;
+          const cross = fx * mz - fz * mx;
+          if (Math.abs(cross) >= 0.55) {
+            locomotionStrafe = cross > 0 ? "left" : "right";
+          }
+        }
       }
 
       if (mgx !== 0 || mgy !== 0) {
@@ -1248,8 +1335,14 @@ export function useCharacterMovement(
       }
 
       const len = Math.hypot(mgx, mgy);
+      const airbornManual = !(pose.grounded ?? true);
       if (len < 0.0001) {
-        poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+        poseRef.current = {
+          ...pose,
+          animState: airbornManual ? "jump" : "idle",
+          isManualMove: false,
+          locomotionStrafe: "none",
+        };
       } else {
         const speed = isRunning ? MANUAL_RUN_GRID_SPEED : MANUAL_GRID_SPEED;
         const step = (speed * dt) / len;
@@ -1318,14 +1411,15 @@ export function useCharacterMovement(
           gx: nx,
           gy: ny,
           direction: dirStr,
-          animState: isRunning ? "run" : "walk",
+          animState: airbornManual ? "jump" : isRunning ? "run" : "walk",
           isManualMove: true,
+          locomotionStrafe,
         };
       }
     } else {
       tpsVelocityRef.current = { x: 0, y: 0 };
       if (pose.grounded === false) {
-        poseRef.current = { ...pose, animState: "jump", isManualMove: false };
+        poseRef.current = { ...pose, animState: "jump", isManualMove: false, locomotionStrafe: "none" };
       } else {
       const idleSeconds = (performance.now() - lastManualInputRef.current) / 1000;
       const phase = patrolPhaseRef.current;
@@ -1337,7 +1431,14 @@ export function useCharacterMovement(
         const dist = Math.hypot(dx, dy);
 
         if (dist < 0.08) {
-          poseRef.current = { ...pose, gx: target.gx, gy: target.gy, animState: "idle", isManualMove: false };
+          poseRef.current = {
+            ...pose,
+            gx: target.gx,
+            gy: target.gy,
+            animState: "idle",
+            isManualMove: false,
+            locomotionStrafe: "none",
+          };
           patrolPhaseRef.current = "paused";
           patrolPauseTimerRef.current =
             PATROL_PAUSE_MIN + Math.random() * (PATROL_PAUSE_MAX - PATROL_PAUSE_MIN);
@@ -1406,11 +1507,19 @@ export function useCharacterMovement(
           nx = clamp(nx, allowedMinX, allowedMaxX);
           ny = clamp(ny, allowedMinY, allowedMaxY);
           const dir: "left" | "right" = dx < 0 ? "left" : "right";
-          poseRef.current = { ...pose, gx: nx, gy: ny, direction: dir, animState: "walk", isManualMove: false };
+          poseRef.current = {
+            ...pose,
+            gx: nx,
+            gy: ny,
+            direction: dir,
+            animState: "walk",
+            isManualMove: false,
+            locomotionStrafe: "none",
+          };
         }
       } else if (phase === "paused") {
         patrolPauseTimerRef.current -= dt;
-        poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+        poseRef.current = { ...pose, animState: "idle", isManualMove: false, locomotionStrafe: "none" };
         if (patrolPauseTimerRef.current <= 0) {
           const next = pickRandomTile(tileListRef.current, pose.gx, pose.gy);
           patrolTargetRef.current = next;
@@ -1421,7 +1530,7 @@ export function useCharacterMovement(
         patrolTargetRef.current = next;
         patrolPhaseRef.current = "walking";
       } else {
-        poseRef.current = { ...pose, animState: "idle", isManualMove: false };
+        poseRef.current = { ...pose, animState: "idle", isManualMove: false, locomotionStrafe: "none" };
       }
       }
     }
@@ -1483,6 +1592,7 @@ export function useCharacterMovement(
           if (p.animState === "jump") {
             p.animState = hasInput ? (isRunning ? "run" : "walk") : "idle";
             p.isManualMove = hasInput;
+            p.locomotionStrafe = "none";
           }
         } else if (
           p.animState !== "roll" &&
@@ -1507,6 +1617,7 @@ export function useCharacterMovement(
           grounded: true,
           animState: "idle",
           isManualMove: false,
+          locomotionStrafe: "none",
         };
         tpsVelocityRef.current = { x: 0, y: 0 };
         patrolPhaseRef.current = "inactive";
@@ -1550,6 +1661,10 @@ export function useCharacterMovement(
           chopDuration: keepChop ? activeChopPlaybackSecRef.current : undefined,
           chopSwingId: keepChop ? chopSwingSerialRef.current : undefined,
           isManualMove: keepChop ? false : hasInput,
+          locomotionStrafe:
+            keepChop || (p.animState !== "walk" && p.animState !== "run")
+              ? "none"
+              : (p.locomotionStrafe ?? "none"),
         };
         tpsVelocityRef.current = { x: 0, y: 0 };
         inputStuckTimerRef.current = 0;
@@ -1586,6 +1701,7 @@ export function useCharacterMovement(
               grounded: true,
               animState: "idle",
               isManualMove: false,
+              locomotionStrafe: "none",
             };
             tpsVelocityRef.current = { x: 0, y: 0 };
             inputStuckTimerRef.current = 0;
@@ -1642,6 +1758,8 @@ export function useCharacterMovement(
         prev.facingAngle != null &&
         Math.abs(next.facingAngle - prev.facingAngle) > 0.001);
     const chopSwingChanged = (next.chopSwingId ?? 0) !== (prev.chopSwingId ?? 0);
+    const strafeChanged =
+      (next.locomotionStrafe ?? "none") !== (prev.locomotionStrafe ?? "none");
     if (
       next.gx !== prev.gx ||
       next.gy !== prev.gy ||
@@ -1652,7 +1770,8 @@ export function useCharacterMovement(
       surfaceChanged ||
       worldYChanged ||
       groundedChanged ||
-      chopSwingChanged
+      chopSwingChanged ||
+      strafeChanged
     ) {
       prevPoseRef.current = next;
       setRenderPose(next);

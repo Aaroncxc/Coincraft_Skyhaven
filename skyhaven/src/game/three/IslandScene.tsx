@@ -1,4 +1,5 @@
 import { Environment, Preload, useGLTF } from "@react-three/drei";
+import { useLoader } from "@react-three/fiber";
 import { EffectComposer, Bloom, Vignette, FXAA, Outline } from "@react-three/postprocessing";
 import {
   Suspense,
@@ -43,7 +44,8 @@ import { WorldParticles, getParticleTileWorldXZ, BUBBLING_DEFAULT_SPAWN_Y } from
 import { TileHighlight } from "./TileHighlight";
 import { DebugTileWrapper } from "./DebugTileWrapper";
 import { IslandCloudDeck } from "./IslandCloudDeck";
-import { ALL_GAME_GLTF_PATHS, TILE_UNIT_SIZE } from "./assets3d";
+import { ALL_GAME_FBX_PATHS, ALL_GAME_GLTF_PATHS, TILE_UNIT_SIZE } from "./assets3d";
+import { FBXLoader } from "./fbxLoader";
 import type { CameraOccluderEntry } from "./cameraOcclusion";
 import { GltfEmissiveSanitize } from "./GltfEmissiveSanitize";
 import {
@@ -213,6 +215,7 @@ export type IslandSceneProps = {
 };
 
 ALL_GAME_GLTF_PATHS.forEach((path) => useGLTF.preload(path));
+ALL_GAME_FBX_PATHS.forEach((path) => useLoader.preload(FBXLoader, path));
 
 const noopHover = (_id: string | null) => {};
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);

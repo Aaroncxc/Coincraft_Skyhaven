@@ -1,5 +1,5 @@
 import type { AssetKey, CloneLineState, TileDef } from "../game/types";
-import { VFX_TILE_TYPES } from "../game/types";
+import { DECORATION_VFX_TYPES, VFX_TILE_TYPES } from "../game/types";
 
 type CanvasGizmoSheetProps = {
   selectedTile: TileDef | null;
@@ -128,7 +128,11 @@ export function CanvasGizmoSheet({
   const showDecorationToggle = !!selectedTile.decoration && !!onEditingDecorationChange;
   const showCopyHint = typeof onCopy === "function";
   const isVfxTile = (VFX_TILE_TYPES as readonly AssetKey[]).includes(selectedTile.type);
-  const showVfxButton = isVfxTile && typeof onToggleVfx === "function";
+  const isVfxDecoration =
+    !!selectedTile.decoration &&
+    (DECORATION_VFX_TYPES as readonly AssetKey[]).includes(selectedTile.decoration as AssetKey);
+  const showVfxButton =
+    typeof onToggleVfx === "function" && (isVfxTile || isVfxDecoration);
 
   return (
     <div

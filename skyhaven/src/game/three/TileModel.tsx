@@ -2,7 +2,7 @@ import { useGLTF } from "@react-three/drei";
 import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { TileDef } from "../types";
+import { DECORATION_VFX_TYPES, type TileDef } from "../types";
 import { getModelKeyForAsset, getModelPath, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
 import { isTileFadeEligible, type CameraOccluderEntry } from "./cameraOcclusion";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
@@ -12,6 +12,7 @@ import {
   computeTileGltfNormalization,
   getNormalizationModelKey,
 } from "./tileGltfNormalization";
+import { DecorationMysticParticles } from "./DecorationMysticParticles";
 
 const DECORATION_SIZE_FACTOR = 0.45;
 const CAMERA_OCCLUDER_PAD = 0.12;
@@ -291,6 +292,17 @@ function DecorationModel({
     return { scale: s, offsetY: -box.min.y * s, size, center };
   }, [scene]);
 
+  const mysticEmitterLocalY = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(decoCloned);
+    const lift = tile.decoration === "torchDecoration" ? 0.05 : 0.1;
+    return box.max.y * normScale + lift;
+  }, [decoCloned, normScale, tile.decoration]);
+
+  const showMysticVfx =
+    !!tile.decoration &&
+    (DECORATION_VFX_TYPES as readonly string[]).includes(tile.decoration) &&
+    tile.vfxEnabled === true;
+
   useEffect(() => {
     const materialStates: FadableMaterialState[] = [];
     decoCloned.traverse((child) => {
@@ -374,6 +386,13 @@ function DecorationModel({
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
       <primitive object={decoCloned} scale={[normScale, normScale, normScale]} />
+      {showMysticVfx && tile.decoration ? (
+        <DecorationMysticParticles
+          decoration={tile.decoration}
+          emitterLocalY={mysticEmitterLocalY}
+          enabled
+        />
+      ) : null}
     </group>
   );
 }
