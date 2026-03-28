@@ -149,21 +149,28 @@ export const FIGHT_MAN_SWORD_MODELS = {
   roll: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
   /** Same Mixamo jump as adventure set; sword pack has no dedicated jump FBX. */
   jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
+  fallIdle: `${FIGHT_MAN_ADV_DIR}/falling idle.fbx`,
+  landing: `${FIGHT_MAN_ADV_DIR}/Falling To Landing.fbx`,
+  /** TPS RMB look: head-friendly idle (same path as adventure set). */
+  rmbLook: `${FIGHT_MAN_ADV_DIR}/idleHeadMove.fbx`,
 } as const;
 
 /** Adventure animation set (default, no weapon). idle (2).fbx excluded (corrupt). Second idles omitted for consistent foot height vs walk. */
 export const FIGHT_MAN_ADV_MODELS = {
   base: `${FIGHT_MAN_ADV_DIR}/Meshy_AI_mainy_0321192423_texture.fbx`,
   idle0: `${FIGHT_MAN_ADV_DIR}/idle.fbx`,
+  rmbLook: `${FIGHT_MAN_ADV_DIR}/idleHeadMove.fbx`,
   walk: `${FIGHT_MAN_ADV_DIR}/walking.fbx`,
-  strafeWalkL: `${FIGHT_MAN_ADV_DIR}/crouched sneaking left.fbx`,
-  strafeWalkR: `${FIGHT_MAN_ADV_DIR}/crouched sneaking right.fbx`,
+  strafeWalkL: `${FIGHT_MAN_ADV_DIR}/Left Strafe Walking.fbx`,
+  strafeWalkR: `${FIGHT_MAN_ADV_DIR}/Right Strafe Walking.fbx`,
   run: `${FIGHT_MAN_ADV_DIR}/running.fbx`,
-  strafeRunL: `${FIGHT_MAN_ADV_DIR}/crouched sneaking left.fbx`,
-  strafeRunR: `${FIGHT_MAN_ADV_DIR}/crouched sneaking right.fbx`,
+  strafeRunL: `${FIGHT_MAN_ADV_DIR}/Left Strafe.fbx`,
+  strafeRunR: `${FIGHT_MAN_ADV_DIR}/Right Strafe.fbx`,
   turn90L: `${FIGHT_MAN_ADV_DIR}/left turn.fbx`,
   turn90R: `${FIGHT_MAN_ADV_DIR}/right turn.fbx`,
   jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
+  fallIdle: `${FIGHT_MAN_ADV_DIR}/falling idle.fbx`,
+  landing: `${FIGHT_MAN_ADV_DIR}/Falling To Landing.fbx`,
   roll: `${FIGHT_MAN_ADV_DIR}/falling to roll.fbx`,
   spell: `${FIGHT_MAN_ADV_DIR}/stand to cover.fbx`,
 } as const;

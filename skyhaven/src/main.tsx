@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
+import { isSkyhavenWidgetRuntime } from "./runtime/isWidgetRuntime";
 import { IntroSplash } from "./ui/IntroSplash";
 import { stopIntroMusicCompletely } from "./ui/introMusicController";
 import "./styles.css";
@@ -16,6 +17,7 @@ function AppBoot() {
   useEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
+    if (!isSkyhavenWidgetRuntime()) return;
 
     const appWindow = getCurrentWindow();
     let pointerDown = false;

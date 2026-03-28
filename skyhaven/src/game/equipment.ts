@@ -18,6 +18,8 @@ export type EquippableItemDef = {
   /** Optional inventory / UI thumbnail (profile slots, drag ghost). */
   thumbnailSrc?: string;
   rightHandByVariant: ItemSocketTransformByVariant;
+  /** Stowed on back when item is in inventory but not on action bar (tune in Character Debug). */
+  backByVariant: ItemSocketTransformByVariant;
 };
 
 export const WOOD_AXE_ITEM_ID: EquippableItemId = "wood_axe_placeholder";
@@ -53,9 +55,9 @@ export const EQUIPPABLE_ITEMS: Record<EquippableItemId, EquippableItemDef> = {
         scale: [56.24, 63.47, 46.94],
       },
       fight_man: {
-        position: [2, -2, 6],
-        rotation: [1.6336, -0.12, 1.1938],
-        scale: [20, 20, 20],
+        position: [-1.0279, 22.5909, -29.8135],
+        rotation: [-0.7883, -1.3582, -1.127],
+        scale: [46.81, 46.81, 46.81],
       },
       mining_man: {
         position: [2, -2, 6],
@@ -66,6 +68,28 @@ export const EQUIPPABLE_ITEMS: Record<EquippableItemId, EquippableItemDef> = {
         position: [2, -2, 6],
         rotation: [1.6336, -0.12, 1.1938],
         scale: [20, 20, 20],
+      },
+    },
+    backByVariant: {
+      default: {
+        position: [0, 18, -12],
+        rotation: [0, Math.PI, 0.25],
+        scale: [40, 40, 40],
+      },
+      fight_man: {
+        position: [0, 22, -18],
+        rotation: [0, Math.PI, 0.2],
+        scale: [38, 38, 38],
+      },
+      mining_man: {
+        position: [0, 0.12, -0.14],
+        rotation: [0, Math.PI, 0.2],
+        scale: [0.09, 0.09, 0.09],
+      },
+      magic_man: {
+        position: [0, 0.12, -0.14],
+        rotation: [0, Math.PI, 0.2],
+        scale: [0.09, 0.09, 0.09],
       },
     },
   },
@@ -90,6 +114,25 @@ export function getEquippableItemDefaultRightHandByVariant(
   return cloneItemSocketTransformByVariant(itemDef.rightHandByVariant);
 }
 
+export function getEquippableItemBackTransform(
+  itemId: EquippableItemId,
+  playableVariant: PlayableCharacterId,
+): ItemSocketTransform | null {
+  const itemDef = EQUIPPABLE_ITEMS[itemId];
+  if (!itemDef) return null;
+  return cloneItemSocketTransform(
+    itemDef.backByVariant[playableVariant] ?? itemDef.backByVariant.default,
+  );
+}
+
+export function getEquippableItemDefaultBackByVariant(
+  itemId: EquippableItemId,
+): ItemSocketTransformByVariant | null {
+  const itemDef = EQUIPPABLE_ITEMS[itemId];
+  if (!itemDef) return null;
+  return cloneItemSocketTransformByVariant(itemDef.backByVariant);
+}
+
 export type ActionBarState = {
   primary: EquippableItemId | null;
 };
@@ -103,6 +146,13 @@ export type EquipmentState = {
   inventoryItems: InventoryItemSlots;
   equippedRightHand: EquippableItemId | null;
 };
+
+/** Wood axe on back when it lives in slot 4 but is not on the action bar (not in hand). */
+export function getStowedBackItemFromEquipment(state: EquipmentState): EquippableItemId | null {
+  if (state.actionBar.primary != null) return null;
+  if (state.inventoryItems.slot4 !== WOOD_AXE_ITEM_ID) return null;
+  return WOOD_AXE_ITEM_ID;
+}
 
 export type EquipmentSlotRef = "inventory_slot_4" | "action_primary";
 

@@ -1,25 +1,18 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import type { ActionType, ProgressionState, ResourceId } from "../game/types";
 import type { ActionStats } from "../game/actionStats";
 import type { PlayerProfile } from "../game/profile";
 import type { Inventory } from "../game/inventory";
-import { CharacterModel } from "../game/three/CharacterModel";
-import type { CharacterPose3D } from "../game/three/useCharacterMovement";
 import {
   EQUIPPABLE_ITEMS,
+  getStowedBackItemFromEquipment,
   type EquipmentState,
   type EquipmentSlotRef,
   type EquippableItemId,
 } from "../game/equipment";
 import type { PlayableCharacterId } from "../game/playableCharacters";
+import { PlayableCharacterPreviewScene } from "./PlayableCharacterPreviewScene";
 
 type ProfileTab = "loadout" | "stats";
 
@@ -73,22 +66,6 @@ const RESOURCE_LABELS: Record<ResourceId, string> = {
   wood: "Wood",
 };
 
-const PROFILE_IDLE_POSE: CharacterPose3D = {
-  gx: 0,
-  gy: 0,
-  direction: "right",
-  animState: "idle",
-  isManualMove: false,
-};
-
-const VIEWER_TARGET: [number, number, number] = [0, 0.95, 0];
-const VIEWER_CAMERA_POSITION: [number, number, number] = [0.24, 1.62, 1.12];
-const VIEWER_MIN_DISTANCE = 0.76;
-const VIEWER_MAX_DISTANCE = 2.8;
-const VIEWER_MIN_POLAR_ANGLE = 0.34;
-const VIEWER_MAX_POLAR_ANGLE = Math.PI * 0.5 - 0.05;
-const PROFILE_CHARACTER_PREVIEW_SCALE = 1.58;
-
 type PointerDragState = {
   source: EquipmentSlotRef;
   itemId: EquippableItemId;
@@ -111,53 +88,25 @@ function formatDate(ts: number): string {
 
 function ProfileCharacterScene({
   equippedRightHand,
+  stowedBackItem,
   playableVariant,
   onOrbitStart,
   onOrbitEnd,
 }: {
   equippedRightHand: EquippableItemId | null;
+  stowedBackItem: EquippableItemId | null;
   playableVariant: PlayableCharacterId;
   onOrbitStart: () => void;
   onOrbitEnd: () => void;
 }) {
   return (
-    <>
-      <PerspectiveCamera
-        makeDefault
-        position={VIEWER_CAMERA_POSITION}
-        fov={33}
-        near={0.05}
-        far={60}
-      />
-      <OrbitControls
-        target={VIEWER_TARGET}
-        enablePan={false}
-        enableRotate
-        enableZoom
-        minDistance={VIEWER_MIN_DISTANCE}
-        maxDistance={VIEWER_MAX_DISTANCE}
-        minPolarAngle={VIEWER_MIN_POLAR_ANGLE}
-        maxPolarAngle={VIEWER_MAX_POLAR_ANGLE}
-        minAzimuthAngle={-Infinity}
-        maxAzimuthAngle={Infinity}
-        rotateSpeed={0.58}
-        zoomSpeed={0.82}
-        enableDamping
-        dampingFactor={0.09}
-        onStart={onOrbitStart}
-        onEnd={onOrbitEnd}
-      />
-      <ambientLight intensity={0.58} />
-      <directionalLight position={[2, 4, 3]} intensity={1.55} />
-      <directionalLight position={[-2, 3, -1]} intensity={0.58} />
-      <group position={[0, -0.8, 0]} scale={PROFILE_CHARACTER_PREVIEW_SCALE}>
-        <CharacterModel
-          pose={PROFILE_IDLE_POSE}
-          equippedRightHand={equippedRightHand}
-          playableVariant={playableVariant}
-        />
-      </group>
-    </>
+    <PlayableCharacterPreviewScene
+      playableVariant={playableVariant}
+      equippedRightHand={equippedRightHand}
+      stowedBackItem={stowedBackItem}
+      onOrbitStart={onOrbitStart}
+      onOrbitEnd={onOrbitEnd}
+    />
   );
 }
 
@@ -373,6 +322,7 @@ export function ProfileOverlay({
                   >
                     <ProfileCharacterScene
                       equippedRightHand={equipmentState.equippedRightHand}
+                      stowedBackItem={getStowedBackItemFromEquipment(equipmentState)}
                       playableVariant={playableVariant}
                       onOrbitStart={handleOrbitStart}
                       onOrbitEnd={handleOrbitEnd}

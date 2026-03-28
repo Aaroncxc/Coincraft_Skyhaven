@@ -9,13 +9,15 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "match:island": "powershell -ExecutionPolicy Bypass -File scripts/match-island-tiles.ps1",
-    "extract:char-frames": "powershell -ExecutionPolicy Bypass -File scripts/extract-main-char-frames.ps1"
+    "extract:char-frames": "powershell -ExecutionPolicy Bypass -File scripts/extract-main-char-frames.ps1",
+    "capture:portfolio": "node scripts/capture-portfolio-screenshots.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "playwright": "^1.58.2",
     "typescript": "~5.9.3",
     "vite": "^7.3.1"
   },

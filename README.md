@@ -16,6 +16,8 @@ npm install
 npm run tauri dev
 ```
 
+`tauri dev` startet Vite nur, wenn **http://localhost:5173** noch nicht erreichbar ist. Läuft bereits `npm run dev` (oder ein alter Node-Prozess auf 5173), wird kein zweiter Server gestartet und die Fehlermeldung „Port 5173 is already in use“ entfällt.
+
 Nur Web-Frontend (ohne Tauri-Fenster):
 
 ```bash
@@ -41,6 +43,7 @@ npm run tauri build
 | `npm run tauri` | Tauri-CLI (z. B. `npm run tauri dev`) |
 | `npm run match:island` | PowerShell: Island-Tiles abgleichen |
 | `npm run extract:char-frames` | PowerShell: Char-Frames extrahieren |
+| `npm run capture:portfolio` | Playwright: Portfolio-Screenshots → `docs/portfolio_screenshots/` (Dev-Server muss laufen) |
 
 ## Technologie-Stack
 
@@ -50,6 +53,8 @@ npm run tauri build
 
 ## Dokumentation im Repo
 
+- [`skyhaven/docs/PORTFOLIO_CONTEXT.md`](skyhaven/docs/PORTFOLIO_CONTEXT.md) – Portfolio-/Pitch-Kontext (Deutsch)
+- [`skyhaven/docs/portfolio_screenshots/README.md`](skyhaven/docs/portfolio_screenshots/README.md) – Mappe-Screenshots (`npm run capture:portfolio` in `skyhaven/`)
 - [`skyhaven/docs/PLAYER_CAMERA_AND_CONTROLLER.md`](skyhaven/docs/PLAYER_CAMERA_AND_CONTROLLER.md) – Kamera & Steuerung
 - **FFmpeg** (optional, z. B. für Asset-Pipeline): [`skyhaven/tools/ffmpeg-2026-02-23-git-7b15039cdb-essentials_build/README.txt`](skyhaven/tools/ffmpeg-2026-02-23-git-7b15039cdb-essentials_build/README.txt)
 

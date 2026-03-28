@@ -40,6 +40,8 @@ import { AmbientParticles } from "./AmbientParticles";
 import { ChopParticles } from "./ChopParticles";
 import { SpellParticles } from "./SpellParticles";
 import { MagicTowerParticles } from "./MagicTowerParticles";
+import { MagicTowerHoverSfx } from "./MagicTowerHoverSfx";
+import { FpsReporter } from "./FpsReporter";
 import { WorldParticles, getParticleTileWorldXZ, BUBBLING_DEFAULT_SPAWN_Y } from "./WorldParticles";
 import { TileHighlight } from "./TileHighlight";
 import { DebugTileWrapper } from "./DebugTileWrapper";
@@ -51,8 +53,16 @@ import { GltfEmissiveSanitize } from "./GltfEmissiveSanitize";
 import {
   type IslandLightingAmbiance,
   type IslandLightingParams,
+  type DayNightVisualSnapshot,
+  DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC,
   DEFAULT_ISLAND_LIGHTING,
+  NIGHT_ISLAND_LIGHTING,
+  blendDayNightColors,
+  dayNightPhaseFromTime,
+  getDayNightVisualSnapshot,
+  nightBlendFromPhase,
   sampleDayLightColors,
+  samplePostProcessForNightBlend,
   sunPositionFromAngles,
 } from "./islandLighting";
 import {
@@ -197,6 +207,8 @@ export type IslandSceneProps = {
   playableVariant?: PlayableCharacterId;
   /** Equipped prop shown in the player's right hand. */
   equippedRightHand?: EquippableItemId | null;
+  /** Holstered on back when in inventory but not in the action primary slot. */
+  stowedBackItem?: EquippableItemId | null;
   onTpsModeChange?: (active: boolean) => void;
   /** TPS + Lux (fight man) dialogue: drives DOM overlay in App. */
   onLuxTpsDialogueChange?: (payload: { open: boolean; text: string }) => void;
@@ -204,14 +216,25 @@ export type IslandSceneProps = {
   tpsNpcDialogueDismissRef?: MutableRefObject<(() => boolean) | null>;
   /** 0–100; footstep SFX for the playable character (Sidebar SFX Vol). */
   playerSfxVolume?: number;
+  /** 0–100; multiplied with SFX for spatial POI loops (e.g. magic tower hum). */
+  masterVolume?: number;
   /** When true, vignette is shown (expanded/fullscreen only, not compact/transparent) */
   showVignette?: boolean;
   /** Sun + ambient/fill/env; in debug mode usually driven by sliders. */
   islandLighting?: IslandLightingParams;
   /** Day vs night look: moon colors, stronger POI lights, slightly punchier bloom. */
   lightingAmbiance?: IslandLightingAmbiance;
+  /** When true, lerps day↔night from wall clock over `dayNightCyclePeriodSec` (seamless loop). */
+  autoDayNightCycle?: boolean;
+  /** Full cycle length in seconds (default 300 = 5 min). */
+  dayNightCyclePeriodSec?: number;
   /** Filled each frame by `useCharacterMovement` when present (anim / chop / TPS input debug). */
   movementDebugRef?: MutableRefObject<CharacterMovementDebugSnapshot | null>;
+  shadowsEnabled?: boolean;
+  postProcessingEnabled?: boolean;
+  cloudsEnabled?: boolean;
+  debugShowFps?: boolean;
+  fpsHudRef?: MutableRefObject<{ fps: number }>;
 };
 
 ALL_GAME_GLTF_PATHS.forEach((path) => useGLTF.preload(path));
@@ -220,12 +243,12 @@ ALL_GAME_FBX_PATHS.forEach((path) => useLoader.preload(FBXLoader, path));
 const noopHover = (_id: string | null) => {};
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-function StrongShadowRenderer() {
+function StrongShadowRenderer({ enabled }: { enabled: boolean }) {
   const gl = useThree((s) => s.gl);
   useLayoutEffect(() => {
-    gl.shadowMap.enabled = true;
-    gl.shadowMap.type = THREE.BasicShadowMap;
-  }, [gl]);
+    gl.shadowMap.enabled = enabled;
+    if (enabled) gl.shadowMap.type = THREE.BasicShadowMap;
+  }, [gl, enabled]);
   return null;
 }
 
@@ -656,14 +679,23 @@ export function IslandScene({
   onOpenCharacterSelect,
   playableVariant = "default",
   equippedRightHand = null,
+  stowedBackItem = null,
   onTpsModeChange,
   onLuxTpsDialogueChange,
   tpsNpcDialogueDismissRef,
   playerSfxVolume = 0,
+  masterVolume = 100,
   showVignette = false,
   islandLighting: islandLightingProp = DEFAULT_ISLAND_LIGHTING,
   lightingAmbiance = "day",
+  autoDayNightCycle = false,
+  dayNightCyclePeriodSec = DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC,
   movementDebugRef,
+  shadowsEnabled = true,
+  postProcessingEnabled = true,
+  cloudsEnabled = true,
+  debugShowFps = false,
+  fpsHudRef,
 }: IslandSceneProps) {
   const [hoveredTileId, setHoveredTileId] = useState<string | null>(null);
   const [hoveredOutlineRef, setHoveredOutlineRef] = useState<THREE.Group | null>(null);
@@ -992,18 +1024,53 @@ export function IslandScene({
   const fadedOccluderKeySet = useMemo(() => new Set(fadedOccluderKeys), [fadedOccluderKeys]);
   const gameplayOccluderFadeActive = tpsModeActive && !buildMode && !eraseMode;
 
-  const islandLighting = islandLightingProp;
-  const isNightAmbiance = lightingAmbiance === "night";
-  const dayLightColors = useMemo(
-    () => sampleDayLightColors(islandLighting.dayLightWarmth ?? DEFAULT_ISLAND_LIGHTING.dayLightWarmth),
-    [islandLighting.dayLightWarmth],
+  const warmth = islandLightingProp.dayLightWarmth ?? DEFAULT_ISLAND_LIGHTING.dayLightWarmth;
+  const manualNightBlend = lightingAmbiance === "night" ? 1 : 0;
+  const manualSnapshot = useMemo((): DayNightVisualSnapshot => {
+    const colors = blendDayNightColors(sampleDayLightColors(warmth), manualNightBlend);
+    return {
+      nightBlend: manualNightBlend,
+      lighting: islandLightingProp,
+      colors,
+      ...samplePostProcessForNightBlend(manualNightBlend),
+    };
+  }, [islandLightingProp, manualNightBlend, warmth]);
+
+  const cyclePeriodMs = Math.max(1000, dayNightCyclePeriodSec * 1000);
+  const cycleVisualRef = useRef<DayNightVisualSnapshot>(
+    getDayNightVisualSnapshot(
+      nightBlendFromPhase(dayNightPhaseFromTime(performance.now(), cyclePeriodMs)),
+      warmth,
+      DEFAULT_ISLAND_LIGHTING,
+      NIGHT_ISLAND_LIGHTING,
+    ),
   );
-  const sunColor = isNightAmbiance ? "#c8d8f8" : dayLightColors.sun;
-  const fillLightColor = isNightAmbiance ? "#8ea0c0" : dayLightColors.fill;
-  const hemiSky = isNightAmbiance ? "#4a4680" : dayLightColors.hemiSky;
-  const hemiGround = isNightAmbiance ? "#120e1c" : dayLightColors.hemiGround;
-  const ambientColor = isNightAmbiance ? "#ffffff" : dayLightColors.ambient;
-  const poiLightMul = isNightAmbiance ? 1.58 : 1;
+
+  const invalidate = useThree((s) => s.invalidate);
+
+  useLayoutEffect(() => {
+    if (!autoDayNightCycle) return;
+    cycleVisualRef.current = getDayNightVisualSnapshot(
+      nightBlendFromPhase(dayNightPhaseFromTime(performance.now(), cyclePeriodMs)),
+      warmth,
+      DEFAULT_ISLAND_LIGHTING,
+      NIGHT_ISLAND_LIGHTING,
+    );
+    invalidate();
+  }, [autoDayNightCycle, cyclePeriodMs, warmth, invalidate]);
+
+  useFrame(() => {
+    if (!autoDayNightCycle) return;
+    cycleVisualRef.current = getDayNightVisualSnapshot(
+      nightBlendFromPhase(dayNightPhaseFromTime(performance.now(), cyclePeriodMs)),
+      warmth,
+      DEFAULT_ISLAND_LIGHTING,
+      NIGHT_ISLAND_LIGHTING,
+    );
+    invalidate();
+  });
+
+  const snap = autoDayNightCycle ? cycleVisualRef.current : manualSnapshot;
 
   const sunPosition = useMemo(
     () =>
@@ -1011,16 +1078,16 @@ export function IslandScene({
         gridExtent.planeCx,
         0,
         gridExtent.planeCz,
-        islandLighting.sunAzimuthDeg,
-        islandLighting.sunElevationDeg,
-        islandLighting.sunDistance,
+        snap.lighting.sunAzimuthDeg,
+        snap.lighting.sunElevationDeg,
+        snap.lighting.sunDistance,
       ),
     [
       gridExtent.planeCx,
       gridExtent.planeCz,
-      islandLighting.sunAzimuthDeg,
-      islandLighting.sunElevationDeg,
-      islandLighting.sunDistance,
+      snap.lighting.sunAzimuthDeg,
+      snap.lighting.sunElevationDeg,
+      snap.lighting.sunDistance,
     ],
   );
 
@@ -1056,18 +1123,21 @@ export function IslandScene({
 
   return (
     <>
-      <StrongShadowRenderer />
+      <StrongShadowRenderer enabled={shadowsEnabled} />
+      {debugShowFps && fpsHudRef ? <FpsReporter outRef={fpsHudRef} /> : null}
       <Suspense fallback={null}>
         <GltfEmissiveSanitize />
-        <Environment preset="apartment" environmentIntensity={islandLighting.environmentIntensity} />
-        <IslandCloudDeck
-          island={island}
-          planeCx={gridExtent.planeCx}
-          planeCz={gridExtent.planeCz}
-          planeW={gridExtent.planeW}
-          planeH={gridExtent.planeH}
-          safeFloorY={surfaceData.safeFloorY}
-        />
+        <Environment preset="apartment" environmentIntensity={snap.lighting.environmentIntensity} />
+        {cloudsEnabled ? (
+          <IslandCloudDeck
+            island={island}
+            planeCx={gridExtent.planeCx}
+            planeCz={gridExtent.planeCz}
+            planeW={gridExtent.planeW}
+            planeH={gridExtent.planeH}
+            safeFloorY={surfaceData.safeFloorY}
+          />
+        ) : null}
       </Suspense>
       <MouseGroundTracker
         mouseGroundRef={mouseGroundRef}
@@ -1090,18 +1160,29 @@ export function IslandScene({
         }
       />
 
-      <hemisphereLight args={[hemiSky, hemiGround, islandLighting.hemisphereIntensity]} />
+      {magicTowerTiles.length > 0 && (
+        <MagicTowerHoverSfx
+          towers={magicTowerTiles}
+          playerGx={charPose.gx}
+          playerGy={charPose.gy}
+          tpsActive={tpsModeActive}
+          masterVolume={masterVolume}
+          sfxVolume={playerSfxVolume}
+        />
+      )}
+
+      <hemisphereLight args={[snap.colors.hemiSky, snap.colors.hemiGround, snap.lighting.hemisphereIntensity]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gridExtent.planeCx, surfaceData.safeFloorY, gridExtent.planeCz]}>
         <planeGeometry args={[gridExtent.planeW, gridExtent.planeH]} />
         <meshBasicMaterial visible={false} />
       </mesh>
-      <ambientLight color={ambientColor} intensity={islandLighting.ambientIntensity} />
+      <ambientLight color={snap.colors.ambient} intensity={snap.lighting.ambientIntensity} />
       <directionalLight
         ref={sunLightRef}
         position={sunPosition}
-        intensity={islandLighting.sunIntensity}
-        color={sunColor}
-        castShadow
+        intensity={snap.lighting.sunIntensity}
+        color={snap.colors.sun}
+        castShadow={shadowsEnabled}
         shadow-mapSize-width={4096}
         shadow-mapSize-height={4096}
         shadow-bias={-0.00015}
@@ -1111,8 +1192,8 @@ export function IslandScene({
       />
       <directionalLight
         position={[-10, 6, -12]}
-        intensity={islandLighting.fillIntensity}
-        color={fillLightColor}
+        intensity={snap.lighting.fillIntensity}
+        color={snap.colors.fill}
       />
 
       {wellTiles.map((w) => {
@@ -1122,8 +1203,8 @@ export function IslandScene({
             key={`well-vfx-light-${w.gx}-${w.gy}`}
             position={[x, BUBBLING_DEFAULT_SPAWN_Y, z]}
             color={0x88e8ff}
-            intensity={WELL_GLOW_POINT_INTENSITY * poiLightMul}
-            distance={WELL_GLOW_POINT_DISTANCE * (isNightAmbiance ? 1.12 : 1)}
+            intensity={WELL_GLOW_POINT_INTENSITY * snap.poiLightMul}
+            distance={WELL_GLOW_POINT_DISTANCE * snap.wellGlowDistanceMul}
             decay={2}
           />
         );
@@ -1135,8 +1216,8 @@ export function IslandScene({
             key={`rune-vfx-light-${r.gx}-${r.gy}`}
             position={[x, RUNE_GLOW_POINT_Y, z]}
             color={0xff5533}
-            intensity={RUNE_GLOW_POINT_INTENSITY * poiLightMul}
-            distance={RUNE_GLOW_POINT_DISTANCE * (isNightAmbiance ? 1.1 : 1)}
+            intensity={RUNE_GLOW_POINT_INTENSITY * snap.poiLightMul}
+            distance={RUNE_GLOW_POINT_DISTANCE * snap.runeGlowDistanceMul}
             decay={2}
           />
         );
@@ -1145,8 +1226,8 @@ export function IslandScene({
         <pointLight
           position={[vfxForgeLightXZ.x, 1.45, vfxForgeLightXZ.z]}
           color={0xffaa66}
-          intensity={isNightAmbiance ? 1.28 : 0.9}
-          distance={isNightAmbiance ? 8.5 : 7}
+          intensity={snap.forgeIntensity}
+          distance={snap.forgeDistance}
           decay={2}
         />
       )}
@@ -1258,8 +1339,10 @@ export function IslandScene({
               <CharacterModel
                 pose={charPose}
                 mouseGroundRef={mouseGroundRef}
+                tpsCameraStateRef={tpsCameraStateRef}
                 playableVariant={playableVariant}
                 equippedRightHand={equippedRightHand}
+                stowedBackItem={stowedBackItem}
               />
             </Suspense>
             <SkullyCompanion pose={charPose} />
@@ -1369,114 +1452,13 @@ export function IslandScene({
                 />
               ))}
               <Suspense fallback={null}>
-                <CharacterModel
-                  pose={charPose}
-                  mouseGroundRef={mouseGroundRef}
-                  playableVariant={playableVariant}
-                  equippedRightHand={equippedRightHand}
-                />
-              </Suspense>
-              <SkullyCompanion pose={charPose} />
-              <ChopParticles
-                gx={charPose.gx}
-                gy={charPose.gy}
-                isChopping={charPose.animState === "chop"}
-              />
-              <SpellParticles spellCastRef={spellCastRef} />
-              {magicTowerTiles.length > 0 && (
-                <MagicTowerParticles magicTowerTiles={magicTowerTiles} />
-              )}
-              {wellTiles.length > 0 && (
-                <WorldParticles
-                  positions={wellTiles}
-                  style="bubbling"
-                  color={WELL_BUBBLE_COLOR}
-                  count={WELL_BUBBLE_COUNT}
-                  size={WELL_BUBBLE_SIZE}
-                  luminanceBoost={WELL_BUBBLE_LUMINANCE_BOOST}
-                />
-              )}
-              {runeTiles.length > 0 && (
-                <WorldParticles
-                  positions={runeTiles}
-                  style="runeHelix"
-                  color={RUNE_HELIX_COLOR_CYCLE.from}
-                  count={RUNE_HELIX_COUNT}
-                  size={RUNE_HELIX_SIZE}
-                  luminanceBoost={RUNE_HELIX_LUMINANCE_BOOST}
-                  offsetY={RUNE_VFX_OFFSET_Y}
-                  bubblingColorCycle={RUNE_HELIX_COLOR_CYCLE}
-                />
-              )}
-              {forgeTiles.length > 0 && (
-                <WorldParticles
-                  positions={forgeTiles}
-                  style="smoke"
-                  color={0x999999}
-                  count={14}
-                  size={0.04}
-                  tileSize={2}
-                  offsetY={1.6}
-                  offsetX={-0.80}
-                  offsetZ={-0.35}
-                />
-              )}
-              {hasMiningTile && playableVariant !== "mining_man" && (
-                <MiningManNPC
-                  island={island}
-                  patrolIslandKey={npcPatrolIslandKey}
-                  isTalking={miningManTalking}
-                  npcPosRef={npcPosRef}
-                  playerGx={charPose.gx}
-                  playerGy={charPose.gy}
-                />
-              )}
-              {hasMagicTower && playableVariant !== "magic_man" && (
-                <MagicManNPC
-                  island={island}
-                  patrolIslandKey={npcPatrolIslandKey}
-                  isTalking={magicManTalking}
-                  npcPosRef={magicManNpcPosRef}
-                  playerGx={charPose.gx}
-                  playerGy={charPose.gy}
-                />
-              )}
-              {hasKaserneTile && playableVariant !== "fight_man" && (
-                <FightManNPCWithSuspense
-                  island={island}
-                  patrolIslandKey={npcPatrolIslandKey}
-                  isTalking={fightManTalking}
-                  npcPosRef={fightManNpcPosRef}
-                  playerGx={charPose.gx}
-                  playerGy={charPose.gy}
-                />
-              )}
-            </FloatingBob>
-
-            {ghostCell && selectedTileType && (
-              <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} tileType={selectedTileType} />
-            )}
-          </>
-        ) : (
-          <FloatingBob>
-            {island.tiles.map((tile) => (
-              <TileModel
-                key={tile.id}
-                tile={tile}
-                hovered={!tpsModeActive && tile.id === hoveredTileId}
-                faded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`tile:${tile.id}`)}
-                decorationFaded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`deco:${tile.id}`)}
-                onHoverEnter={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(tile.id)}
-                onHoverLeave={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(null)}
-                cameraOccludersRef={cameraOccludersRef}
-              />
-            ))}
-            <Suspense fallback={null}>
               <CharacterModel
                 pose={charPose}
                 mouseGroundRef={mouseGroundRef}
+                tpsCameraStateRef={tpsCameraStateRef}
                 playableVariant={playableVariant}
                 equippedRightHand={equippedRightHand}
+                stowedBackItem={stowedBackItem}
               />
             </Suspense>
             <SkullyCompanion pose={charPose} />
@@ -1554,7 +1536,112 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
-          </FloatingBob>
+            </FloatingBob>
+
+            {ghostCell && selectedTileType && (
+              <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} tileType={selectedTileType} />
+            )}
+          </>
+        ) : (
+          <FloatingBob>
+            {island.tiles.map((tile) => (
+              <TileModel
+                key={tile.id}
+                tile={tile}
+                hovered={!tpsModeActive && tile.id === hoveredTileId}
+                faded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`tile:${tile.id}`)}
+                decorationFaded={gameplayOccluderFadeActive && fadedOccluderKeySet.has(`deco:${tile.id}`)}
+                onHoverEnter={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(tile.id)}
+                onHoverLeave={tpsModeActive ? undefined : () => setHoveredTileIdSmooth(null)}
+                cameraOccludersRef={cameraOccludersRef}
+              />
+            ))}
+            <Suspense fallback={null}>
+              <CharacterModel
+                pose={charPose}
+                mouseGroundRef={mouseGroundRef}
+                tpsCameraStateRef={tpsCameraStateRef}
+                playableVariant={playableVariant}
+                equippedRightHand={equippedRightHand}
+                stowedBackItem={stowedBackItem}
+              />
+            </Suspense>
+            <SkullyCompanion pose={charPose} />
+            <ChopParticles
+              gx={charPose.gx}
+              gy={charPose.gy}
+              isChopping={charPose.animState === "chop"}
+            />
+            <SpellParticles spellCastRef={spellCastRef} />
+            {magicTowerTiles.length > 0 && (
+              <MagicTowerParticles magicTowerTiles={magicTowerTiles} />
+            )}
+            {wellTiles.length > 0 && (
+              <WorldParticles
+                positions={wellTiles}
+                style="bubbling"
+                color={WELL_BUBBLE_COLOR}
+                count={WELL_BUBBLE_COUNT}
+                size={WELL_BUBBLE_SIZE}
+                luminanceBoost={WELL_BUBBLE_LUMINANCE_BOOST}
+              />
+            )}
+            {runeTiles.length > 0 && (
+              <WorldParticles
+                positions={runeTiles}
+                style="runeHelix"
+                color={RUNE_HELIX_COLOR_CYCLE.from}
+                count={RUNE_HELIX_COUNT}
+                size={RUNE_HELIX_SIZE}
+                luminanceBoost={RUNE_HELIX_LUMINANCE_BOOST}
+                offsetY={RUNE_VFX_OFFSET_Y}
+                bubblingColorCycle={RUNE_HELIX_COLOR_CYCLE}
+              />
+            )}
+            {forgeTiles.length > 0 && (
+              <WorldParticles
+                positions={forgeTiles}
+                style="smoke"
+                color={0x999999}
+                count={14}
+                size={0.04}
+                tileSize={2}
+                offsetY={1.6}
+                offsetX={-0.80}
+                offsetZ={-0.35}
+              />
+            )}
+            {hasMiningTile && playableVariant !== "mining_man" && (
+              <MiningManNPC
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                isTalking={miningManTalking}
+                npcPosRef={npcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            {hasMagicTower && playableVariant !== "magic_man" && (
+              <MagicManNPC
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                isTalking={magicManTalking}
+                npcPosRef={magicManNpcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            {hasKaserneTile && playableVariant !== "fight_man" && (
+              <FightManNPCWithSuspense
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                isTalking={fightManTalking}
+                npcPosRef={fightManNpcPosRef}
+                playerGx={charPose.gx}
+                playerGy={charPose.gy}
+              />
+            )}
+            </FloatingBob>
         )}
 
         {!debugMode && !editMode && ghostCell && selectedTileType && (
@@ -1690,25 +1777,27 @@ export function IslandScene({
         <Preload all />
       </Suspense>
 
-      <EffectComposer>
-        <Bloom
-          intensity={isNightAmbiance ? 0.68 : 0.55}
-          luminanceThreshold={isNightAmbiance ? 0.42 : 0.72}
-          luminanceSmoothing={0.08}
-          mipmapBlur
-        />
-        <Vignette offset={0.3} darkness={0.9} opacity={showVignette ? 1 : 0} />
-        <Outline
-          selection={hoveredOutlineRef ? [hoveredOutlineRef] : []}
-          selectionLayer={HOVER_OUTLINE_SELECTION_LAYER}
-          visibleEdgeColor={0x88ccff}
-          hiddenEdgeColor={0x224466}
-          edgeStrength={4}
-          blur={false}
-          xRay={false}
-        />
-        <FXAA />
-      </EffectComposer>
+      {postProcessingEnabled ? (
+        <EffectComposer>
+          <Bloom
+            intensity={snap.bloomIntensity}
+            luminanceThreshold={snap.bloomLuminanceThreshold}
+            luminanceSmoothing={0.08}
+            mipmapBlur
+          />
+          <Vignette offset={0.3} darkness={0.9} opacity={showVignette ? 1 : 0} />
+          <Outline
+            selection={hoveredOutlineRef ? [hoveredOutlineRef] : []}
+            selectionLayer={HOVER_OUTLINE_SELECTION_LAYER}
+            visibleEdgeColor={0x88ccff}
+            hiddenEdgeColor={0x224466}
+            edgeStrength={4}
+            blur={false}
+            xRay={false}
+          />
+          <FXAA />
+        </EffectComposer>
+      ) : null}
     </>
   );
 }

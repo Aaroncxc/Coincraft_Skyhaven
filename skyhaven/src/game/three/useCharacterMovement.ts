@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useMemo, type MutableRefObject } from "react";
+import { flushSync } from "react-dom";
 import { useFrame } from "@react-three/fiber";
 import type { ActionType, AssetKey, FocusSession, IslandId, IslandMap } from "../types";
 import { TREE_TILES, FARM_TILES } from "../types";
@@ -49,6 +50,10 @@ export type CharacterPose3D = {
   chopSwingId?: number;
   /** when set, overrides direction-based rotation to face this angle (radians) */
   facingAngle?: number;
+  /** Fight Man TPS: in-place turn toward camera (`adv_`/`sword_` turn90L/R clips). */
+  fightManTurnStep?: "left" | "right";
+  /** TPS: RMB / pointer-look active (`IslandCamera` steering); drives Fight Man `rmbLook` clip + head IK gating. */
+  tpsRmbLook?: boolean;
 };
 
 export type CharacterMovementDebugSnapshot = {
@@ -88,6 +93,18 @@ const ROLL_DISTANCE = 1.05;
 const INPUT_STUCK_UNSTICK_SEC = 2.5;
 const TPS_STUCK_VEL_EPS = 0.04;
 const ISO_FRAME_MOVE_EPS = 0.002;
+
+const FIGHT_MAN_TURN_CLIP_SEC = 0.55;
+const FIGHT_MAN_TURN_COOLDOWN_SEC = 1.2;
+/** Idle TPS: if |camera yaw − body yaw| exceeds this, play a step turn (radians ~64°). */
+const FIGHT_MAN_TURN_DELTA_MIN_RAD = 1.12;
+
+function wrapMovementAngle(angle: number): number {
+  let wrapped = angle;
+  while (wrapped > Math.PI) wrapped -= Math.PI * 2;
+  while (wrapped < -Math.PI) wrapped += Math.PI * 2;
+  return wrapped;
+}
 /**
  * World-units between footstep SFX (travel distance × TILE_UNIT_SIZE).
  * Tuned to the default main-char walk/run GLB cadence (was ~0.44; sounded ~2× too fast).
@@ -507,6 +524,17 @@ export function useCharacterMovement(
   playerSfxVolumeRef.current = options.playerSfxVolume ?? 0;
   const equippedRightHandRef = useRef<EquippableItemId | null>(options.equippedRightHand ?? null);
   equippedRightHandRef.current = options.equippedRightHand ?? null;
+  const playableVariantRef = useRef(options.playableVariant ?? "default");
+  playableVariantRef.current = options.playableVariant ?? "default";
+  const fightManTurnTimeRef = useRef(0);
+  const fightManTurnStepRef = useRef<"left" | "right" | null>(null);
+  const fightManTurnStartFacingRef = useRef<number | null>(null);
+  const fightManTurnCooldownRef = useRef(0);
+  const clearFightManTurnRefs = () => {
+    fightManTurnStepRef.current = null;
+    fightManTurnTimeRef.current = 0;
+    fightManTurnStartFacingRef.current = null;
+  };
   const avatarGroundProfileRef = useRef(avatarGroundProfile);
   avatarGroundProfileRef.current = avatarGroundProfile;
   const spellTimerRef = useRef<number>(0);
@@ -710,6 +738,7 @@ export function useCharacterMovement(
           rollStartRef.current = { gx: startGx, gy: startGy };
           rollTargetRef.current = { gx: landGx, gy: landGy };
           rollTimerRef.current = ROLL_DURATION;
+          clearFightManTurnRefs();
           const dir: "left" | "right" = dirX > 0 ? "right" : dirX < 0 ? "left" : pose.direction;
           const rollFacingAngle = getFacingAngleFromVector(dirX, dirZ);
           if (tpsViewYaw != null) {
@@ -759,6 +788,7 @@ export function useCharacterMovement(
             dirZ = 0;
           }
           spellTimerRef.current = 1.05;
+          clearFightManTurnRefs();
           const spellFacingAngle = getFacingAngleFromVector(dirX, dirZ);
           if (tpsViewYaw != null) {
             tpsFacingYawRef.current = spellFacingAngle;
@@ -770,6 +800,7 @@ export function useCharacterMovement(
             isManualMove: true,
             facingAngle: spellFacingAngle,
             locomotionStrafe: "none",
+            fightManTurnStep: undefined,
           };
           setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
           if (spellCastRefRef.current) {
@@ -1001,6 +1032,9 @@ export function useCharacterMovement(
 
   useFrame((_, delta) => {
     const dt = Math.min(0.05, delta);
+    if (fightManTurnCooldownRef.current > 0) {
+      fightManTurnCooldownRef.current = Math.max(0, fightManTurnCooldownRef.current - dt);
+    }
     const frameStartGx = poseRef.current.gx;
     const frameStartGy = poseRef.current.gy;
     const keys = keysRef.current;
@@ -1035,6 +1069,8 @@ export function useCharacterMovement(
     const tiles = tileSetRef.current;
     let resolvedTpsFacingAngle = pose.facingAngle;
     const activePoiSession = activePoiSessionRef.current;
+    const tpsCamRmb = tpsCameraStateRefRef.current?.current;
+    const tpsRmbLookLive = Boolean(tpsCamRmb?.active && tpsCamRmb.steeringActive);
 
     if (
       activePoiSession &&
@@ -1052,6 +1088,7 @@ export function useCharacterMovement(
         isManualMove: false,
         facingAngle: activePoiSession.facingAngle ?? pose.facingAngle,
         locomotionStrafe: "none",
+        tpsRmbLook: tpsRmbLookLive,
       });
       poseRef.current = lockedPose;
       prevPoseRef.current = lockedPose;
@@ -1061,7 +1098,13 @@ export function useCharacterMovement(
 
     if (poiMenuOpenRef.current && (pose.grounded ?? true)) {
       tpsVelocityRef.current = { x: 0, y: 0 };
-      poseRef.current = { ...pose, animState: "idle", isManualMove: false, locomotionStrafe: "none" };
+      poseRef.current = {
+        ...pose,
+        animState: "idle",
+        isManualMove: false,
+        locomotionStrafe: "none",
+        tpsRmbLook: tpsRmbLookLive,
+      };
       prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
       setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       return;
@@ -1087,15 +1130,20 @@ export function useCharacterMovement(
           tpsFacingYawRef.current ??
           poseRef.current.facingAngle ??
           tpsViewYaw;
-        poseRef.current = { ...poseRef.current, facingAngle };
+        poseRef.current = { ...poseRef.current, facingAngle, tpsRmbLook: tpsRmbLookLive };
         tpsFacingYawRef.current = facingAngle;
         wasTpsActiveRef.current = true;
       } else if (wasTpsActiveRef.current) {
         tpsVelocityRef.current = { x: 0, y: 0 };
         tpsFacingYawRef.current = undefined;
-        poseRef.current = { ...poseRef.current, facingAngle: undefined };
+        poseRef.current = {
+          ...poseRef.current,
+          facingAngle: undefined,
+          tpsRmbLook: tpsRmbLookLive,
+        };
         wasTpsActiveRef.current = false;
       }
+      poseRef.current = { ...poseRef.current, tpsRmbLook: tpsRmbLookLive };
       prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
       setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       return;
@@ -1120,11 +1168,13 @@ export function useCharacterMovement(
           animState: hasInput ? (isRunning ? "run" : "walk") : "idle",
           isManualMove: hasInput,
           locomotionStrafe: "none",
+          tpsRmbLook: tpsRmbLookLive,
         };
         prevPoseRef.current = syncPoseWithSurface({ ...poseRef.current });
         setRenderPose(syncPoseWithSurface({ ...poseRef.current }));
       }
     } else if (isChopping) {
+      clearFightManTurnRefs();
       tpsVelocityRef.current = { x: 0, y: 0 };
       poseRef.current = {
         ...pose,
@@ -1132,130 +1182,232 @@ export function useCharacterMovement(
         chopDuration: activeChopPlaybackSecRef.current,
         chopSwingId: chopSwingSerialRef.current,
         locomotionStrafe: "none",
+        fightManTurnStep: undefined,
       };
       resolvedTpsFacingAngle = pose.facingAngle;
     } else if (spellTimerRef.current > 0) {
       tpsVelocityRef.current = { x: 0, y: 0 };
-      poseRef.current = { ...pose, animState: "spell", locomotionStrafe: "none" };
+      poseRef.current = {
+        ...pose,
+        animState: "spell",
+        locomotionStrafe: "none",
+        fightManTurnStep: undefined,
+      };
       resolvedTpsFacingAngle = pose.facingAngle;
     } else if (tpsActive) {
-      let moveX = 0;
-      let moveY = 0;
-      const basis = getBasisFromYaw(tpsViewYaw);
-      if (keys.w || mouseForwardActive) { moveX += basis.forwardX; moveY += basis.forwardZ; }
-      if (keys.s) { moveX -= basis.forwardX; moveY -= basis.forwardZ; }
-      if (keys.a) { moveX -= basis.leftX; moveY -= basis.leftZ; }
-      if (keys.d) { moveX += basis.leftX; moveY += basis.leftZ; }
+      const isFightManTurning =
+        playableVariantRef.current === "fight_man" &&
+        fightManTurnTimeRef.current > 0 &&
+        fightManTurnStepRef.current !== null;
 
-      if (moveX !== 0 || moveY !== 0) {
-        lastMoveDir.current = { dx: moveX, dy: moveY };
-      }
-
-      const inputLen = Math.hypot(moveX, moveY);
-      const targetSpeed = isRunning ? MANUAL_RUN_GRID_SPEED : MANUAL_GRID_SPEED;
-      const desiredVelX = inputLen > 1e-4 ? (moveX / inputLen) * targetSpeed : 0;
-      const desiredVelY = inputLen > 1e-4 ? (moveY / inputLen) * targetSpeed : 0;
-      tpsVelocityRef.current = moveTowardVector2(
-        tpsVelocityRef.current.x,
-        tpsVelocityRef.current.y,
-        desiredVelX,
-        desiredVelY,
-        (inputLen > 1e-4 ? TPS_ACCEL : TPS_DECEL) * dt,
-      );
-      if (Math.hypot(tpsVelocityRef.current.x, tpsVelocityRef.current.y) <= TPS_STOP_EPSILON) {
+      if (isFightManTurning) {
+        fightManTurnTimeRef.current -= dt;
         tpsVelocityRef.current = { x: 0, y: 0 };
-      }
+        const step = fightManTurnStepRef.current!;
+        const startFacing = fightManTurnStartFacingRef.current ?? pose.facingAngle ?? tpsViewYaw;
+        if (fightManTurnTimeRef.current <= 0) {
+          fightManTurnStepRef.current = null;
+          fightManTurnStartFacingRef.current = null;
+          resolvedTpsFacingAngle = tpsViewYaw;
+          tpsFacingYawRef.current = tpsViewYaw;
+          poseRef.current = {
+            ...pose,
+            gx: pose.gx,
+            gy: pose.gy,
+            direction: pose.direction,
+            animState: "idle",
+            isManualMove: false,
+            locomotionStrafe: "none",
+            facingAngle: tpsViewYaw,
+            fightManTurnStep: undefined,
+          };
+        } else {
+          resolvedTpsFacingAngle = startFacing;
+          poseRef.current = {
+            ...pose,
+            gx: pose.gx,
+            gy: pose.gy,
+            animState: "idle",
+            isManualMove: false,
+            locomotionStrafe: "none",
+            facingAngle: startFacing,
+            fightManTurnStep: step,
+          };
+        }
+      } else {
+        let moveX = 0;
+        let moveY = 0;
+        const basis = getBasisFromYaw(tpsViewYaw);
+        if (keys.w || mouseForwardActive) {
+          moveX += basis.forwardX;
+          moveY += basis.forwardZ;
+        }
+        if (keys.s) {
+          moveX -= basis.forwardX;
+          moveY -= basis.forwardZ;
+        }
+        if (keys.a) {
+          moveX -= basis.leftX;
+          moveY -= basis.leftZ;
+        }
+        if (keys.d) {
+          moveX += basis.leftX;
+          moveY += basis.leftZ;
+        }
 
-      let velX = tpsVelocityRef.current.x;
-      let velY = tpsVelocityRef.current.y;
-      let nx = pose.gx + velX * dt;
-      let ny = pose.gy + velY * dt;
-      const grounded = pose.grounded ?? true;
-      if (
-        grounded &&
-        !canMoveGroundedToCell(
-          tiles,
-          blockedFootprintRef.current,
+        if (moveX !== 0 || moveY !== 0) {
+          lastMoveDir.current = { dx: moveX, dy: moveY };
+        }
+
+        const inputLen = Math.hypot(moveX, moveY);
+        const targetSpeed = isRunning ? MANUAL_RUN_GRID_SPEED : MANUAL_GRID_SPEED;
+        const desiredVelX = inputLen > 1e-4 ? (moveX / inputLen) * targetSpeed : 0;
+        const desiredVelY = inputLen > 1e-4 ? (moveY / inputLen) * targetSpeed : 0;
+        tpsVelocityRef.current = moveTowardVector2(
+          tpsVelocityRef.current.x,
+          tpsVelocityRef.current.y,
+          desiredVelX,
+          desiredVelY,
+          (inputLen > 1e-4 ? TPS_ACCEL : TPS_DECEL) * dt,
+        );
+        if (Math.hypot(tpsVelocityRef.current.x, tpsVelocityRef.current.y) <= TPS_STOP_EPSILON) {
+          tpsVelocityRef.current = { x: 0, y: 0 };
+        }
+
+        let velX = tpsVelocityRef.current.x;
+        let velY = tpsVelocityRef.current.y;
+        let nx = pose.gx + velX * dt;
+        let ny = pose.gy + velY * dt;
+        const grounded = pose.grounded ?? true;
+        if (
+          grounded &&
+          !canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            nx,
+            ny,
+            avatarGroundProfileRef.current.stepHeight,
+          )
+        ) {
+          const canMoveX = canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            pose.gx + velX * dt,
+            pose.gy,
+            avatarGroundProfileRef.current.stepHeight,
+          );
+          const canMoveY = canMoveGroundedToCell(
+            tiles,
+            blockedFootprintRef.current,
+            surfaceDataRef.current,
+            pose.gx,
+            pose.gy,
+            pose.gx,
+            pose.gy + velY * dt,
+            avatarGroundProfileRef.current.stepHeight,
+          );
+          if (canMoveX && !canMoveY) {
+            ny = pose.gy;
+            velY = 0;
+          } else if (canMoveY && !canMoveX) {
+            nx = pose.gx;
+            velX = 0;
+          } else {
+            nx = pose.gx;
+            ny = pose.gy;
+            velX = 0;
+            velY = 0;
+          }
+        }
+
+        const resolvedMove = resolveHorizontalCollision(
           surfaceDataRef.current,
           pose.gx,
           pose.gy,
           nx,
           ny,
-          avatarGroundProfileRef.current.stepHeight,
-        )
-      ) {
-        const canMoveX = canMoveGroundedToCell(
-          tiles,
-          blockedFootprintRef.current,
-          surfaceDataRef.current,
-          pose.gx,
-          pose.gy,
-          pose.gx + velX * dt,
-          pose.gy,
-          avatarGroundProfileRef.current.stepHeight,
+          avatarGroundProfileRef.current.collisionRadius,
         );
-        const canMoveY = canMoveGroundedToCell(
-          tiles,
-          blockedFootprintRef.current,
-          surfaceDataRef.current,
-          pose.gx,
-          pose.gy,
-          pose.gx,
-          pose.gy + velY * dt,
-          avatarGroundProfileRef.current.stepHeight,
-        );
-        if (canMoveX && !canMoveY) {
-          ny = pose.gy;
-          velY = 0;
-        } else if (canMoveY && !canMoveX) {
-          nx = pose.gx;
-          velX = 0;
-        } else {
-          nx = pose.gx;
-          ny = pose.gy;
-          velX = 0;
-          velY = 0;
+        if (resolvedMove.x !== nx) velX = 0;
+        if (resolvedMove.z !== ny) velY = 0;
+        nx = resolvedMove.x;
+        ny = resolvedMove.z;
+        tpsVelocityRef.current = { x: velX, y: velY };
+
+        const actualSpeed = Math.hypot(velX, velY);
+        let dirStr: "left" | "right" = pose.direction;
+        if (velX > 0.01) dirStr = "right";
+        else if (velX < -0.01) dirStr = "left";
+        const airbornTps = !(pose.grounded ?? true);
+
+        let locomotionStrafe: NonNullable<CharacterPose3D["locomotionStrafe"]> = "none";
+        if (playableVariantRef.current === "fight_man") {
+          if (keys.w && keys.a && !keys.s) locomotionStrafe = "left";
+          else if (keys.w && keys.d && !keys.s) locomotionStrafe = "right";
         }
-      }
 
-      const resolvedMove = resolveHorizontalCollision(
-        surfaceDataRef.current,
-        pose.gx,
-        pose.gy,
-        nx,
-        ny,
-        avatarGroundProfileRef.current.collisionRadius,
-      );
-      if (resolvedMove.x !== nx) velX = 0;
-      if (resolvedMove.z !== ny) velY = 0;
-      nx = resolvedMove.x;
-      ny = resolvedMove.z;
-      tpsVelocityRef.current = { x: velX, y: velY };
-
-      const actualSpeed = Math.hypot(velX, velY);
-      let dirStr: "left" | "right" = pose.direction;
-      if (velX > 0.01) dirStr = "right";
-      else if (velX < -0.01) dirStr = "left";
-      const airbornTps = !(pose.grounded ?? true);
-      poseRef.current = {
-        ...pose,
-        gx: nx,
-        gy: ny,
-        direction: dirStr,
-        animState: airbornTps
-          ? "jump"
-          : actualSpeed > TPS_MOVE_ANIM_EPSILON
-            ? actualSpeed > MANUAL_GRID_SPEED * 1.5
-              ? "run"
-              : "walk"
+        poseRef.current = {
+          ...pose,
+          gx: nx,
+          gy: ny,
+          direction: dirStr,
+          animState: airbornTps
+            ? "jump"
+            : actualSpeed > TPS_MOVE_ANIM_EPSILON
+              ? actualSpeed > MANUAL_GRID_SPEED * 1.5
+                ? "run"
+                : "walk"
             : "idle",
-        isManualMove: hasInput || actualSpeed > TPS_MOVE_ANIM_EPSILON,
-        locomotionStrafe: "none",
-      };
-      if (actualSpeed > TPS_MOVE_ANIM_EPSILON) {
-        resolvedTpsFacingAngle = getFacingAngleFromVector(velX, velY);
-      } else {
-        resolvedTpsFacingAngle = tpsFacingYawRef.current ?? pose.facingAngle ?? tpsViewYaw;
+          isManualMove: hasInput || actualSpeed > TPS_MOVE_ANIM_EPSILON,
+          locomotionStrafe,
+          fightManTurnStep: undefined,
+        };
+        if (actualSpeed > TPS_MOVE_ANIM_EPSILON) {
+          resolvedTpsFacingAngle = getFacingAngleFromVector(velX, velY);
+        } else {
+          resolvedTpsFacingAngle = tpsFacingYawRef.current ?? pose.facingAngle ?? tpsViewYaw;
+        }
+
+        const strictTpsIdle =
+          actualSpeed <= TPS_MOVE_ANIM_EPSILON &&
+          !keys.w &&
+          !keys.s &&
+          !keys.a &&
+          !keys.d &&
+          !mouseForwardActive;
+        if (
+          playableVariantRef.current === "fight_man" &&
+          fightManTurnCooldownRef.current <= 0 &&
+          !airbornTps &&
+          strictTpsIdle &&
+          !tpsCamRmb?.steeringActive
+        ) {
+          const bodyYaw = resolvedTpsFacingAngle;
+          const deltaTurn = wrapMovementAngle(tpsViewYaw - bodyYaw);
+          if (Math.abs(deltaTurn) >= FIGHT_MAN_TURN_DELTA_MIN_RAD) {
+            const step: "left" | "right" = deltaTurn > 0 ? "right" : "left";
+            fightManTurnStepRef.current = step;
+            fightManTurnStartFacingRef.current = bodyYaw;
+            fightManTurnTimeRef.current = FIGHT_MAN_TURN_CLIP_SEC;
+            fightManTurnCooldownRef.current = FIGHT_MAN_TURN_COOLDOWN_SEC;
+            tpsVelocityRef.current = { x: 0, y: 0 };
+            poseRef.current = {
+              ...poseRef.current,
+              animState: "idle",
+              isManualMove: false,
+              locomotionStrafe: "none",
+              facingAngle: bodyYaw,
+              fightManTurnStep: step,
+            };
+            resolvedTpsFacingAngle = bodyYaw;
+          }
+        }
       }
     } else if (hasInput) {
       tpsVelocityRef.current = { x: 0, y: 0 };
@@ -1554,7 +1706,14 @@ export function useCharacterMovement(
     } else if (wasTpsActiveRef.current) {
       tpsVelocityRef.current = { x: 0, y: 0 };
       tpsFacingYawRef.current = undefined;
-      poseRef.current = { ...poseRef.current, facingAngle: undefined };
+      fightManTurnStepRef.current = null;
+      fightManTurnTimeRef.current = 0;
+      fightManTurnStartFacingRef.current = null;
+      poseRef.current = {
+        ...poseRef.current,
+        facingAngle: undefined,
+        fightManTurnStep: undefined,
+      };
       wasTpsActiveRef.current = false;
       inputStuckTimerRef.current = 0;
       inputStuckRoundedKeyRef.current = "";
@@ -1593,6 +1752,7 @@ export function useCharacterMovement(
             p.animState = hasInput ? (isRunning ? "run" : "walk") : "idle";
             p.isManualMove = hasInput;
             p.locomotionStrafe = "none";
+            p.fightManTurnStep = undefined;
           }
         } else if (
           p.animState !== "roll" &&
@@ -1716,7 +1876,7 @@ export function useCharacterMovement(
       }
     }
 
-    const next = syncPoseWithSurface({ ...poseRef.current });
+    const next = syncPoseWithSurface({ ...poseRef.current, tpsRmbLook: tpsRmbLookLive });
 
     {
       const sfx01 = Math.max(0, Math.min(100, playerSfxVolumeRef.current)) / 100;
@@ -1760,6 +1920,9 @@ export function useCharacterMovement(
     const chopSwingChanged = (next.chopSwingId ?? 0) !== (prev.chopSwingId ?? 0);
     const strafeChanged =
       (next.locomotionStrafe ?? "none") !== (prev.locomotionStrafe ?? "none");
+    const fightManTurnChanged =
+      (next.fightManTurnStep ?? null) !== (prev.fightManTurnStep ?? null);
+    const tpsRmbLookChanged = (next.tpsRmbLook ?? false) !== (prev.tpsRmbLook ?? false);
     if (
       next.gx !== prev.gx ||
       next.gy !== prev.gy ||
@@ -1771,10 +1934,19 @@ export function useCharacterMovement(
       worldYChanged ||
       groundedChanged ||
       chopSwingChanged ||
-      strafeChanged
+      strafeChanged ||
+      fightManTurnChanged ||
+      tpsRmbLookChanged
     ) {
       prevPoseRef.current = next;
-      setRenderPose(next);
+      // Movement runs in R3F `useFrame`; `setState` alone can commit after this frame's GL draw.
+      // Jump clips often finish before landing; one stale "jump" props frame leaves a T-pose gap.
+      const leavingJumpAnim = prev.animState === "jump" && next.animState !== "jump";
+      if (leavingJumpAnim) {
+        flushSync(() => setRenderPose(next));
+      } else {
+        setRenderPose(next);
+      }
     }
   });
 

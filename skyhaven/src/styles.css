@@ -522,6 +522,14 @@ body {
   z-index: 10;
 }
 
+.frame-bg--night {
+  z-index: 11;
+}
+
+.skyhaven-frame.auto-day-night-cycle .frame-bg {
+  transition: none;
+}
+
 /* Vector-style bezel: constant thickness at any window size (no stretched PNG). */
 .frame-border {
   position: absolute;
@@ -1726,7 +1734,7 @@ body {
 }
 
 .sidebar-dropdown.kind-options.is-open {
-  max-height: clamp(206px, 31vh, 330px);
+  max-height: clamp(280px, 48vh, 440px);
 }
 
 .sidebar-dropdown.kind-islands.is-open {
@@ -1762,7 +1770,11 @@ body {
 }
 
 .panel-options {
-  height: clamp(206px, 31vh, 330px);
+  height: clamp(280px, 48vh, 440px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .panel-islands {
@@ -2460,11 +2472,108 @@ body {
   gap: 0.56rem;
 }
 
+.options-panel-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 0.4rem 0.45rem 0.55rem;
+  box-sizing: border-box;
+}
+
+.options-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.32rem;
+  margin-bottom: 0.45rem;
+}
+
+.options-tab {
+  flex: 1;
+  border: 1px solid rgba(255, 241, 190, 0.55);
+  border-radius: 8px;
+  background: rgba(29, 38, 28, 0.45);
+  color: rgba(242, 246, 237, 0.88);
+  font-family: "Jersey10", Impact, sans-serif;
+  font-size: clamp(12px, 1.35vw, 18px);
+  letter-spacing: 0.04em;
+  padding: 0.35rem 0.2rem;
+  cursor: pointer;
+  line-height: 1.1;
+  min-height: clamp(30px, 4vh, 40px);
+}
+
+.options-tab:hover {
+  background: rgba(50, 62, 48, 0.55);
+  border-color: rgba(255, 241, 190, 0.75);
+}
+
+.options-tab.is-active {
+  border-color: rgba(255, 211, 107, 0.65);
+  background: rgba(255, 211, 107, 0.2);
+  color: #1a1510;
+}
+
+.options-panel-inner .settings-list {
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.options-tab-hint {
+  margin: 0;
+  padding: 0.15rem 0.1rem 0;
+  font-size: clamp(11px, 1.25vw, 15px);
+  line-height: 1.35;
+  color: rgba(16, 20, 23, 0.78);
+}
+
 .settings-row {
   display: flex;
   align-items: center;
   gap: 0.52rem;
   min-height: clamp(30px, 4vh, 48px);
+}
+
+.settings-row--checkbox {
+  justify-content: space-between;
+}
+
+.settings-row--checkbox .settings-label {
+  width: auto;
+  flex: 1;
+}
+
+.settings-row--checkbox input[type="checkbox"] {
+  width: clamp(22px, 3vw, 32px);
+  height: clamp(22px, 3vw, 32px);
+  flex-shrink: 0;
+}
+
+.debug-fps-overlay {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 260;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: ui-monospace, Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #c8e8ff;
+  background: rgba(8, 12, 20, 0.72);
+  border: 1px solid rgba(136, 204, 255, 0.35);
+  pointer-events: none;
 }
 
 .settings-label {
@@ -2597,7 +2706,8 @@ body {
 .skyhaven-frame.is-expanded .sidebar-dropdown .action-item,
 .skyhaven-frame.is-expanded .sidebar-dropdown .generic-item,
 .skyhaven-frame.is-expanded .sidebar-dropdown .settings-label,
-.skyhaven-frame.is-expanded .sidebar-dropdown .settings-chip {
+.skyhaven-frame.is-expanded .sidebar-dropdown .settings-chip,
+.skyhaven-frame.is-expanded .sidebar-dropdown .options-tab {
   font-family: "Koulen", Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
 }
 
@@ -3049,7 +3159,9 @@ body {
 
 .profile-character-stage {
   position: relative;
+  height: 332px;
   min-height: 332px;
+  flex-shrink: 0;
   border-radius: 14px;
   border: 1px solid rgba(136, 204, 255, 0.22);
   background:
@@ -3425,6 +3537,7 @@ body {
   }
 
   .profile-character-stage {
+    height: 268px;
     min-height: 268px;
   }
 }
@@ -4483,6 +4596,7 @@ body {
 .character-debug-stage {
   position: relative;
   min-height: 420px;
+  height: 420px;
   border-radius: 16px;
   border: 1px solid rgba(136, 204, 255, 0.2);
   background:
@@ -4498,8 +4612,11 @@ body {
 }
 
 .character-debug-canvas {
+  display: block;
   width: 100% !important;
-  height: 100% !important;
+  /* Explicit height: % height fails when parent only has min-height (canvas collapses to 0). */
+  height: 420px !important;
+  min-height: 420px;
 }
 
 .character-debug-stage-note {
@@ -4656,6 +4773,12 @@ body {
   }
 
   .character-debug-stage {
+    min-height: 360px;
+    height: 360px;
+  }
+
+  .character-debug-canvas {
+    height: 360px !important;
     min-height: 360px;
   }
 }

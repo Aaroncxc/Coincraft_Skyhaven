@@ -5,6 +5,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useState,
   type MutableRefObject,
   type RefObject,
 } from "react";
@@ -32,8 +33,9 @@ import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import { getPlayableAvatarGroundProfile } from "./avatarGrounding";
-import type { CharacterPose3D } from "./useCharacterMovement";
+import type { CharacterPose3D, TpsCameraState } from "./useCharacterMovement";
 import {
+  getEquippableItemBackTransform,
   getEquippableItemRightHandTransform,
   type EquippableItemId,
   type ItemSocketTransform,
@@ -44,12 +46,20 @@ import { FBXLoader } from "./fbxLoader";
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 useGLTF.preload(AXE_PROP_GLB);
 useGLTF.preload(MAIN_CHAR_AXE_CHOP_ANIM_GLB);
+useLoader.preload(FBXLoader, FIGHT_MAN_SWORD_MODELS.base);
+useLoader.preload(FBXLoader, FIGHT_MAN_SWORD_MODELS.idle0);
+useLoader.preload(FBXLoader, FIGHT_MAN_ADV_MODELS.idle0);
 
 const CROSSFADE_DURATION = 0.14;
 const BASE_ROT_Y = -Math.PI / 4;
 
 function isPrevClipJump(prevClipName: string): boolean {
-  return prevClipName === "jump" || prevClipName.endsWith("_jump");
+  return (
+    prevClipName === "jump" ||
+    prevClipName.endsWith("_jump") ||
+    prevClipName.endsWith("_fallIdle") ||
+    prevClipName.endsWith("_landing")
+  );
 }
 
 /** Only use `crossFadeFrom(..., warp: true)` when the outgoing clip is not jump (jump uses timeScale≠1; warp breaks the fade). */
@@ -79,10 +89,13 @@ function transitionAnimationAction(
     return;
   }
   if (leavingJump && prevAction) {
-    prevAction.stop();
-    nextAction.setEffectiveWeight(0);
+    // Jump often already finished (`LoopOnce` + `clampWhenFinished`) before physics lands, so
+    // `isRunning()` is false — fadeIn from 0 then leaves a gap. `crossFadeFrom` also starts
+    // walk at weight 0 until the next mixer tick. Snap locomotion on first, then stop jump.
+    nextAction.stopFading();
+    nextAction.setEffectiveWeight(1);
     nextAction.play();
-    nextAction.fadeIn(Math.max(CROSSFADE_DURATION * 1.5, 0.22));
+    prevAction.stop();
     return;
   }
   if (prevAction && prevAction.isRunning()) {
@@ -94,6 +107,11 @@ function transitionAnimationAction(
 const CHAR_SCALE = 0.294;
 /** FBX from Mixamo uses centimetres (1 unit = 1 cm); GLB characters use metres. */
 const FIGHT_MAN_FBX_SCALE = CHAR_SCALE * 0.01;
+/**
+ * Overlay previews now use the same Fight Man mesh scale as gameplay.
+ * An extra orbit-only multiplier pushed the camera inside the torso.
+ */
+export const FIGHT_MAN_ORBIT_MESH_SCALE_MULT = 1;
 const JUMP_ARC_HEIGHT = 0.5;
 const JUMP_DURATION_DEFAULT = 0.38;
 const SPELL_DURATION_DEFAULT = 1.05;
@@ -101,9 +119,20 @@ const DEFAULT_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("default").visual
 const MINING_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("mining_man").visualGroundOffsetY;
 const MAGIC_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("magic_man").visualGroundOffsetY;
 const FIGHT_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("fight_man").visualGroundOffsetY;
+/** Max head yaw (rad) toward TPS camera vs body facing; approx. ±54°. */
+const FIGHT_MAN_HEAD_YAW_MAX_RAD = 0.95;
+/** Lerp toward target head yaw per second (higher = snappier, less fight with fast idle). */
+const FIGHT_MAN_HEAD_LOOK_SMOOTH_SPEED = 14;
 const warnedMissingRightHandSocketVariants = new Set<PlayableCharacterId>();
+const warnedMissingBackSocketVariants = new Set<PlayableCharacterId>();
 
 export type RightHandSocketState = {
+  found: boolean;
+  variant: PlayableCharacterId;
+  nodeName: string | null;
+};
+
+export type BackSocketState = {
   found: boolean;
   variant: PlayableCharacterId;
   nodeName: string | null;
@@ -112,10 +141,20 @@ export type RightHandSocketState = {
 type BaseProps = {
   pose: CharacterPose3D;
   mouseGroundRef?: MutableRefObject<THREE.Vector3 | null>;
+  /** TPS camera state; fight_man uses `viewYaw` for procedural head look (no extra React renders). */
+  tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
+  /** `preview` is for lightweight overlay canvases; `world` keeps the full gameplay animation set. */
+  renderContext?: "world" | "preview";
   equippedRightHand?: EquippableItemId | null;
   equippedRightHandTransformOverride?: ItemSocketTransform | null;
+  /** Stowed weapon when in inventory but not on action bar (mutually exclusive with hand in App). */
+  stowedBackItem?: EquippableItemId | null;
+  equippedBackTransformOverride?: ItemSocketTransform | null;
   onEquippedToolObjectChange?: (toolObject: THREE.Object3D | null) => void;
   onRightHandSocketStateChange?: (state: RightHandSocketState) => void;
+  onBackSocketStateChange?: (state: BackSocketState) => void;
+  /** Character debug / profile: pass `FIGHT_MAN_ORBIT_MESH_SCALE_MULT` for `fight_man` only. */
+  fightManOrbitMeshScaleMult?: number;
 };
 
 function applySocketTransform(object: THREE.Object3D, transform: ItemSocketTransform): void {
@@ -228,18 +267,63 @@ function findRightHandAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D 
   return found;
 }
 
+/** Upper spine / chest; GLB and Mixamo naming varies. */
+function findBackAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D | null {
+  const exact = [
+    "Spine2",
+    "spine_02",
+    "mixamorigSpine2",
+    "Chest",
+    "UpperChest",
+    "mixamorigSpine1",
+    "mixamorigSpine",
+    "Spine1",
+    "spine1",
+  ];
+  for (const name of exact) {
+    const o = modelRoot.getObjectByName(name);
+    if (o) return o;
+  }
+  let found: THREE.Object3D | null = null;
+  modelRoot.traverse((child) => {
+    if (found) return;
+    const n = child.name;
+    const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
+    if (/spine2$/i.test(leaf) || /^chest$/i.test(leaf) || /upperchest/i.test(leaf)) {
+      found = child;
+    }
+  });
+  if (!found) {
+    modelRoot.traverse((child) => {
+      if (found) return;
+      const n = child.name;
+      const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
+      if (/spine/i.test(leaf) && !/shoulder/i.test(leaf)) {
+        found = child;
+      }
+    });
+  }
+  return found;
+}
+
 function useAttachRightHandSocket(
   modelRef: RefObject<THREE.Group | null>,
   rightHandSocket: THREE.Group,
   playableVariant: PlayableCharacterId,
   onRightHandSocketStateChange?: (state: RightHandSocketState) => void,
-): void {
+): boolean {
+  const [socketReady, setSocketReady] = useState(false);
+
   useEffect(() => {
     const modelRoot = modelRef.current;
-    if (!modelRoot) return;
+    if (!modelRoot) {
+      setSocketReady(false);
+      return;
+    }
 
     const rightHand = findRightHandAttachmentBone(modelRoot);
     if (!rightHand) {
+      setSocketReady(false);
       if (!warnedMissingRightHandSocketVariants.has(playableVariant)) {
         warnedMissingRightHandSocketVariants.add(playableVariant);
         console.warn(
@@ -259,9 +343,11 @@ function useAttachRightHandSocket(
       variant: playableVariant,
       nodeName: rightHand.name,
     });
+    setSocketReady(true);
     rightHand.add(rightHandSocket);
 
     return () => {
+      setSocketReady(false);
       rightHand.remove(rightHandSocket);
       onRightHandSocketStateChange?.({
         found: false,
@@ -270,10 +356,13 @@ function useAttachRightHandSocket(
       });
     };
   }, [modelRef, onRightHandSocketStateChange, playableVariant, rightHandSocket]);
+
+  return socketReady;
 }
 
 function useEquippedRightHandTool(
   rightHandSocket: THREE.Group,
+  socketReady: boolean,
   equippedRightHand: EquippableItemId | null,
   axeTemplate: THREE.Object3D,
   playableVariant: PlayableCharacterId,
@@ -294,8 +383,7 @@ function useEquippedRightHandTool(
       toolObjectRef.current = null;
     }
 
-    if (!equippedRightHand) {
-      onEquippedToolObjectChange?.(null);
+    if (!socketReady || !equippedRightHand) {
       return;
     }
 
@@ -318,10 +406,10 @@ function useEquippedRightHandTool(
         toolObjectRef.current = null;
       }
     };
-  }, [equippedRightHand, rightHandSocket, axeTemplate, onEquippedToolObjectChange]);
+  }, [equippedRightHand, rightHandSocket, axeTemplate, onEquippedToolObjectChange, socketReady]);
 
   useLayoutEffect(() => {
-    if (!equippedRightHand || !toolObjectRef.current) return;
+    if (!socketReady || !equippedRightHand || !toolObjectRef.current) return;
     const transform =
       equippedRightHandTransformOverride ??
       getEquippableItemRightHandTransform(equippedRightHand, playableVariant);
@@ -331,7 +419,126 @@ function useEquippedRightHandTool(
     equippedRightHand,
     equippedRightHandTransformOverride,
     playableVariant,
+    socketReady,
   ]);
+}
+
+function useAttachBackSocket(
+  modelRef: RefObject<THREE.Group | null>,
+  backSocket: THREE.Group,
+  playableVariant: PlayableCharacterId,
+  onBackSocketStateChange?: (state: BackSocketState) => void,
+): boolean {
+  const [socketReady, setSocketReady] = useState(false);
+
+  useEffect(() => {
+    const modelRoot = modelRef.current;
+    if (!modelRoot) {
+      setSocketReady(false);
+      return;
+    }
+
+    const backBone = findBackAttachmentBone(modelRoot);
+    if (!backBone) {
+      setSocketReady(false);
+      if (!warnedMissingBackSocketVariants.has(playableVariant)) {
+        warnedMissingBackSocketVariants.add(playableVariant);
+        console.warn(
+          `[CharacterModel] Missing back (spine/chest) socket for playableVariant "${playableVariant}".`,
+        );
+      }
+      onBackSocketStateChange?.({
+        found: false,
+        variant: playableVariant,
+        nodeName: null,
+      });
+      return;
+    }
+
+    onBackSocketStateChange?.({
+      found: true,
+      variant: playableVariant,
+      nodeName: backBone.name,
+    });
+    setSocketReady(true);
+    backBone.add(backSocket);
+
+    return () => {
+      setSocketReady(false);
+      backBone.remove(backSocket);
+      onBackSocketStateChange?.({
+        found: false,
+        variant: playableVariant,
+        nodeName: backBone.name,
+      });
+    };
+  }, [modelRef, onBackSocketStateChange, playableVariant, backSocket]);
+
+  return socketReady;
+}
+
+function useStowedBackTool(
+  backSocket: THREE.Group,
+  socketReady: boolean,
+  stowedBackItem: EquippableItemId | null,
+  axeTemplate: THREE.Object3D,
+  playableVariant: PlayableCharacterId,
+  equippedBackTransformOverride?: ItemSocketTransform | null,
+  onEquippedToolObjectChange?: (toolObject: THREE.Object3D | null) => void,
+): void {
+  const toolObjectRef = useRef<THREE.Object3D | null>(null);
+  const transformOverrideRef = useRef<ItemSocketTransform | null | undefined>(
+    equippedBackTransformOverride,
+  );
+  transformOverrideRef.current = equippedBackTransformOverride;
+  useEffect(() => {
+    const previousTool = toolObjectRef.current;
+    if (previousTool) {
+      backSocket.remove(previousTool);
+      onEquippedToolObjectChange?.(null);
+      disposeObject3D(previousTool);
+      toolObjectRef.current = null;
+    }
+
+    if (!socketReady || !stowedBackItem) {
+      return;
+    }
+
+    const toolObject = makeEquippedToolObject(stowedBackItem, axeTemplate);
+    const initialTransform =
+      transformOverrideRef.current ?? getEquippableItemBackTransform(stowedBackItem, playableVariant);
+    if (initialTransform) {
+      applySocketTransform(toolObject, initialTransform);
+    }
+    backSocket.add(toolObject);
+    toolObjectRef.current = toolObject;
+    onEquippedToolObjectChange?.(toolObject);
+
+    return () => {
+      backSocket.remove(toolObject);
+      onEquippedToolObjectChange?.(null);
+      disposeObject3D(toolObject);
+      if (toolObjectRef.current === toolObject) {
+        toolObjectRef.current = null;
+      }
+    };
+  }, [
+    stowedBackItem,
+    backSocket,
+    axeTemplate,
+    onEquippedToolObjectChange,
+    playableVariant,
+    socketReady,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!socketReady || !stowedBackItem || !toolObjectRef.current) return;
+    const transform =
+      equippedBackTransformOverride ??
+      getEquippableItemBackTransform(stowedBackItem, playableVariant);
+    if (!transform) return;
+    applySocketTransform(toolObjectRef.current, transform);
+  }, [stowedBackItem, equippedBackTransformOverride, playableVariant, socketReady]);
 }
 
 function tuneSkinnedSceneMaterials(scene: THREE.Object3D): void {
@@ -458,8 +665,11 @@ function DefaultCharacterModel({
   mouseGroundRef,
   equippedRightHand = null,
   equippedRightHandTransformOverride = null,
+  stowedBackItem = null,
+  equippedBackTransformOverride = null,
   onEquippedToolObjectChange,
   onRightHandSocketStateChange,
+  onBackSocketStateChange,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -490,6 +700,11 @@ function DefaultCharacterModel({
   const rightHandSocket = useMemo(() => {
     const socket = new THREE.Group();
     socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+  const backSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "BackSocket";
     return socket;
   }, []);
 
@@ -562,7 +777,7 @@ function DefaultCharacterModel({
 
   const { actions } = useAnimations(allClips, modelRef);
 
-  useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachRightHandSocket(
     modelRef,
     rightHandSocket,
     "default",
@@ -571,10 +786,27 @@ function DefaultCharacterModel({
 
   useEquippedRightHandTool(
     rightHandSocket,
+    hasRightHandSocket,
     equippedRightHand,
     axePropGltf.scene,
     "default",
     equippedRightHandTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
+  const hasBackSocket = useAttachBackSocket(
+    modelRef,
+    backSocket,
+    "default",
+    onBackSocketStateChange,
+  );
+  useStowedBackTool(
+    backSocket,
+    hasBackSocket,
+    stowedBackItem,
+    axePropGltf.scene,
+    "default",
+    equippedBackTransformOverride,
     onEquippedToolObjectChange,
   );
 
@@ -588,7 +820,7 @@ function DefaultCharacterModel({
     }
   }, [actions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initDoneRef.current) return;
     let target: string;
     switch (pose.animState) {
@@ -709,6 +941,69 @@ function DefaultCharacterModel({
 }
 
 const ROOT_TRANSLATION_TRACK_FIGHT = /(^|[.:])(armature|root|hips|mixamorighips)\.position$/i;
+type FightManClipPolicy =
+  | {
+      prefix: "adv";
+      key: keyof typeof FIGHT_MAN_ADV_MODELS;
+      outName: string;
+      stripRootTranslation?: boolean;
+    }
+  | {
+      prefix: "sword";
+      key: keyof typeof FIGHT_MAN_SWORD_MODELS;
+      outName: string;
+      stripRootTranslation?: boolean;
+    };
+
+const FIGHT_MAN_CLIP_DEFAULTS = Object.freeze({
+  stripRootTranslation: true,
+});
+
+const FIGHT_MAN_WORLD_CLIP_POLICIES: readonly FightManClipPolicy[] = [
+  { prefix: "adv", key: "idle0", outName: "idle0" },
+  { prefix: "adv", key: "rmbLook", outName: "rmbLook" },
+  { prefix: "adv", key: "walk", outName: "walk" },
+  { prefix: "adv", key: "strafeWalkL", outName: "strafeWalkL" },
+  { prefix: "adv", key: "strafeWalkR", outName: "strafeWalkR" },
+  { prefix: "adv", key: "run", outName: "run" },
+  { prefix: "adv", key: "strafeRunL", outName: "strafeL" },
+  { prefix: "adv", key: "strafeRunR", outName: "strafeR" },
+  { prefix: "adv", key: "turn90L", outName: "turn90L" },
+  { prefix: "adv", key: "turn90R", outName: "turn90R" },
+  { prefix: "adv", key: "jump", outName: "jump" },
+  { prefix: "adv", key: "fallIdle", outName: "fallIdle" },
+  { prefix: "adv", key: "landing", outName: "landing" },
+  { prefix: "adv", key: "roll", outName: "roll" },
+  { prefix: "adv", key: "spell", outName: "spell" },
+  { prefix: "sword", key: "idle0", outName: "idle0" },
+  { prefix: "sword", key: "rmbLook", outName: "rmbLook" },
+  { prefix: "sword", key: "walk", outName: "walk" },
+  { prefix: "sword", key: "strafeWalkL", outName: "strafeWalkL" },
+  { prefix: "sword", key: "strafeWalkR", outName: "strafeWalkR" },
+  { prefix: "sword", key: "run", outName: "run" },
+  { prefix: "sword", key: "strafeRunL", outName: "strafeL" },
+  { prefix: "sword", key: "strafeRunR", outName: "strafeR" },
+  { prefix: "sword", key: "turn90L", outName: "turn90L" },
+  { prefix: "sword", key: "turn90R", outName: "turn90R" },
+  { prefix: "sword", key: "jump", outName: "jump" },
+  { prefix: "sword", key: "fallIdle", outName: "fallIdle" },
+  { prefix: "sword", key: "landing", outName: "landing" },
+  { prefix: "sword", key: "attack", outName: "attack" },
+  { prefix: "sword", key: "skill", outName: "skill" },
+  { prefix: "sword", key: "spell", outName: "spell" },
+  { prefix: "sword", key: "roll", outName: "roll" },
+] as const;
+
+const FIGHT_MAN_PREVIEW_CLIP_POLICIES: readonly FightManClipPolicy[] = [
+  { prefix: "adv", key: "idle0", outName: "idle0" },
+  { prefix: "sword", key: "idle0", outName: "idle0" },
+] as const;
+
+function resolveFightManClipUrl(policy: FightManClipPolicy): string {
+  return policy.prefix === "adv"
+    ? FIGHT_MAN_ADV_MODELS[policy.key]
+    : FIGHT_MAN_SWORD_MODELS[policy.key];
+}
 
 function cloneFirstAnimationClip(
   animations: THREE.AnimationClip[],
@@ -722,6 +1017,185 @@ function cloneFirstAnimationClip(
     c.tracks = c.tracks.filter((track) => !ROOT_TRANSLATION_TRACK_FIGHT.test(track.name));
   }
   return c;
+}
+
+function buildFightManAnimationClips(
+  fbxByUrl: Map<string, THREE.Group>,
+  policies: readonly FightManClipPolicy[],
+): THREE.AnimationClip[] {
+  const clips: THREE.AnimationClip[] = [];
+  for (const policy of policies) {
+    const clip = cloneFirstAnimationClip(
+      fbxByUrl.get(resolveFightManClipUrl(policy))?.animations ?? [],
+      `${policy.prefix}_${policy.outName}`,
+      {
+        stripRootTranslation:
+          policy.stripRootTranslation ?? FIGHT_MAN_CLIP_DEFAULTS.stripRootTranslation,
+      },
+    );
+    if (clip) {
+      clips.push(clip);
+    }
+  }
+  return clips;
+}
+
+function FightManPreviewModel({
+  pose,
+  mouseGroundRef,
+  equippedRightHand = null,
+  equippedRightHandTransformOverride = null,
+  stowedBackItem = null,
+  equippedBackTransformOverride = null,
+  onEquippedToolObjectChange,
+  onRightHandSocketStateChange,
+  onBackSocketStateChange,
+  fightManOrbitMeshScaleMult = 1,
+}: BaseProps) {
+  const outerRef = useRef<THREE.Group>(null);
+  const modelRef = useRef<THREE.Group>(null);
+  const poseRef = useRef(pose);
+  poseRef.current = pose;
+  const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
+
+  const baseRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.base) as THREE.Group;
+  const swordIdleRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.idle0) as THREE.Group;
+  const advIdleRoot = useLoader(FBXLoader, FIGHT_MAN_ADV_MODELS.idle0) as THREE.Group;
+  const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const modelScene = useMemo(
+    () => SkeletonUtils.clone(baseRoot) as THREE.Group,
+    [baseRoot],
+  );
+
+  const rightHandSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+  const backSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "BackSocket";
+    return socket;
+  }, []);
+
+  useMemo(() => {
+    tuneSkinnedSceneMaterials(modelScene);
+  }, [modelScene]);
+
+  const bodyAlbedo = useTexture(FIGHT_MAN_ALBEDO_MAP, (t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.flipY = false;
+  });
+
+  useLayoutEffect(() => {
+    bodyAlbedo.colorSpace = THREE.SRGBColorSpace;
+    bodyAlbedo.flipY = false;
+    bodyAlbedo.needsUpdate = true;
+    modelScene.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
+          mat.map = bodyAlbedo;
+          mat.needsUpdate = true;
+        }
+      }
+    });
+  }, [modelScene, bodyAlbedo]);
+
+  const allClips = useMemo(() => {
+    const fbxByUrl = new Map<string, THREE.Group>([
+      [FIGHT_MAN_SWORD_MODELS.base, baseRoot],
+      [FIGHT_MAN_SWORD_MODELS.idle0, swordIdleRoot],
+      [FIGHT_MAN_ADV_MODELS.idle0, advIdleRoot],
+    ]);
+    return buildFightManAnimationClips(fbxByUrl, FIGHT_MAN_PREVIEW_CLIP_POLICIES);
+  }, [baseRoot, swordIdleRoot, advIdleRoot]);
+
+  const { actions } = useAnimations(allClips, modelRef);
+
+  const hasRightHandSocket = useAttachRightHandSocket(
+    modelRef,
+    rightHandSocket,
+    "fight_man",
+    onRightHandSocketStateChange,
+  );
+
+  useEquippedRightHandTool(
+    rightHandSocket,
+    hasRightHandSocket,
+    equippedRightHand,
+    axePropGltf.scene,
+    "fight_man",
+    equippedRightHandTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
+  const hasBackSocket = useAttachBackSocket(
+    modelRef,
+    backSocket,
+    "fight_man",
+    onBackSocketStateChange,
+  );
+  useStowedBackTool(
+    backSocket,
+    hasBackSocket,
+    stowedBackItem,
+    axePropGltf.scene,
+    "fight_man",
+    equippedBackTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
+  useEffect(() => {
+    const preferredName = equippedRightHand ? "sword_idle0" : "adv_idle0";
+    const nextAction =
+      actions[preferredName] ?? actions["adv_idle0"] ?? actions["sword_idle0"];
+    if (!nextAction) return;
+
+    for (const action of Object.values(actions)) {
+      if (!action || action === nextAction) continue;
+      action.stop();
+    }
+
+    nextAction.reset();
+    nextAction.setLoop(THREE.LoopRepeat, Infinity);
+    nextAction.timeScale = 1;
+    nextAction.clampWhenFinished = false;
+    nextAction.play();
+  }, [actions, equippedRightHand]);
+
+  useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
+
+  return (
+    <group ref={outerRef}>
+      <group ref={modelRef}>
+        <group scale={fightManMeshScale}>
+          <primitive object={modelScene} />
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function wrapFightManAngle(angle: number): number {
+  let wrapped = angle;
+  while (wrapped > Math.PI) wrapped -= Math.PI * 2;
+  while (wrapped < -Math.PI) wrapped += Math.PI * 2;
+  return wrapped;
+}
+
+function findFightManHeadBone(root: THREE.Object3D): THREE.Bone | null {
+  let found: THREE.Bone | null = null;
+  root.traverse((child) => {
+    if (found || !(child instanceof THREE.Bone)) return;
+    const shortName = child.name.replace(/^.*:/, "");
+    if (/^head$/i.test(shortName)) {
+      found = child;
+    }
+  });
+  return found;
 }
 
 function fightManLocomotionActionName(
@@ -755,10 +1229,15 @@ function pickRandomIdleClipName(
 function FightManPlayableModel({
   pose,
   mouseGroundRef,
+  tpsCameraStateRef,
   equippedRightHand = null,
   equippedRightHandTransformOverride = null,
+  stowedBackItem = null,
+  equippedBackTransformOverride = null,
   onEquippedToolObjectChange,
   onRightHandSocketStateChange,
+  onBackSocketStateChange,
+  fightManOrbitMeshScaleMult = 1,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -768,6 +1247,10 @@ function FightManPlayableModel({
   const lastChopSwingIdRef = useRef<number | undefined>(undefined);
   const initDoneRef = useRef(false);
   const lastIdleIndexRef = useRef(-1);
+  const headBoneRef = useRef<THREE.Bone | null>(null);
+  const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
+  const headLookEulerRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
+  const headLookSmoothedYRef = useRef(0);
 
   /** Split loaders: one huge `useLoader(url[])` was crashing the WebView; two stable arrays are OK. */
   const swordFbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
@@ -793,6 +1276,11 @@ function FightManPlayableModel({
   const rightHandSocket = useMemo(() => {
     const socket = new THREE.Group();
     socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+  const backSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "BackSocket";
     return socket;
   }, []);
 
@@ -822,58 +1310,101 @@ function FightManPlayableModel({
     });
   }, [modelScene, bodyAlbedo]);
 
-  const allClips = useMemo(() => {
-    const clips: THREE.AnimationClip[] = [];
-    const IN_PLACE = { stripRootTranslation: true };
+  useLayoutEffect(() => {
+    headBoneRef.current = findFightManHeadBone(modelScene);
+  }, [modelScene]);
 
-    const advAnimsFor = (key: keyof typeof FIGHT_MAN_ADV_MODELS) =>
-      fbxByUrl.get(FIGHT_MAN_ADV_MODELS[key])?.animations ?? [];
-    const pushAdv = (key: keyof typeof FIGHT_MAN_ADV_MODELS, name: string, opts = {}) => {
-      const c = cloneFirstAnimationClip(advAnimsFor(key), `adv_${name}`, opts);
-      if (c) clips.push(c);
-    };
-    /** Same root translation strip as locomotion so idle vs walk share hip height vs mesh origin (Mixamo FBX varies clip-to-clip otherwise). */
-    pushAdv("idle0", "idle0", IN_PLACE);
-    pushAdv("walk", "walk", IN_PLACE);
-    pushAdv("strafeWalkL", "strafeWalkL", IN_PLACE);
-    pushAdv("strafeWalkR", "strafeWalkR", IN_PLACE);
-    pushAdv("run", "run", IN_PLACE);
-    pushAdv("strafeRunL", "strafeL", IN_PLACE);
-    pushAdv("strafeRunR", "strafeR", IN_PLACE);
-    pushAdv("turn90L", "turn90L", IN_PLACE);
-    pushAdv("turn90R", "turn90R", IN_PLACE);
-    /** Vertical arc comes from pose `worldY`; strip hips/root translation like other adv clips or mesh stays levitated after landing. */
-    pushAdv("jump", "jump", IN_PLACE);
-    pushAdv("roll", "roll", IN_PLACE);
-    pushAdv("spell", "spell");
-
-    const swordAnimsFor = (key: keyof typeof FIGHT_MAN_SWORD_MODELS) =>
-      fbxByUrl.get(FIGHT_MAN_SWORD_MODELS[key])?.animations ?? [];
-    const pushSword = (key: keyof typeof FIGHT_MAN_SWORD_MODELS, name: string, opts = {}) => {
-      const c = cloneFirstAnimationClip(swordAnimsFor(key), `sword_${name}`, opts);
-      if (c) clips.push(c);
-    };
-    pushSword("idle0", "idle0", IN_PLACE);
-    pushSword("walk", "walk", IN_PLACE);
-    pushSword("strafeWalkL", "strafeWalkL", IN_PLACE);
-    pushSword("strafeWalkR", "strafeWalkR", IN_PLACE);
-    pushSword("run", "run", IN_PLACE);
-    pushSword("strafeRunL", "strafeL", IN_PLACE);
-    pushSword("strafeRunR", "strafeR", IN_PLACE);
-    pushSword("turn90L", "turn90L", IN_PLACE);
-    pushSword("turn90R", "turn90R", IN_PLACE);
-    pushSword("jump", "jump", IN_PLACE);
-    pushSword("attack", "attack");
-    pushSword("skill", "skill");
-    pushSword("spell", "spell");
-    pushSword("roll", "roll", IN_PLACE);
-
-    return clips;
-  }, [fbxByUrl]);
+  const allClips = useMemo(
+    () => buildFightManAnimationClips(fbxByUrl, FIGHT_MAN_WORLD_CLIP_POLICIES),
+    [fbxByUrl],
+  );
 
   const { actions } = useAnimations(allClips, modelRef);
 
-  useAttachRightHandSocket(
+  type FightManAirPhase = "takeoff" | "fall" | "landing" | null;
+  const [fightManAirPhase, setFightManAirPhase] = useState<FightManAirPhase>(null);
+  const fightManAirPhaseRef = useRef<FightManAirPhase>(null);
+  const prevGroundedRef = useRef(true);
+  const actionsRef = useRef(actions);
+  const equippedRightHandRef = useRef(equippedRightHand);
+  const fightManAirPhaseHeadRef = useRef<FightManAirPhase>(null);
+
+  actionsRef.current = actions;
+  equippedRightHandRef.current = equippedRightHand;
+  fightManAirPhaseHeadRef.current = fightManAirPhase;
+
+  useFrame(() => {
+    const p = poseRef.current;
+    const grounded = p.grounded ?? true;
+    const wasGrounded = prevGroundedRef.current;
+    const actMap = actionsRef.current;
+    const prefix = equippedRightHandRef.current ? "sword" : "adv";
+    const jumpAct = actMap[`${prefix}_jump`];
+    const landAct = actMap[`${prefix}_landing`];
+
+    const syncPhase = (next: FightManAirPhase) => {
+      if (fightManAirPhaseRef.current === next) return;
+      fightManAirPhaseRef.current = next;
+      setFightManAirPhase(next);
+    };
+
+    const phase = fightManAirPhaseRef.current;
+
+    if (phase && phase !== "landing" && p.animState !== "jump") {
+      syncPhase(null);
+    }
+    if (
+      p.animState === "roll" ||
+      p.animState === "spell" ||
+      p.animState === "chop" ||
+      p.animState === "attack"
+    ) {
+      if (phase) syncPhase(null);
+      prevGroundedRef.current = grounded;
+      return;
+    }
+
+    if (phase === "landing") {
+      if (landAct) {
+        const dur = landAct.getClip().duration;
+        const nearEnd = landAct.isRunning() && dur > 1e-4 && landAct.time >= dur - 0.04;
+        const stoppedAtEnd =
+          !landAct.isRunning() && dur > 1e-4 && landAct.time >= dur - 0.06;
+        if (nearEnd || stoppedAtEnd || dur < 1e-4) syncPhase(null);
+      } else {
+        syncPhase(null);
+      }
+      prevGroundedRef.current = grounded;
+      return;
+    }
+
+    if (grounded && !wasGrounded && (phase === "takeoff" || phase === "fall")) {
+      syncPhase("landing");
+      prevGroundedRef.current = grounded;
+      return;
+    }
+
+    if (!grounded && p.animState === "jump" && wasGrounded && phase == null) {
+      syncPhase("takeoff");
+      prevGroundedRef.current = grounded;
+      return;
+    }
+
+    if (phase === "takeoff" && jumpAct) {
+      const dur = jumpAct.getClip().duration;
+      if (dur < 1e-4) {
+        syncPhase("fall");
+      } else if (jumpAct.isRunning()) {
+        if (jumpAct.time >= dur - 0.04) syncPhase("fall");
+      } else if (jumpAct.time >= dur - 0.06) {
+        syncPhase("fall");
+      }
+    }
+
+    prevGroundedRef.current = grounded;
+  });
+
+  const hasRightHandSocket = useAttachRightHandSocket(
     modelRef,
     rightHandSocket,
     "fight_man",
@@ -882,6 +1413,7 @@ function FightManPlayableModel({
 
   useEquippedRightHandTool(
     rightHandSocket,
+    hasRightHandSocket,
     equippedRightHand,
     axePropGltf.scene,
     "fight_man",
@@ -889,10 +1421,29 @@ function FightManPlayableModel({
     onEquippedToolObjectChange,
   );
 
+  const hasBackSocket = useAttachBackSocket(
+    modelRef,
+    backSocket,
+    "fight_man",
+    onBackSocketStateChange,
+  );
+  useStowedBackTool(
+    backSocket,
+    hasBackSocket,
+    stowedBackItem,
+    axePropGltf.scene,
+    "fight_man",
+    equippedBackTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
   useEffect(() => {
     initDoneRef.current = false;
     prevClipRef.current = "";
     lastIdleIndexRef.current = -1;
+    fightManAirPhaseRef.current = null;
+    setFightManAirPhase(null);
+    prevGroundedRef.current = true;
     const idleAdv = actions["adv_idle0"];
     const idleSword = actions["sword_idle0"];
     const idle = idleAdv ?? idleSword;
@@ -905,53 +1456,72 @@ function FightManPlayableModel({
     }
   }, [actions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initDoneRef.current) return;
     const prefix = equippedRightHand ? "sword" : "adv";
     const idleCount = equippedRightHand ? FIGHT_MAN_SWORD_IDLE_COUNT : FIGHT_MAN_ADV_IDLE_COUNT;
 
     let target: string;
-    switch (pose.animState) {
-      case "walk":
-        target = fightManLocomotionActionName(prefix, "walk", pose.locomotionStrafe);
-        break;
-      case "run":
-        target = fightManLocomotionActionName(prefix, "run", pose.locomotionStrafe);
-        break;
-      case "attack":
-        target = `${prefix}_attack`;
-        break;
-      case "chop":
-        target = `${prefix}_skill`;
-        break;
-      case "jump":
-        target = `${prefix}_jump`;
-        break;
-      case "spell":
-        target = `${prefix}_spell`;
-        break;
-      case "roll":
-        target = `${prefix}_roll`;
-        break;
-      default: {
-        const prevIdleClip = prevClipRef.current;
-        if (
-          prevIdleClip.startsWith(`${prefix}_idle`) &&
-          isClipLayerActive(actions[prevIdleClip])
-        ) {
-          return;
+    if (pose.fightManTurnStep === "left") {
+      target = `${prefix}_turn90L`;
+    } else if (pose.fightManTurnStep === "right") {
+      target = `${prefix}_turn90R`;
+    } else if (fightManAirPhase === "landing") {
+      target = `${prefix}_landing`;
+    } else if (fightManAirPhase === "fall") {
+      target = `${prefix}_fallIdle`;
+    } else if (fightManAirPhase === "takeoff") {
+      target = `${prefix}_jump`;
+    } else {
+      switch (pose.animState) {
+        case "walk":
+          target = fightManLocomotionActionName(prefix, "walk", pose.locomotionStrafe);
+          break;
+        case "run":
+          target = fightManLocomotionActionName(prefix, "run", pose.locomotionStrafe);
+          break;
+        case "attack":
+          target = `${prefix}_attack`;
+          break;
+        case "chop":
+          target = `${prefix}_skill`;
+          break;
+        case "jump":
+          target = `${prefix}_jump`;
+          break;
+        case "spell":
+          target = `${prefix}_spell`;
+          break;
+        case "roll":
+          target = `${prefix}_roll`;
+          break;
+        default: {
+          if (pose.tpsRmbLook) {
+            target = `${prefix}_rmbLook`;
+            break;
+          }
+          const prevIdleClip = prevClipRef.current;
+          if (
+            prevIdleClip.startsWith(`${prefix}_idle`) &&
+            isClipLayerActive(actions[prevIdleClip])
+          ) {
+            return;
+          }
+          const pick = pickRandomIdleClipName(prefix, idleCount, lastIdleIndexRef.current);
+          lastIdleIndexRef.current = pick.index;
+          target = pick.name;
+          break;
         }
-        const pick = pickRandomIdleClipName(prefix, idleCount, lastIdleIndexRef.current);
-        lastIdleIndexRef.current = pick.index;
-        target = pick.name;
-        break;
       }
     }
 
     const isOneShot =
+      pose.fightManTurnStep != null ||
       pose.animState === "attack" ||
       pose.animState === "chop" ||
-      pose.animState === "jump" ||
+      fightManAirPhase === "takeoff" ||
+      fightManAirPhase === "landing" ||
+      (pose.animState === "jump" && fightManAirPhase === null) ||
       pose.animState === "spell" ||
       pose.animState === "roll";
 
@@ -978,6 +1548,14 @@ function FightManPlayableModel({
       ) {
         return;
       }
+    } else if (pose.fightManTurnStep) {
+      if (target === prevClipRef.current && isClipLayerActive(actions[target])) {
+        return;
+      }
+    } else if (fightManAirPhase === "takeoff" || fightManAirPhase === "landing") {
+      if (target === prevClipRef.current && isClipLayerActive(actions[target])) {
+        return;
+      }
     }
 
     const nextAction = actions[target];
@@ -990,8 +1568,13 @@ function FightManPlayableModel({
       nextAction.setLoop(THREE.LoopOnce, 1);
       nextAction.clampWhenFinished = true;
       let desiredDuration = clipDuration;
-      if (pose.animState === "jump") {
-        desiredDuration = pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
+      if (fightManAirPhase === "takeoff" || fightManAirPhase === "landing") {
+        desiredDuration = clipDuration;
+      } else if (pose.animState === "jump") {
+        /** Airborne: natural takeoff clip; grounded edge case keeps legacy scale. */
+        desiredDuration = !(pose.grounded ?? true)
+          ? clipDuration
+          : pose.jumpDuration ?? JUMP_DURATION_DEFAULT;
       } else if (pose.animState === "roll") {
         desiredDuration = pose.rollDuration ?? clipDuration;
       } else if (pose.animState === "chop") {
@@ -999,6 +1582,8 @@ function FightManPlayableModel({
       } else if (pose.animState === "spell") {
         desiredDuration = SPELL_DURATION_DEFAULT;
       } else if (pose.animState === "attack") {
+        desiredDuration = clipDuration;
+      } else if (pose.fightManTurnStep) {
         desiredDuration = clipDuration;
       }
       if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
@@ -1013,26 +1598,72 @@ function FightManPlayableModel({
     }
 
     const prevName = prevClipRef.current;
-    const leavingJump = isPrevClipJump(prevName) && pose.animState !== "jump";
+    const leavingJump =
+      isPrevClipJump(prevName) &&
+      pose.animState !== "jump" &&
+      fightManAirPhase == null &&
+      pose.fightManTurnStep == null;
     transitionAnimationAction(nextAction, prevAction, prevName, leavingJump);
     prevClipRef.current = target;
   }, [
     pose.animState,
+    pose.grounded,
     pose.locomotionStrafe,
+    pose.fightManTurnStep,
+    fightManAirPhase,
     actions,
     equippedRightHand,
     pose.jumpDuration,
     pose.rollDuration,
     pose.chopDuration,
     pose.chopSwingId,
+    pose.tpsRmbLook,
   ]);
+
+  useFrame((_, delta) => {
+    const bone = headBoneRef.current;
+    if (!bone) return;
+    const p = poseRef.current;
+    const rmbLook = Boolean(p.tpsRmbLook);
+    if (
+      (p.fightManTurnStep && !rmbLook) ||
+      p.animState === "jump" ||
+      fightManAirPhaseHeadRef.current != null ||
+      p.animState === "roll" ||
+      p.animState === "spell" ||
+      p.animState === "chop" ||
+      p.animState === "attack"
+    ) {
+      headLookSmoothedYRef.current = 0;
+      return;
+    }
+    const cam = tpsCameraStateRef?.current;
+    const bodyYaw = p.facingAngle;
+    if (!rmbLook || !cam?.active || cam.viewYaw == null || bodyYaw == null) {
+      headLookSmoothedYRef.current = 0;
+      return;
+    }
+    const deltaYaw = wrapFightManAngle(cam.viewYaw - bodyYaw);
+    const targetY = THREE.MathUtils.clamp(
+      deltaYaw,
+      -FIGHT_MAN_HEAD_YAW_MAX_RAD,
+      FIGHT_MAN_HEAD_YAW_MAX_RAD,
+    );
+    const dt = Math.min(0.05, delta);
+    const t = 1 - Math.exp(-FIGHT_MAN_HEAD_LOOK_SMOOTH_SPEED * dt);
+    headLookSmoothedYRef.current = THREE.MathUtils.lerp(headLookSmoothedYRef.current, targetY, t);
+    const euler = headLookEulerRef.current;
+    euler.setFromQuaternion(bone.quaternion, "YXZ");
+    euler.y = headLookSmoothedYRef.current;
+    bone.quaternion.setFromEuler(euler);
+  }, 100);
 
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
 
   return (
     <group ref={outerRef}>
       <group ref={modelRef}>
-        <group scale={FIGHT_MAN_FBX_SCALE}>
+        <group scale={fightManMeshScale}>
           <primitive object={modelScene} />
         </group>
       </group>
@@ -1045,8 +1676,11 @@ function MiningPlayableModel({
   mouseGroundRef,
   equippedRightHand = null,
   equippedRightHandTransformOverride = null,
+  stowedBackItem = null,
+  equippedBackTransformOverride = null,
   onEquippedToolObjectChange,
   onRightHandSocketStateChange,
+  onBackSocketStateChange,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -1070,6 +1704,11 @@ function MiningPlayableModel({
   const rightHandSocket = useMemo(() => {
     const socket = new THREE.Group();
     socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+  const backSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "BackSocket";
     return socket;
   }, []);
 
@@ -1101,7 +1740,7 @@ function MiningPlayableModel({
 
   const { actions } = useAnimations(allClips, modelRef);
 
-  useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachRightHandSocket(
     modelRef,
     rightHandSocket,
     "mining_man",
@@ -1110,10 +1749,27 @@ function MiningPlayableModel({
 
   useEquippedRightHandTool(
     rightHandSocket,
+    hasRightHandSocket,
     equippedRightHand,
     axePropGltf.scene,
     "mining_man",
     equippedRightHandTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
+  const hasBackSocket = useAttachBackSocket(
+    modelRef,
+    backSocket,
+    "mining_man",
+    onBackSocketStateChange,
+  );
+  useStowedBackTool(
+    backSocket,
+    hasBackSocket,
+    stowedBackItem,
+    axePropGltf.scene,
+    "mining_man",
+    equippedBackTransformOverride,
     onEquippedToolObjectChange,
   );
 
@@ -1128,7 +1784,7 @@ function MiningPlayableModel({
     }
   }, [actions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initDoneRef.current) return;
     let target: string;
     switch (pose.animState) {
@@ -1251,8 +1907,11 @@ function MagicPlayableModel({
   mouseGroundRef,
   equippedRightHand = null,
   equippedRightHandTransformOverride = null,
+  stowedBackItem = null,
+  equippedBackTransformOverride = null,
   onEquippedToolObjectChange,
   onRightHandSocketStateChange,
+  onBackSocketStateChange,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -1276,6 +1935,11 @@ function MagicPlayableModel({
   const rightHandSocket = useMemo(() => {
     const socket = new THREE.Group();
     socket.name = "RightHandSocket";
+    return socket;
+  }, []);
+  const backSocket = useMemo(() => {
+    const socket = new THREE.Group();
+    socket.name = "BackSocket";
     return socket;
   }, []);
 
@@ -1306,7 +1970,7 @@ function MagicPlayableModel({
 
   const { actions } = useAnimations(allClips, modelRef);
 
-  useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachRightHandSocket(
     modelRef,
     rightHandSocket,
     "magic_man",
@@ -1315,10 +1979,27 @@ function MagicPlayableModel({
 
   useEquippedRightHandTool(
     rightHandSocket,
+    hasRightHandSocket,
     equippedRightHand,
     axePropGltf.scene,
     "magic_man",
     equippedRightHandTransformOverride,
+    onEquippedToolObjectChange,
+  );
+
+  const hasBackSocket = useAttachBackSocket(
+    modelRef,
+    backSocket,
+    "magic_man",
+    onBackSocketStateChange,
+  );
+  useStowedBackTool(
+    backSocket,
+    hasBackSocket,
+    stowedBackItem,
+    axePropGltf.scene,
+    "magic_man",
+    equippedBackTransformOverride,
     onEquippedToolObjectChange,
   );
 
@@ -1332,7 +2013,7 @@ function MagicPlayableModel({
     }
   }, [actions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!initDoneRef.current) return;
     let target: string;
     switch (pose.animState) {
@@ -1454,7 +2135,11 @@ export function CharacterModel({
 }: CharacterModelProps) {
   switch (playableVariant) {
     case "fight_man":
-      return <FightManPlayableModel {...rest} />;
+      return rest.renderContext === "preview" ? (
+        <FightManPreviewModel {...rest} />
+      ) : (
+        <FightManPlayableModel {...rest} />
+      );
     case "mining_man":
       return <MiningPlayableModel {...rest} />;
     case "magic_man":

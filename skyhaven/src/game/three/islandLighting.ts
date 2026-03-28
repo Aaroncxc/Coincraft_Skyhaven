@@ -50,6 +50,129 @@ export const NIGHT_ISLAND_LIGHTING: IslandLightingParams = {
 
 export type IslandLightingAmbiance = "day" | "night";
 
+/** Full day→night→day cycle length (seconds). */
+export const DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC = 300;
+
+/** Hemisphere / key / fill colors when `lightingAmbiance === "night"` in IslandScene (before cycle). */
+export const NIGHT_SCENE_COLORS = {
+  sun: "#c8d8f8",
+  fill: "#8ea0c0",
+  hemiSky: "#4a4680",
+  hemiGround: "#120e1c",
+  ambient: "#ffffff",
+} as const;
+
+export function lerpHexColor(a: string, b: string, t: number): string {
+  const u = THREE.MathUtils.clamp(t, 0, 1);
+  const c0 = new THREE.Color(a);
+  const c1 = new THREE.Color(b);
+  return "#" + c0.lerp(c1, u).getHexString();
+}
+
+export function lerpIslandLightingParams(
+  a: IslandLightingParams,
+  b: IslandLightingParams,
+  t: number,
+): IslandLightingParams {
+  const u = THREE.MathUtils.clamp(t, 0, 1);
+  return {
+    sunAzimuthDeg: THREE.MathUtils.lerp(a.sunAzimuthDeg, b.sunAzimuthDeg, u),
+    sunElevationDeg: THREE.MathUtils.lerp(a.sunElevationDeg, b.sunElevationDeg, u),
+    sunDistance: THREE.MathUtils.lerp(a.sunDistance, b.sunDistance, u),
+    sunIntensity: THREE.MathUtils.lerp(a.sunIntensity, b.sunIntensity, u),
+    ambientIntensity: THREE.MathUtils.lerp(a.ambientIntensity, b.ambientIntensity, u),
+    hemisphereIntensity: THREE.MathUtils.lerp(a.hemisphereIntensity, b.hemisphereIntensity, u),
+    fillIntensity: THREE.MathUtils.lerp(a.fillIntensity, b.fillIntensity, u),
+    environmentIntensity: THREE.MathUtils.lerp(a.environmentIntensity, b.environmentIntensity, u),
+    dayLightWarmth: THREE.MathUtils.lerp(a.dayLightWarmth, b.dayLightWarmth, u),
+  };
+}
+
+/** Phase ∈ [0,1) from wall clock; seamless at wrap. */
+export function dayNightPhaseFromTime(nowMs: number, periodMs: number): number {
+  if (periodMs <= 0) return 0;
+  const p = nowMs % periodMs;
+  return p / periodMs;
+}
+
+/**
+ * 0 = day peak, 1 = night peak; matches at phase 0 and 1 (cosine → seamless loop).
+ */
+export function nightBlendFromPhase(phase: number): number {
+  return 0.5 + 0.5 * Math.cos(phase * Math.PI * 2);
+}
+
+export function blendDayNightColors(day: DayLightColorSample, nightBlend: number): DayLightColorSample {
+  const t = THREE.MathUtils.clamp(nightBlend, 0, 1);
+  const n = NIGHT_SCENE_COLORS;
+  return {
+    sun: lerpHexColor(day.sun, n.sun, t),
+    fill: lerpHexColor(day.fill, n.fill, t),
+    hemiSky: lerpHexColor(day.hemiSky, n.hemiSky, t),
+    hemiGround: lerpHexColor(day.hemiGround, n.hemiGround, t),
+    ambient: lerpHexColor(day.ambient, n.ambient, t),
+  };
+}
+
+export type DayNightVisualSnapshot = {
+  nightBlend: number;
+  lighting: IslandLightingParams;
+  colors: DayLightColorSample;
+  poiLightMul: number;
+  wellGlowDistanceMul: number;
+  runeGlowDistanceMul: number;
+  forgeIntensity: number;
+  forgeDistance: number;
+  bloomIntensity: number;
+  bloomLuminanceThreshold: number;
+};
+
+/** Scalar scene tweaks that were previously binary night on/off in IslandScene. */
+export function samplePostProcessForNightBlend(nightBlend: number): Pick<
+  DayNightVisualSnapshot,
+  | "poiLightMul"
+  | "wellGlowDistanceMul"
+  | "runeGlowDistanceMul"
+  | "forgeIntensity"
+  | "forgeDistance"
+  | "bloomIntensity"
+  | "bloomLuminanceThreshold"
+> {
+  const t = THREE.MathUtils.clamp(nightBlend, 0, 1);
+  return {
+    poiLightMul: THREE.MathUtils.lerp(1, 1.58, t),
+    wellGlowDistanceMul: THREE.MathUtils.lerp(1, 1.12, t),
+    runeGlowDistanceMul: THREE.MathUtils.lerp(1, 1.1, t),
+    forgeIntensity: THREE.MathUtils.lerp(0.9, 1.28, t),
+    forgeDistance: THREE.MathUtils.lerp(7, 8.5, t),
+    bloomIntensity: THREE.MathUtils.lerp(0.55, 0.68, t),
+    bloomLuminanceThreshold: THREE.MathUtils.lerp(0.72, 0.42, t),
+  };
+}
+
+/**
+ * Full snapshot for a blend factor: numeric lighting lerps DEFAULT↔NIGHT, colors use day warmth → night palette.
+ * Manual day/night: pass nightBlend 0 or 1; auto cycle: pass `nightBlendFromPhase(dayNightPhaseFromTime(now, period))`.
+ */
+export function getDayNightVisualSnapshot(
+  nightBlend: number,
+  dayLightWarmth: number,
+  dayLightingBaseline: IslandLightingParams = DEFAULT_ISLAND_LIGHTING,
+  nightLightingBaseline: IslandLightingParams = NIGHT_ISLAND_LIGHTING,
+): DayNightVisualSnapshot {
+  const t = THREE.MathUtils.clamp(nightBlend, 0, 1);
+  const dayColors = sampleDayLightColors(dayLightWarmth);
+  const colors = blendDayNightColors(dayColors, t);
+  const lighting = lerpIslandLightingParams(dayLightingBaseline, nightLightingBaseline, t);
+  const pp = samplePostProcessForNightBlend(t);
+  return {
+    nightBlend: t,
+    lighting,
+    colors,
+    ...pp,
+  };
+}
+
 /**
  * Azimuth: degrees in XZ plane, 0° = +Z, 90° = +X (viewed from above).
  * Elevation: degrees above horizon (0 = horizontal, 90 = zenith).
@@ -112,24 +235,8 @@ export function sunPositionFromAngles(
   return [x, y, z];
 }
 
-/**
- * Placeholder for a future day/night cycle: map phase ∈ [0,1] (e.g. midnight→midnight) to lighting.
- * Smooth curves avoid pops at wrap.
- */
+/** @deprecated Prefer `getDayNightVisualSnapshot` + `nightBlendFromPhase`; kept for callers that only need params. */
 export function sampleIslandLightingForDayPhase(phase: number): IslandLightingParams {
-  const sunArc = Math.sin(phase * Math.PI * 2);
-  const day = (sunArc + 1) * 0.5;
-  const elevation = THREE.MathUtils.lerp(8, 58, day);
-  const azimuth = (phase * 360 + 90) % 360;
-  return {
-    ...DEFAULT_ISLAND_LIGHTING,
-    sunAzimuthDeg: azimuth,
-    sunElevationDeg: elevation,
-    sunIntensity: THREE.MathUtils.lerp(0.35, 2.75, day),
-    ambientIntensity: THREE.MathUtils.lerp(0.14, 0.04, day),
-    hemisphereIntensity: THREE.MathUtils.lerp(0.22, 0.1, day),
-    fillIntensity: THREE.MathUtils.lerp(0.28, 0.12, day),
-    environmentIntensity: THREE.MathUtils.lerp(0.08, 0.22, day),
-    dayLightWarmth: THREE.MathUtils.lerp(0.12, DEFAULT_ISLAND_LIGHTING.dayLightWarmth, day),
-  };
+  const nb = nightBlendFromPhase(phase);
+  return getDayNightVisualSnapshot(nb, DEFAULT_ISLAND_LIGHTING.dayLightWarmth).lighting;
 }

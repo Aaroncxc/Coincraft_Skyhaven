@@ -1,4 +1,4 @@
-import { OrbitControls, PerspectiveCamera, TransformControls } from "@react-three/drei";
+import { TransformControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import {
   startTransition,
@@ -12,6 +12,7 @@ import * as THREE from "three";
 import {
   WOOD_AXE_ITEM_ID,
   cloneItemSocketTransform,
+  getEquippableItemDefaultBackByVariant,
   getEquippableItemDefaultRightHandByVariant,
   type EquippableItemId,
   type ItemSocketTransform,
@@ -22,26 +23,22 @@ import {
   type PlayableCharacterId,
 } from "../game/playableCharacters";
 import {
-  CharacterModel,
+  type BackSocketState,
   type RightHandSocketState,
 } from "../game/three/CharacterModel";
-import type { CharacterPose3D } from "../game/three/useCharacterMovement";
+import {
+  PLAYABLE_PREVIEW_POSE,
+  PlayableCharacterPreviewScene,
+} from "./PlayableCharacterPreviewScene";
 
 type GizmoMode = "translate" | "rotate" | "scale";
+type SocketMode = "right_hand" | "back";
 
 type CharacterDebugOverlayProps = {
   open: boolean;
   onClose: () => void;
   currentPlayableVariant: PlayableCharacterId;
   equippedRightHand: EquippableItemId | null;
-};
-
-const CHARACTER_DEBUG_POSE: CharacterPose3D = {
-  gx: 0,
-  gy: 0,
-  direction: "right",
-  animState: "idle",
-  isManualMove: false,
 };
 
 const CHARACTER_LABELS: Record<PlayableCharacterId, string> = {
@@ -51,13 +48,7 @@ const CHARACTER_LABELS: Record<PlayableCharacterId, string> = {
   magic_man: "Magic Man",
 };
 
-const VIEWER_TARGET: [number, number, number] = [0, 0.95, 0];
-const VIEWER_CAMERA_POSITION: [number, number, number] = [0.28, 1.68, 1.18];
-const VIEWER_MIN_DISTANCE = 0.76;
-const VIEWER_MAX_DISTANCE = 2.6;
-const VIEWER_MIN_POLAR_ANGLE = 0.34;
-const VIEWER_MAX_POLAR_ANGLE = Math.PI * 0.5 - 0.05;
-const PREVIEW_SCALE = 1.62;
+const CHARACTER_DEBUG_POSE = PLAYABLE_PREVIEW_POSE;
 
 function buildFallbackTransforms(): ItemSocketTransformByVariant {
   const identity: ItemSocketTransform = {
@@ -78,6 +69,10 @@ function getInitialTransforms(itemId: EquippableItemId): ItemSocketTransformByVa
     getEquippableItemDefaultRightHandByVariant(itemId) ??
     buildFallbackTransforms()
   );
+}
+
+function getInitialBackTransforms(itemId: EquippableItemId): ItemSocketTransformByVariant {
+  return getEquippableItemDefaultBackByVariant(itemId) ?? buildFallbackTransforms();
 }
 
 function readToolTransform(object: THREE.Object3D): ItemSocketTransform {
@@ -130,6 +125,20 @@ function buildExportText(transforms: ItemSocketTransformByVariant): string {
   return lines.join("\n");
 }
 
+function buildBackExportText(transforms: ItemSocketTransformByVariant): string {
+  const lines = ["backByVariant: {"];
+  for (const variant of PLAYABLE_CHARACTER_ORDER) {
+    const transform = transforms[variant];
+    lines.push(`  ${variant}: {`);
+    lines.push(`    position: ${formatVecForCode(transform.position)},`);
+    lines.push(`    rotation: ${formatVecForCode(transform.rotation)},`);
+    lines.push(`    scale: ${formatVecForCode(transform.scale)},`);
+    lines.push("  },");
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
 async function copyTextToClipboard(text: string): Promise<boolean> {
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     try {
@@ -156,24 +165,28 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
 
 type CharacterDebugSceneProps = {
   playableVariant: PlayableCharacterId;
-  equippedRightHand: EquippableItemId;
+  socketMode: SocketMode;
+  previewItemId: EquippableItemId;
   transform: ItemSocketTransform;
   gizmoMode: GizmoMode;
   gizmoDragging: boolean;
   onTransformChange: (transform: ItemSocketTransform) => void;
   onGizmoDraggingChange: (dragging: boolean) => void;
-  onSocketStateChange: (state: RightHandSocketState) => void;
+  onRightHandSocketStateChange: (state: RightHandSocketState) => void;
+  onBackSocketStateChange: (state: BackSocketState) => void;
 };
 
 function CharacterDebugScene({
   playableVariant,
-  equippedRightHand,
+  socketMode,
+  previewItemId,
   transform,
   gizmoMode,
   gizmoDragging,
   onTransformChange,
   onGizmoDraggingChange,
-  onSocketStateChange,
+  onRightHandSocketStateChange,
+  onBackSocketStateChange,
 }: CharacterDebugSceneProps) {
   const [toolObject, setToolObject] = useState<THREE.Object3D | null>(null);
   const controlsRef = useRef<any>(null);
@@ -207,41 +220,17 @@ function CharacterDebugScene({
 
   return (
     <>
-      <PerspectiveCamera
-        makeDefault
-        position={VIEWER_CAMERA_POSITION}
-        fov={33}
-        near={0.05}
-        far={60}
+      <PlayableCharacterPreviewScene
+        playableVariant={playableVariant}
+        equippedRightHand={socketMode === "right_hand" ? previewItemId : null}
+        stowedBackItem={socketMode === "back" ? previewItemId : null}
+        equippedRightHandTransformOverride={socketMode === "right_hand" ? transform : null}
+        equippedBackTransformOverride={socketMode === "back" ? transform : null}
+        orbitEnabled={!gizmoDragging}
+        onEquippedToolObjectChange={handleToolObjectChange}
+        onRightHandSocketStateChange={onRightHandSocketStateChange}
+        onBackSocketStateChange={onBackSocketStateChange}
       />
-      <OrbitControls
-        target={VIEWER_TARGET}
-        enablePan={false}
-        enableRotate
-        enableZoom
-        enabled={!gizmoDragging}
-        minDistance={VIEWER_MIN_DISTANCE}
-        maxDistance={VIEWER_MAX_DISTANCE}
-        minPolarAngle={VIEWER_MIN_POLAR_ANGLE}
-        maxPolarAngle={VIEWER_MAX_POLAR_ANGLE}
-        rotateSpeed={0.58}
-        zoomSpeed={0.82}
-        enableDamping
-        dampingFactor={0.09}
-      />
-      <ambientLight intensity={0.58} />
-      <directionalLight position={[2, 4, 3]} intensity={1.55} />
-      <directionalLight position={[-2, 3, -1]} intensity={0.58} />
-      <group position={[0, -0.8, 0]} scale={PREVIEW_SCALE}>
-        <CharacterModel
-          pose={CHARACTER_DEBUG_POSE}
-          equippedRightHand={equippedRightHand}
-          playableVariant={playableVariant}
-          equippedRightHandTransformOverride={transform}
-          onEquippedToolObjectChange={handleToolObjectChange}
-          onRightHandSocketStateChange={onSocketStateChange}
-        />
-      </group>
       {toolObject ? (
         <TransformControls
           ref={controlsRef}
@@ -267,22 +256,30 @@ export function CharacterDebugOverlay({
 }: CharacterDebugOverlayProps) {
   const previewItemId = equippedRightHand ?? WOOD_AXE_ITEM_ID;
   const [selectedVariant, setSelectedVariant] = useState<PlayableCharacterId>(currentPlayableVariant);
+  const [socketMode, setSocketMode] = useState<SocketMode>("right_hand");
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
   const [workingTransforms, setWorkingTransforms] = useState<ItemSocketTransformByVariant>(() =>
     getInitialTransforms(previewItemId),
   );
-  const [socketState, setSocketState] = useState<RightHandSocketState | null>(null);
+  const [workingBackTransforms, setWorkingBackTransforms] = useState<ItemSocketTransformByVariant>(() =>
+    getInitialBackTransforms(previewItemId),
+  );
+  const [rightHandSocketState, setRightHandSocketState] = useState<RightHandSocketState | null>(null);
+  const [backSocketState, setBackSocketState] = useState<BackSocketState | null>(null);
   const [gizmoDragging, setGizmoDragging] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setSelectedVariant(currentPlayableVariant);
+    setSocketMode("right_hand");
     setGizmoMode("translate");
-    setSocketState(null);
+    setRightHandSocketState(null);
+    setBackSocketState(null);
     setGizmoDragging(false);
     setCopyFeedback(null);
     setWorkingTransforms(getInitialTransforms(previewItemId));
+    setWorkingBackTransforms(getInitialBackTransforms(previewItemId));
   }, [currentPlayableVariant, open, previewItemId]);
 
   useEffect(() => {
@@ -295,32 +292,64 @@ export function CharacterDebugOverlay({
     };
   }, [copyFeedback]);
 
-  const activeTransform = workingTransforms[selectedVariant];
+  const activeTransform =
+    socketMode === "right_hand"
+      ? workingTransforms[selectedVariant]
+      : workingBackTransforms[selectedVariant];
+
   const exportText = useMemo(
-    () => buildExportText(workingTransforms),
-    [workingTransforms],
+    () =>
+      socketMode === "right_hand"
+        ? buildExportText(workingTransforms)
+        : buildBackExportText(workingBackTransforms),
+    [socketMode, workingTransforms, workingBackTransforms],
   );
 
   const handleTransformChange = useCallback(
     (transform: ItemSocketTransform) => {
       startTransition(() => {
-        setWorkingTransforms((previous) => {
-          const nextTransform = cloneItemSocketTransform(transform);
-          if (areTransformsEqual(previous[selectedVariant], nextTransform)) {
-            return previous;
-          }
-          return {
-            ...previous,
-            [selectedVariant]: nextTransform,
-          };
-        });
+        const nextTransform = cloneItemSocketTransform(transform);
+        if (socketMode === "right_hand") {
+          setWorkingTransforms((previous) => {
+            if (areTransformsEqual(previous[selectedVariant], nextTransform)) {
+              return previous;
+            }
+            return {
+              ...previous,
+              [selectedVariant]: nextTransform,
+            };
+          });
+        } else {
+          setWorkingBackTransforms((previous) => {
+            if (areTransformsEqual(previous[selectedVariant], nextTransform)) {
+              return previous;
+            }
+            return {
+              ...previous,
+              [selectedVariant]: nextTransform,
+            };
+          });
+        }
       });
     },
-    [selectedVariant],
+    [selectedVariant, socketMode],
   );
 
-  const handleSocketStateChange = useCallback((state: RightHandSocketState) => {
-    setSocketState((previous) => {
+  const handleRightHandSocketStateChange = useCallback((state: RightHandSocketState) => {
+    setRightHandSocketState((previous) => {
+      if (
+        previous?.found === state.found &&
+        previous?.variant === state.variant &&
+        previous?.nodeName === state.nodeName
+      ) {
+        return previous;
+      }
+      return state;
+    });
+  }, []);
+
+  const handleBackSocketStateChange = useCallback((state: BackSocketState) => {
+    setBackSocketState((previous) => {
       if (
         previous?.found === state.found &&
         previous?.variant === state.variant &&
@@ -333,16 +362,28 @@ export function CharacterDebugOverlay({
   }, []);
 
   const handleResetCurrent = useCallback(() => {
-    const defaults = getInitialTransforms(previewItemId);
-    setWorkingTransforms((previous) => ({
-      ...previous,
-      [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
-    }));
-  }, [previewItemId, selectedVariant]);
+    if (socketMode === "right_hand") {
+      const defaults = getInitialTransforms(previewItemId);
+      setWorkingTransforms((previous) => ({
+        ...previous,
+        [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
+      }));
+    } else {
+      const defaults = getInitialBackTransforms(previewItemId);
+      setWorkingBackTransforms((previous) => ({
+        ...previous,
+        [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
+      }));
+    }
+  }, [previewItemId, selectedVariant, socketMode]);
 
   const handleResetAll = useCallback(() => {
-    setWorkingTransforms(getInitialTransforms(previewItemId));
-  }, [previewItemId]);
+    if (socketMode === "right_hand") {
+      setWorkingTransforms(getInitialTransforms(previewItemId));
+    } else {
+      setWorkingBackTransforms(getInitialBackTransforms(previewItemId));
+    }
+  }, [previewItemId, socketMode]);
 
   const handleCopyExport = useCallback(async () => {
     const copied = await copyTextToClipboard(exportText);
@@ -352,7 +393,9 @@ export function CharacterDebugOverlay({
   if (!open) return null;
 
   const socketMissing =
-    socketState?.variant === selectedVariant && socketState.found === false;
+    socketMode === "right_hand"
+      ? rightHandSocketState?.variant === selectedVariant && rightHandSocketState.found === false
+      : backSocketState?.variant === selectedVariant && backSocketState.found === false;
 
   return (
     <section className="character-debug-overlay" aria-modal="true" role="dialog">
@@ -367,7 +410,8 @@ export function CharacterDebugOverlay({
           <div>
             <h2 className="character-debug-title">Character Debug</h2>
             <p className="character-debug-subtitle">
-              Tune the wood axe hand attachment per playable character.
+              Tune wood axe attachment in hand or on the back (spine / chest socket) per playable
+              character.
             </p>
           </div>
           <button
@@ -394,13 +438,15 @@ export function CharacterDebugOverlay({
               >
                 <CharacterDebugScene
                   playableVariant={selectedVariant}
-                  equippedRightHand={previewItemId}
+                  socketMode={socketMode}
+                  previewItemId={previewItemId}
                   transform={activeTransform}
                   gizmoMode={gizmoMode}
                   gizmoDragging={gizmoDragging}
                   onTransformChange={handleTransformChange}
                   onGizmoDraggingChange={setGizmoDragging}
-                  onSocketStateChange={handleSocketStateChange}
+                  onRightHandSocketStateChange={handleRightHandSocketStateChange}
+                  onBackSocketStateChange={handleBackSocketStateChange}
                 />
               </Canvas>
             </div>
@@ -411,23 +457,53 @@ export function CharacterDebugOverlay({
               }`}
             >
               {socketMissing ? (
-                <>
-                  Missing <code>RightHand</code> socket on{" "}
-                  <strong>{CHARACTER_LABELS[selectedVariant]}</strong>. The axe cannot be attached
-                  until that rig exposes a usable hand bone.
-                </>
+                socketMode === "right_hand" ? (
+                  <>
+                    Missing <code>RightHand</code> socket on{" "}
+                    <strong>{CHARACTER_LABELS[selectedVariant]}</strong>. The axe cannot be attached
+                    until that rig exposes a usable hand bone.
+                  </>
+                ) : (
+                  <>
+                    Missing back (spine / chest) socket on{" "}
+                    <strong>{CHARACTER_LABELS[selectedVariant]}</strong>. The axe cannot be stowed
+                    until that rig exposes a usable upper-body bone.
+                  </>
+                )
               ) : (
                 <>
                   Preview item: <strong>Wood Axe</strong>
-                  {equippedRightHand == null
-                    ? " (debug preview active even though the axe is not currently equipped)."
-                    : " from the current loadout."}
+                  {socketMode === "back"
+                    ? " (back / holstered)."
+                    : equippedRightHand == null
+                      ? " (hand preview; axe not on action bar in loadout)."
+                      : " (hand; from current loadout)."}
                 </>
               )}
             </div>
           </div>
 
           <div className="character-debug-sidebar">
+            <section className="character-debug-section">
+              <span className="character-debug-section-title">Socket</span>
+              <div className="character-debug-chip-row">
+                <button
+                  type="button"
+                  className={`character-debug-chip${socketMode === "right_hand" ? " is-active" : ""}`}
+                  onClick={() => setSocketMode("right_hand")}
+                >
+                  Hand
+                </button>
+                <button
+                  type="button"
+                  className={`character-debug-chip${socketMode === "back" ? " is-active" : ""}`}
+                  onClick={() => setSocketMode("back")}
+                >
+                  Back
+                </button>
+              </div>
+            </section>
+
             <section className="character-debug-section">
               <span className="character-debug-section-title">Character</span>
               <div className="character-debug-chip-row">
@@ -461,6 +537,28 @@ export function CharacterDebugOverlay({
                     {mode}
                   </button>
                 ))}
+              </div>
+            </section>
+
+            <section className="character-debug-section">
+              <span className="character-debug-section-title">Preview pose</span>
+              <div className="character-debug-transform-list">
+                <div className="character-debug-transform-row">
+                  <span>surfaceY</span>
+                  <code>{CHARACTER_DEBUG_POSE.surfaceY?.toFixed(4) ?? "—"}</code>
+                </div>
+                <div className="character-debug-transform-row">
+                  <span>worldY</span>
+                  <code>
+                    {PLAYABLE_PREVIEW_POSE.worldY != null
+                      ? PLAYABLE_PREVIEW_POSE.worldY.toFixed(4)
+                      : "(from surface)"}
+                  </code>
+                </div>
+                <div className="character-debug-transform-row">
+                  <span>grounded</span>
+                  <code>{String(PLAYABLE_PREVIEW_POSE.grounded ?? true)}</code>
+                </div>
               </div>
             </section>
 

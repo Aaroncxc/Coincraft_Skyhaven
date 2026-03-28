@@ -1,6 +1,6 @@
 import { SKYHAVEN_SPRITE_MANIFEST } from "./assets";
 import { TILE_UNIT_SIZE } from "./three/assets3d";
-import type { AssetKey, CloneDirection, IslandMap, TileDef } from "./types";
+import { VFX_TILE_TYPES, type AssetKey, type CloneDirection, type IslandMap, type TileDef } from "./types";
 
 export const CUSTOM_ISLAND_STORAGE_KEY = "skyhaven.customIsland.v1";
 
@@ -317,11 +317,14 @@ export function addTile(
   const existing = island.tiles.find((t) => coordKey(t.gx, t.gy) === key);
   const id = existing ? existing.id : `c-${gx}-${gy}`;
   const nextTiles = island.tiles.filter((t) => coordKey(t.gx, t.gy) !== key);
+  const vfxDefault =
+    (VFX_TILE_TYPES as readonly string[]).includes(type) ? ({ vfxEnabled: true } as const) : {};
   nextTiles.push({
     id,
     gx,
     gy,
     type,
+    ...vfxDefault,
     ...overrides,
   });
   return {

@@ -47,7 +47,10 @@ import { IslandScene } from "./game/three/IslandScene";
 import type { CharacterMovementDebugSnapshot } from "./game/three/useCharacterMovement";
 import {
   DEBUG_NIGHT_SKY_BG_URL,
+  DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC,
   DEFAULT_ISLAND_LIGHTING,
+  dayNightPhaseFromTime,
+  nightBlendFromPhase,
   type IslandLightingAmbiance,
   type IslandLightingParams,
 } from "./game/three/islandLighting";
@@ -90,6 +93,7 @@ import {
 } from "./game/playableCharacters";
 import { isSkyhavenWidgetRuntime } from "./runtime/isWidgetRuntime";
 import {
+  getStowedBackItemFromEquipment,
   hydrateEquipment,
   moveEquipmentItem,
   persistEquipment,
@@ -98,6 +102,11 @@ import {
 } from "./game/equipment";
 import { type PoiActionRequest } from "./game/poiActions";
 import { DEFAULT_WALK_SURFACE_OFFSET_Y, getTileWalkSurfaceOffsetY } from "./game/three/islandSurface";
+import {
+  loadGraphicsSettings,
+  saveGraphicsSettings,
+  type GraphicsSettings,
+} from "./game/graphicsSettings";
 
 const EXPANDED_WINDOW_SIZE = { width: 960, height: 618 };
 const COMPACT_WINDOW_SIZE = { width: 520, height: 520 };
@@ -166,6 +175,8 @@ function MovementDebugHud({
 }
 
 type WindowMode = "expanded" | "compact";
+
+const AUTO_DAY_NIGHT_CYCLE_STORAGE_KEY = "skyhaven.autoDayNightCycle.v1";
 
 export default function App() {
   const [customIsland, setCustomIsland] = useState<IslandMap>(() => hydrateCustomIsland());
@@ -260,6 +271,62 @@ export default function App() {
     ...DEFAULT_ISLAND_LIGHTING,
   }));
   const [sceneLightingAmbiance, setSceneLightingAmbiance] = useState<IslandLightingAmbiance>("day");
+  const [graphicsSettings, setGraphicsSettings] = useState<GraphicsSettings>(() => loadGraphicsSettings());
+  useEffect(() => {
+    saveGraphicsSettings(graphicsSettings);
+  }, [graphicsSettings]);
+
+  const [debugShowFps, setDebugShowFps] = useState(false);
+  const fpsHudRef = useRef<{ fps: number }>({ fps: 0 });
+  const [fpsHudDisplay, setFpsHudDisplay] = useState(0);
+  useEffect(() => {
+    if (!debugMode || !debugShowFps) return;
+    const id = window.setInterval(() => setFpsHudDisplay(fpsHudRef.current.fps), 200);
+    return () => window.clearInterval(id);
+  }, [debugMode, debugShowFps]);
+
+  const [autoDayNightCycle, setAutoDayNightCycle] = useState(() => {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(AUTO_DAY_NIGHT_CYCLE_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_DAY_NIGHT_CYCLE_STORAGE_KEY, autoDayNightCycle ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [autoDayNightCycle]);
+
+  const frameNightLayerRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    if (windowMode === "compact") return;
+    const periodMs = DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC * 1000;
+    if (!autoDayNightCycle) {
+      const el = frameNightLayerRef.current;
+      if (el) el.style.opacity = String(sceneLightingAmbiance === "night" ? 1 : 0);
+      return;
+    }
+    let raf = 0;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const el = frameNightLayerRef.current;
+      if (el) {
+        const phase = dayNightPhaseFromTime(performance.now(), periodMs);
+        el.style.opacity = String(nightBlendFromPhase(phase));
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [autoDayNightCycle, sceneLightingAmbiance, windowMode]);
   const [debugGizmoMode, setDebugGizmoMode] = useState<"translate" | "scale">("translate");
   const [debugSelectedTileId, setDebugSelectedTileId] = useState<string | null>(null);
   const [debugBatchSelectionIds, setDebugBatchSelectionIds] = useState<Set<string>>(() => new Set());
@@ -1531,12 +1598,10 @@ export default function App() {
   const expIsMaxLevel = progression.level >= LEVEL_CAP;
   const expMax = xpToNextLevel(progression.level);
   const expCurrent = expIsMaxLevel ? expMax : progression.expInLevel;
-  const frameBackground =
+  const frameDayBackground =
     windowMode === "compact"
       ? SKYHAVEN_SPRITE_MANIFEST.ui.compactBackground ?? SKYHAVEN_SPRITE_MANIFEST.ui.background
-      : sceneLightingAmbiance === "night"
-        ? DEBUG_NIGHT_SKY_BG_URL
-        : SKYHAVEN_SPRITE_MANIFEST.ui.background;
+      : SKYHAVEN_SPRITE_MANIFEST.ui.background;
 
   return (
     <div className="skyhaven-shell" ref={shellRef}>
@@ -1550,9 +1615,24 @@ export default function App() {
           windowMode === "expanded" && selectedIslandId === "custom" && selectedSection === "Toolbox"
             ? "is-toolbox-open"
             : ""
-        }`}
+        } ${autoDayNightCycle && windowMode !== "compact" ? "auto-day-night-cycle" : ""}`}
       >
-        <img className="frame-bg" src={frameBackground} alt="" />
+        {windowMode === "compact" ? (
+          <img className="frame-bg" src={frameDayBackground} alt="" />
+        ) : (
+          <>
+            <img className="frame-bg frame-bg--day" src={frameDayBackground} alt="" />
+            <img
+              ref={frameNightLayerRef}
+              className="frame-bg frame-bg--night"
+              src={DEBUG_NIGHT_SKY_BG_URL}
+              alt=""
+              style={{
+                opacity: autoDayNightCycle ? 0 : sceneLightingAmbiance === "night" ? 1 : 0,
+              }}
+            />
+          </>
+        )}
 
         <ClockOverlay timeText={countdownText} compact={windowMode === "compact"} minimal={isMinimalMode} />
         <div
@@ -1573,11 +1653,13 @@ export default function App() {
           style={{ width: "100%", height: "100%" }}
         >
           <Canvas
-            shadows
+            shadows={graphicsSettings.shadowsEnabled}
             gl={{ antialias: true, alpha: true }}
             onCreated={(state) => {
-              state.gl.shadowMap.enabled = true;
-              state.gl.shadowMap.type = THREE.BasicShadowMap;
+              state.gl.shadowMap.enabled = graphicsSettings.shadowsEnabled;
+              if (graphicsSettings.shadowsEnabled) {
+                state.gl.shadowMap.type = THREE.BasicShadowMap;
+              }
             }}
             style={{ width: "100%", height: "100%", background: "transparent" }}
           >
@@ -1585,6 +1667,8 @@ export default function App() {
               island={debugMode && debugIsland ? debugIsland : island}
               islandLighting={sceneIslandLighting}
               lightingAmbiance={sceneLightingAmbiance}
+              autoDayNightCycle={autoDayNightCycle}
+              dayNightCyclePeriodSec={DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC}
               selectedIslandId={selectedIslandId}
               buildMode={selectedIslandId === "custom" && selectedTileType !== null}
               eraseMode={selectedIslandId === "custom" && eraseMode}
@@ -1636,12 +1720,19 @@ export default function App() {
               onOpenCharacterSelect={() => setCharacterSelectOpen(true)}
               playableVariant={playableCharacterId}
               equippedRightHand={equipment.equippedRightHand}
+              stowedBackItem={getStowedBackItemFromEquipment(equipment)}
               onTpsModeChange={setTpsModeActive}
               onLuxTpsDialogueChange={handleLuxTpsDialogueChange}
               tpsNpcDialogueDismissRef={tpsNpcDialogueDismissRef}
               playerSfxVolume={sfxVolume}
+              masterVolume={masterVolume}
               showVignette={(windowMode === "expanded" || isFullscreen) && !isMinimalMode}
               movementDebugRef={characterMovementDebugRef}
+              shadowsEnabled={graphicsSettings.shadowsEnabled}
+              postProcessingEnabled={graphicsSettings.postProcessingEnabled}
+              cloudsEnabled={graphicsSettings.cloudsEnabled}
+              debugShowFps={debugShowFps}
+              fpsHudRef={fpsHudRef}
             />
           </Canvas>
         </div>
@@ -1710,8 +1801,18 @@ export default function App() {
             onIslandLightingChange={setSceneIslandLighting}
             lightingAmbiance={sceneLightingAmbiance}
             onLightingAmbianceChange={setSceneLightingAmbiance}
+            autoDayNightCycle={autoDayNightCycle}
+            onAutoDayNightCycleChange={setAutoDayNightCycle}
+            debugShowFps={debugShowFps}
+            onDebugShowFpsChange={setDebugShowFps}
           />
         )}
+
+        {debugMode && debugShowFps ? (
+          <div className="debug-fps-overlay" data-no-window-drag="true">
+            {fpsHudDisplay} FPS
+          </div>
+        ) : null}
 
         <MovementDebugHud
           snapshotRef={characterMovementDebugRef}
@@ -1923,6 +2024,8 @@ export default function App() {
             onSfxVolumeChange={setSfxVolume}
             menuSfxVolume={menuSfxVolume}
             onMenuSfxVolumeChange={setMenuSfxVolume}
+            graphicsSettings={graphicsSettings}
+            onGraphicsSettingsChange={setGraphicsSettings}
             onProfileOpen={() => { setIsProfileOpen(true); setIsInventoryOverlayOpen(false); }}
             onDailyQuestsOpen={() => { setIsPlannerOpen(true); setIsInventoryOverlayOpen(false); }}
             onBuildUndo={handleBuildUndo}

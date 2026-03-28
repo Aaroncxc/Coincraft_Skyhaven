@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { IslandLightingAmbiance, IslandLightingParams } from "../game/three/islandLighting";
 import {
+  DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC,
   DEFAULT_ISLAND_LIGHTING,
   NIGHT_ISLAND_LIGHTING,
 } from "../game/three/islandLighting";
@@ -53,6 +54,11 @@ export type DebugDockProps = {
   /** Tag- / Nacht-Vorschau: steuert Hintergrundbild (App) und Insel-Beleuchtung. */
   lightingAmbiance?: IslandLightingAmbiance;
   onLightingAmbianceChange?: (next: IslandLightingAmbiance) => void;
+  /** Looped day/night from wall clock (disables manual Day/Night while on). */
+  autoDayNightCycle?: boolean;
+  onAutoDayNightCycleChange?: (enabled: boolean) => void;
+  debugShowFps?: boolean;
+  onDebugShowFpsChange?: (show: boolean) => void;
   isDragging?: boolean;
 };
 
@@ -320,6 +326,10 @@ export function DebugDock({
   onIslandLightingChange,
   lightingAmbiance = "day",
   onLightingAmbianceChange,
+  autoDayNightCycle = false,
+  onAutoDayNightCycleChange,
+  debugShowFps = false,
+  onDebugShowFpsChange,
   isDragging = false,
 }: DebugDockProps) {
   const [openSection, setOpenSection] = useState<DebugDockSection | null>(null);
@@ -381,6 +391,29 @@ export function DebugDock({
               x
             </button>
           </div>
+
+          {onDebugShowFpsChange ? (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 0 10px",
+                fontSize: 11,
+                color: "#b8c8d8",
+                cursor: "pointer",
+                borderBottom: "1px solid rgba(136, 204, 255, 0.12)",
+                marginBottom: 8,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={debugShowFps}
+                onChange={(e) => onDebugShowFpsChange(e.target.checked)}
+              />
+              <span>Show FPS (top right)</span>
+            </label>
+          ) : null}
 
           {openSection === "tile" ? (
             <>
@@ -600,8 +633,38 @@ export function DebugDock({
                     <div style={{ ...infoRowStyle, marginBottom: 6, color: "#88ccff" }}>
                       <span>Time of day</span>
                     </div>
-                    <div style={{ ...rowStyle, flexWrap: "wrap" }}>
-                      {renderSegment("Day", lightingAmbiance === "day", () => {
+                    {onAutoDayNightCycleChange ? (
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          marginBottom: 8,
+                          fontSize: 11,
+                          color: "#b8c8d8",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={autoDayNightCycle}
+                          onChange={(e) => onAutoDayNightCycleChange(e.target.checked)}
+                        />
+                        <span>
+                          Auto day/night ({Math.round(DEFAULT_DAY_NIGHT_CYCLE_PERIOD_SEC / 60)} min loop)
+                        </span>
+                      </label>
+                    ) : null}
+                    <div
+                      style={{
+                        ...rowStyle,
+                        flexWrap: "wrap",
+                        opacity: autoDayNightCycle ? 0.45 : 1,
+                        pointerEvents: autoDayNightCycle ? "none" : undefined,
+                      }}
+                    >
+                      {renderSegment("Day", lightingAmbiance === "day" && !autoDayNightCycle, () => {
+                        onAutoDayNightCycleChange?.(false);
                         onLightingAmbianceChange("day");
                         onIslandLightingChange({
                           ...DEFAULT_ISLAND_LIGHTING,
@@ -609,7 +672,8 @@ export function DebugDock({
                             islandLighting.dayLightWarmth ?? DEFAULT_ISLAND_LIGHTING.dayLightWarmth,
                         });
                       })}
-                      {renderSegment("Night", lightingAmbiance === "night", () => {
+                      {renderSegment("Night", lightingAmbiance === "night" && !autoDayNightCycle, () => {
+                        onAutoDayNightCycleChange?.(false);
                         onLightingAmbianceChange("night");
                         onIslandLightingChange({
                           ...NIGHT_ISLAND_LIGHTING,
@@ -618,6 +682,11 @@ export function DebugDock({
                         });
                       })}
                     </div>
+                    {autoDayNightCycle ? (
+                      <div style={{ fontSize: 10, color: "#6f869b", marginTop: 4 }}>
+                        Turn off auto or pick Day/Night to edit manual time.
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

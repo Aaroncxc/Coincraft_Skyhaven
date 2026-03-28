@@ -2,6 +2,7 @@ import { useState } from "react";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../game/assets";
 import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types";
 import type { Inventory } from "../game/inventory";
+import type { GraphicsSettings } from "../game/graphicsSettings";
 import { useMenuSfx } from "../game/useMenuSfx";
 import { BaukastenPanel } from "./BaukastenPanel";
 
@@ -36,6 +37,8 @@ type SidebarProps = {
   onSfxVolumeChange?: (v: number) => void;
   menuSfxVolume?: number;
   onMenuSfxVolumeChange?: (v: number) => void;
+  graphicsSettings?: GraphicsSettings;
+  onGraphicsSettingsChange?: (next: GraphicsSettings) => void;
   editSelectedTile?: TileDef | null;
   editGizmoMode?: "translate" | "scale";
   onEditGizmoModeChange?: (mode: "translate" | "scale") => void;
@@ -99,6 +102,8 @@ export function Sidebar({
   onSfxVolumeChange,
   menuSfxVolume = 72,
   onMenuSfxVolumeChange,
+  graphicsSettings,
+  onGraphicsSettingsChange,
   editSelectedTile,
   editGizmoMode,
   onEditGizmoModeChange,
@@ -119,6 +124,7 @@ export function Sidebar({
   cloneDisabledReason = null,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [optionsTab, setOptionsTab] = useState<"graphics" | "audio" | "general">("graphics");
   const menuSfx = useMenuSfx(masterVolume, menuSfxVolume);
   const ui = SKYHAVEN_SPRITE_MANIFEST.ui;
 
@@ -330,92 +336,188 @@ export function Sidebar({
                   ) : null}
 
                   {panelKind === "options" ? (
-                    <div className="settings-list">
-                      <div className="settings-row">
-                        <span className="settings-label">Music</span>
-                        <div className="settings-music-skip">
+                    <div className="options-panel-inner">
+                      <div className="options-tabs" role="tablist" aria-label="Option categories">
+                        {(
+                          [
+                            { id: "graphics" as const, label: "Grafik" },
+                            { id: "audio" as const, label: "Audio" },
+                            { id: "general" as const, label: "Allgemein" },
+                          ] as const
+                        ).map(({ id, label }) => (
                           <button
+                            key={id}
                             type="button"
-                            className="settings-skip-btn"
+                            role="tab"
+                            id={`options-tab-${id}`}
+                            aria-controls={`options-panel-${id}`}
+                            className={`options-tab${optionsTab === id ? " is-active" : ""}`}
+                            aria-selected={optionsTab === id}
                             onClick={() => {
-                              menuSfx.playTapPrimary();
-                              onMusicPrev?.();
+                              menuSfx.playTapSecondary();
+                              setOptionsTab(id);
                             }}
-                            title="Previous track"
-                            aria-label="Previous track"
                           >
-                            ⏮
+                            {label}
                           </button>
-                          <button
-                            type="button"
-                            className="settings-skip-btn"
-                            onClick={() => {
-                              menuSfx.playTapPrimary();
-                              onMusicNext?.();
-                            }}
-                            title="Next track"
-                            aria-label="Next track"
-                          >
-                            ⏭
-                          </button>
-                        </div>
+                        ))}
                       </div>
 
-                      <label className="settings-row">
-                        <span className="settings-label">Music Vol</span>
-                        <input
-                          className="settings-slider"
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={musicVolume}
-                          onChange={(event) => onMusicVolumeChange?.(Number(event.target.value))}
-                          onMouseDown={() => menuSfx.playTapSecondary()}
-                        />
-                      </label>
+                      <div
+                        className="settings-list"
+                        role="tabpanel"
+                        id={`options-panel-${optionsTab}`}
+                        aria-labelledby={`options-tab-${optionsTab}`}
+                      >
+                        {optionsTab === "general" ? (
+                          <>
+                            <div className="settings-row">
+                              <span className="settings-label">Musik</span>
+                              <div className="settings-music-skip">
+                                <button
+                                  type="button"
+                                  className="settings-skip-btn"
+                                  onClick={() => {
+                                    menuSfx.playTapPrimary();
+                                    onMusicPrev?.();
+                                  }}
+                                  title="Vorheriger Titel"
+                                  aria-label="Vorheriger Titel"
+                                >
+                                  ⏮
+                                </button>
+                                <button
+                                  type="button"
+                                  className="settings-skip-btn"
+                                  onClick={() => {
+                                    menuSfx.playTapPrimary();
+                                    onMusicNext?.();
+                                  }}
+                                  title="Nächster Titel"
+                                  aria-label="Nächster Titel"
+                                >
+                                  ⏭
+                                </button>
+                              </div>
+                            </div>
+                            <p className="options-tab-hint">
+                              Lautstärken findest du unter <strong>Audio</strong>, Grafik unter{" "}
+                              <strong>Grafik</strong>.
+                            </p>
+                          </>
+                        ) : null}
 
-                      <label className="settings-row">
-                        <span className="settings-label">Master Vol</span>
-                        <input
-                          className="settings-slider"
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={masterVolume}
-                          onChange={(event) => onMasterVolumeChange?.(Number(event.target.value))}
-                          onMouseDown={() => menuSfx.playTapSecondary()}
-                        />
-                      </label>
+                        {optionsTab === "audio" ? (
+                          <>
+                            <label className="settings-row">
+                              <span className="settings-label">Musik</span>
+                              <input
+                                className="settings-slider"
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={musicVolume}
+                                onChange={(event) => onMusicVolumeChange?.(Number(event.target.value))}
+                                onMouseDown={() => menuSfx.playTapSecondary()}
+                              />
+                            </label>
 
-                      <label className="settings-row">
-                        <span className="settings-label">SFX Vol</span>
-                        <input
-                          className="settings-slider"
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={sfxVolume}
-                          onChange={(event) => onSfxVolumeChange?.(Number(event.target.value))}
-                          onMouseDown={() => menuSfx.playTapSecondary()}
-                        />
-                      </label>
+                            <label className="settings-row">
+                              <span className="settings-label">Master</span>
+                              <input
+                                className="settings-slider"
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={masterVolume}
+                                onChange={(event) => onMasterVolumeChange?.(Number(event.target.value))}
+                                onMouseDown={() => menuSfx.playTapSecondary()}
+                              />
+                            </label>
 
-                      <label className="settings-row">
-                        <span className="settings-label">Menu Sound</span>
-                        <input
-                          className="settings-slider"
-                          type="range"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={menuSfxVolume}
-                          onChange={(event) => onMenuSfxVolumeChange?.(Number(event.target.value))}
-                          onMouseDown={() => menuSfx.playTapSecondary()}
-                        />
-                      </label>
+                            <label className="settings-row">
+                              <span className="settings-label">SFX</span>
+                              <input
+                                className="settings-slider"
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={sfxVolume}
+                                onChange={(event) => onSfxVolumeChange?.(Number(event.target.value))}
+                                onMouseDown={() => menuSfx.playTapSecondary()}
+                              />
+                            </label>
+
+                            <label className="settings-row">
+                              <span className="settings-label">Menü</span>
+                              <input
+                                className="settings-slider"
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={menuSfxVolume}
+                                onChange={(event) => onMenuSfxVolumeChange?.(Number(event.target.value))}
+                                onMouseDown={() => menuSfx.playTapSecondary()}
+                              />
+                            </label>
+                          </>
+                        ) : null}
+
+                        {optionsTab === "graphics" ? (
+                          graphicsSettings && onGraphicsSettingsChange ? (
+                            <>
+                              <label className="settings-row settings-row--checkbox">
+                                <span className="settings-label">Schatten</span>
+                                <input
+                                  type="checkbox"
+                                  checked={graphicsSettings.shadowsEnabled}
+                                  onChange={(e) => {
+                                    menuSfx.playTapSecondary();
+                                    onGraphicsSettingsChange({
+                                      ...graphicsSettings,
+                                      shadowsEnabled: e.target.checked,
+                                    });
+                                  }}
+                                />
+                              </label>
+                              <label className="settings-row settings-row--checkbox">
+                                <span className="settings-label">Post-Processing</span>
+                                <input
+                                  type="checkbox"
+                                  checked={graphicsSettings.postProcessingEnabled}
+                                  onChange={(e) => {
+                                    menuSfx.playTapSecondary();
+                                    onGraphicsSettingsChange({
+                                      ...graphicsSettings,
+                                      postProcessingEnabled: e.target.checked,
+                                    });
+                                  }}
+                                />
+                              </label>
+                              <label className="settings-row settings-row--checkbox">
+                                <span className="settings-label">Wolken</span>
+                                <input
+                                  type="checkbox"
+                                  checked={graphicsSettings.cloudsEnabled}
+                                  onChange={(e) => {
+                                    menuSfx.playTapSecondary();
+                                    onGraphicsSettingsChange({
+                                      ...graphicsSettings,
+                                      cloudsEnabled: e.target.checked,
+                                    });
+                                  }}
+                                />
+                              </label>
+                            </>
+                          ) : (
+                            <p className="options-tab-hint">Grafikoptionen sind derzeit nicht verfügbar.</p>
+                          )
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                 </section>
