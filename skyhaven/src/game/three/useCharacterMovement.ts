@@ -1179,6 +1179,7 @@ export function useCharacterMovement(
       poseRef.current = {
         ...pose,
         animState: "chop",
+        isManualMove: false,
         chopDuration: activeChopPlaybackSecRef.current,
         chopSwingId: chopSwingSerialRef.current,
         locomotionStrafe: "none",

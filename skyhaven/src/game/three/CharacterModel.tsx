@@ -588,11 +588,12 @@ function useCharacterFrame(
     const sm = 1 - Math.exp(-12 * delta);
     const isJumping = p.animState === "jump";
     const isRolling = p.animState === "roll";
+    const isCombatLocked = p.animState === "chop" || p.animState === "attack";
     if (isJumping && !wasJumping.current) {
       jumpArcTimer.current = 0;
     }
     wasJumping.current = isJumping;
-    if (isJumping || isRolling) {
+    if (isJumping || isRolling || isCombatLocked) {
       pos.x = tx;
       pos.z = tz;
     } else {
@@ -1057,6 +1058,8 @@ function FightManPreviewModel({
   const poseRef = useRef(pose);
   poseRef.current = pose;
   const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
+  const hipsBoneRef = useRef<THREE.Bone | null>(null);
+  const hipsRestPositionRef = useRef<THREE.Vector3 | null>(null);
 
   const baseRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.base) as THREE.Group;
   const swordIdleRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.idle0) as THREE.Group;
@@ -1103,6 +1106,12 @@ function FightManPreviewModel({
       }
     });
   }, [modelScene, bodyAlbedo]);
+
+  useLayoutEffect(() => {
+    const hipsBone = findFightManHipsBone(modelScene);
+    hipsBoneRef.current = hipsBone;
+    hipsRestPositionRef.current = hipsBone ? hipsBone.position.clone() : null;
+  }, [modelScene]);
 
   const allClips = useMemo(() => {
     const fbxByUrl = new Map<string, THREE.Group>([
@@ -1166,6 +1175,14 @@ function FightManPreviewModel({
     nextAction.play();
   }, [actions, equippedRightHand]);
 
+  useFrame(() => {
+    const hipsBone = hipsBoneRef.current;
+    const restPosition = hipsRestPositionRef.current;
+    if (!hipsBone || !restPosition) return;
+    hipsBone.position.x = restPosition.x;
+    hipsBone.position.z = restPosition.z;
+  }, 100);
+
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
 
   return (
@@ -1192,6 +1209,18 @@ function findFightManHeadBone(root: THREE.Object3D): THREE.Bone | null {
     if (found || !(child instanceof THREE.Bone)) return;
     const shortName = child.name.replace(/^.*:/, "");
     if (/^head$/i.test(shortName)) {
+      found = child;
+    }
+  });
+  return found;
+}
+
+function findFightManHipsBone(root: THREE.Object3D): THREE.Bone | null {
+  let found: THREE.Bone | null = null;
+  root.traverse((child) => {
+    if (found || !(child instanceof THREE.Bone)) return;
+    const shortName = child.name.replace(/^.*:/, "");
+    if (/^mixamorighips$/i.test(shortName) || /^hips$/i.test(shortName)) {
       found = child;
     }
   });
@@ -1248,6 +1277,8 @@ function FightManPlayableModel({
   const initDoneRef = useRef(false);
   const lastIdleIndexRef = useRef(-1);
   const headBoneRef = useRef<THREE.Bone | null>(null);
+  const hipsBoneRef = useRef<THREE.Bone | null>(null);
+  const hipsRestPositionRef = useRef<THREE.Vector3 | null>(null);
   const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
   const headLookEulerRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
   const headLookSmoothedYRef = useRef(0);
@@ -1312,6 +1343,12 @@ function FightManPlayableModel({
 
   useLayoutEffect(() => {
     headBoneRef.current = findFightManHeadBone(modelScene);
+  }, [modelScene]);
+
+  useLayoutEffect(() => {
+    const hipsBone = findFightManHipsBone(modelScene);
+    hipsBoneRef.current = hipsBone;
+    hipsRestPositionRef.current = hipsBone ? hipsBone.position.clone() : null;
   }, [modelScene]);
 
   const allClips = useMemo(
@@ -1656,6 +1693,14 @@ function FightManPlayableModel({
     euler.setFromQuaternion(bone.quaternion, "YXZ");
     euler.y = headLookSmoothedYRef.current;
     bone.quaternion.setFromEuler(euler);
+  }, 100);
+
+  useFrame(() => {
+    const hipsBone = hipsBoneRef.current;
+    const restPosition = hipsRestPositionRef.current;
+    if (!hipsBone || !restPosition) return;
+    hipsBone.position.x = restPosition.x;
+    hipsBone.position.z = restPosition.z;
   }, 100);
 
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
