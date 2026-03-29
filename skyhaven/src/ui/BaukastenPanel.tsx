@@ -1,3 +1,4 @@
+import { useEffect, useState, type CSSProperties } from "react";
 import { canAfford, type Inventory } from "../game/inventory";
 import { getTileRecipe } from "../game/resources";
 import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types";
@@ -5,6 +6,7 @@ import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types"
 const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   base: "/ingame_assets/expanded/toolbox/thumb_base.png",
   grass: "/ingame_assets/expanded/toolbox/thumb_grass.png",
+  dirt: "/ingame_assets/Mining_Island_Assets/Dirt_tile.png",
   pathCross: "/ingame_assets/expanded/toolbox/thumb_pathCross.png",
   pathStraight: "/ingame_assets/expanded/toolbox/thumb_pathStraight.png",
   ancientStone: "/ingame_assets/3d/AnicientStone_Tile.png",
@@ -26,6 +28,8 @@ const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   floatingForge: "/ingame_assets/expanded/toolbox/thumb_floatingForge.png",
   farmingChicken: "/ingame_assets/expanded/toolbox/thumb_farmingChicken.png",
   bushTile: "/ingame_assets/expanded/toolbox/thumb_bushTile.png",
+  statueAaron: "/ingame_assets/3d/Statue_Toolbox_Thumbnail.png",
+  torchDecoration: "/ingame_assets/3d/Waffen/Fackel_Inventar_Thumbnail.png",
   magicTower: "/ingame_assets/3d/Magic_Tower.png",
   wellTile: "/ingame_assets/3d/Well_Tile_Round.png",
   well2Tile: "/ingame_assets/3d/Well_Tile_Square.png",
@@ -74,6 +78,19 @@ const RESOURCE_COLORS: Record<string, string> = {
   wood: "#8b4513",
 };
 
+type BaukastenTileEntry = {
+  type: AssetKey;
+  label: string;
+};
+
+type BaukastenCategoryId = "ground_paths" | "nature" | "farming_pois" | "buildings" | "decor";
+
+type BaukastenCategory = {
+  id: BaukastenCategoryId;
+  label: string;
+  tiles: BaukastenTileEntry[];
+};
+
 function CostChips({ cost }: { cost: { resourceId: string; amount: number }[] }) {
   return (
     <div className="baukasten-tile-costs">
@@ -81,7 +98,7 @@ function CostChips({ cost }: { cost: { resourceId: string; amount: number }[] })
         <span
           key={item.resourceId}
           className="baukasten-cost-chip"
-          style={{ "--chip-color": RESOURCE_COLORS[item.resourceId] ?? "#6b7a8a" } as React.CSSProperties}
+          style={{ "--chip-color": RESOURCE_COLORS[item.resourceId] ?? "#6b7a8a" } as CSSProperties}
         >
           <span className="baukasten-cost-dot" aria-hidden />
           {item.amount} {RESOURCE_LABELS[item.resourceId] ?? item.resourceId}
@@ -91,36 +108,77 @@ function CostChips({ cost }: { cost: { resourceId: string; amount: number }[] })
   );
 }
 
-export const BAUKASTEN_TILES: Array<{ type: AssetKey; label: string }> = [
-  { type: "base", label: "Base" },
-  { type: "dirt", label: "Dirt" },
-  { type: "pathCross", label: "Path X" },
-  { type: "pathStraight", label: "Path Straight" },
-  { type: "ancientStone", label: "Ancient Stone" },
-  { type: "ancientStoneWall", label: "Ancient Stone Wall" },
-  { type: "ancientCornerWall", label: "Ancient Corner Wall" },
-  { type: "tree1", label: "Tree" },
-  { type: "treeMiddle", label: "Tree Mid" },
-  { type: "farmSlot", label: "Farm" },
-  { type: "mineTile", label: "POIs Mining" },
-  { type: "farm2x2", label: "Farm 2x2" },
-  { type: "poisFarming", label: "POIs Farm" },
-  { type: "grasBlumen", label: "Gras Blumen" },
-  { type: "taverne", label: "Taverne" },
-  { type: "floatingForge", label: "Forge" },
-  { type: "farmingChicken", label: "Chicken" },
-  { type: "bushTile", label: "Bush" },
-  { type: "statueAaron", label: "Statue" },
-  { type: "torchDecoration", label: "Fackel" },
-  { type: "magicTower", label: "Magic Tower" },
-  { type: "wellTile", label: "Well" },
-  { type: "well2Tile", label: "Well (Square)" },
-  { type: "halfGrownCropTile", label: "Half-grown Crop" },
-  { type: "cottaTile", label: "Cotta" },
-  { type: "ancientTempleTile", label: "Ancient Temple" },
-  { type: "kaserneTile", label: "Kaserne" },
-  { type: "runeTile", label: "Rune" },
+const DEFAULT_BAUKASTEN_CATEGORY_ID: BaukastenCategoryId = "ground_paths";
+
+export const BAUKASTEN_CATEGORIES: BaukastenCategory[] = [
+  {
+    id: "ground_paths",
+    label: "Boden & Wege",
+    tiles: [
+      { type: "grass", label: "Grass" },
+      { type: "dirt", label: "Dirt" },
+      { type: "pathCross", label: "Path X" },
+      { type: "pathStraight", label: "Path Straight" },
+      { type: "ancientStone", label: "Ancient Stone" },
+      { type: "ancientStoneWall", label: "Ancient Stone Wall" },
+      { type: "ancientCornerWall", label: "Ancient Corner Wall" },
+      { type: "grasBlumen", label: "Gras Blumen" },
+    ],
+  },
+  {
+    id: "nature",
+    label: "Natur",
+    tiles: [
+      { type: "tree1", label: "Tree" },
+      { type: "treeMiddle", label: "Tree Mid" },
+      { type: "bushTile", label: "Bush" },
+      { type: "farmingChicken", label: "Chicken" },
+    ],
+  },
+  {
+    id: "farming_pois",
+    label: "Farming & POIs",
+    tiles: [
+      { type: "mineTile", label: "POIs Mining" },
+      { type: "farm2x2", label: "Farm 2x2" },
+      { type: "poisFarming", label: "POIs Farm" },
+      { type: "halfGrownCropTile", label: "Half-grown Crop" },
+    ],
+  },
+  {
+    id: "buildings",
+    label: "Gebäude",
+    tiles: [
+      { type: "taverne", label: "Taverne" },
+      { type: "floatingForge", label: "Forge" },
+      { type: "magicTower", label: "Magic Tower" },
+      { type: "wellTile", label: "Well" },
+      { type: "well2Tile", label: "Well (Square)" },
+      { type: "cottaTile", label: "Cotta" },
+      { type: "ancientTempleTile", label: "Ancient Temple" },
+      { type: "kaserneTile", label: "Kaserne" },
+      { type: "runeTile", label: "Rune" },
+    ],
+  },
+  {
+    id: "decor",
+    label: "Deko",
+    tiles: [
+      { type: "statueAaron", label: "Statue" },
+      { type: "torchDecoration", label: "Fackel" },
+    ],
+  },
 ];
+
+const TILE_TO_CATEGORY: Partial<Record<AssetKey, BaukastenCategoryId>> = BAUKASTEN_CATEGORIES.reduce(
+  (map, category) => {
+    for (const tile of category.tiles) {
+      map[tile.type] = category.id;
+    }
+    return map;
+  },
+  {} as Partial<Record<AssetKey, BaukastenCategoryId>>,
+);
 
 const RESOURCE_LABELS_FULL: Record<string, string> = {
   ore: "Ore", wheat: "Wheat", wood: "Wood",
@@ -144,13 +202,27 @@ export function BaukastenPanel({
   canUndo = false,
 }: BaukastenPanelProps) {
   const visible = selectedIslandId === "custom" && windowMode === "expanded";
-  if (!visible) {
-    return null;
-  }
+  const [activeCategoryId, setActiveCategoryId] = useState<BaukastenCategoryId>(DEFAULT_BAUKASTEN_CATEGORY_ID);
+
+  useEffect(() => {
+    if (!selectedTileType) {
+      return;
+    }
+    const matchingCategoryId = TILE_TO_CATEGORY[selectedTileType];
+    if (matchingCategoryId) {
+      setActiveCategoryId(matchingCategoryId);
+    }
+  }, [selectedTileType]);
 
   const totalResources = (inventory.ore ?? 0) + (inventory.wheat ?? 0) + (inventory.wood ?? 0);
   const hasNoResources = totalResources === 0;
   const resourceSummary = `O:${inventory.ore ?? 0} W:${inventory.wheat ?? 0} H:${inventory.wood ?? 0}`;
+  const activeCategory =
+    BAUKASTEN_CATEGORIES.find((category) => category.id === activeCategoryId) ?? BAUKASTEN_CATEGORIES[0];
+
+  if (!visible) {
+    return null;
+  }
 
   return (
     <div className="baukasten-panel" data-no-window-drag="true">
@@ -187,8 +259,30 @@ export function BaukastenPanel({
         </div>
       ) : null}
 
-      <div className="baukasten-palette">
-        {BAUKASTEN_TILES.map(({ type: tileType, label }) => {
+      <div className="baukasten-tabs" role="tablist" aria-label="Toolbox categories">
+        {BAUKASTEN_CATEGORIES.map((category) => (
+          <button
+            key={category.id}
+            type="button"
+            role="tab"
+            id={`baukasten-tab-${category.id}`}
+            aria-controls={`baukasten-panel-${category.id}`}
+            aria-selected={activeCategoryId === category.id}
+            className={`baukasten-tab${activeCategoryId === category.id ? " is-active" : ""}`}
+            onClick={() => setActiveCategoryId(category.id)}
+          >
+            {category.label}
+          </button>
+        ))}
+      </div>
+
+      <div
+        className="baukasten-palette"
+        role="tabpanel"
+        id={`baukasten-panel-${activeCategory.id}`}
+        aria-labelledby={`baukasten-tab-${activeCategory.id}`}
+      >
+        {activeCategory.tiles.map(({ type: tileType, label }) => {
           const recipe = getTileRecipe(tileType);
           const affordable = recipe ? canAfford(inventory, recipe) : false;
           const isSelected = selectedTileType === tileType;

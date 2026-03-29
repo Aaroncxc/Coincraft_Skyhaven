@@ -2,15 +2,15 @@ import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Suspense, type ReactNode } from "react";
 import type { Object3D } from "three";
 import type {
-  EquippableItemId,
+  AttachmentLoadout,
+  AttachmentSocketId,
   ItemSocketTransform,
 } from "../game/equipment";
 import type { PlayableCharacterId } from "../game/playableCharacters";
 import {
   CharacterModel,
   FIGHT_MAN_ORBIT_MESH_SCALE_MULT,
-  type BackSocketState,
-  type RightHandSocketState,
+  type AttachmentSocketState,
 } from "../game/three/CharacterModel";
 import { DEFAULT_WALK_SURFACE_OFFSET_Y } from "../game/three/islandSurface";
 import type { CharacterPose3D } from "../game/three/useCharacterMovement";
@@ -36,34 +36,32 @@ const PREVIEW_POSITION: [number, number, number] = [0, -0.8, 0];
 
 type PlayableCharacterPreviewSceneProps = {
   playableVariant: PlayableCharacterId;
-  equippedRightHand?: EquippableItemId | null;
-  stowedBackItem?: EquippableItemId | null;
-  equippedRightHandTransformOverride?: ItemSocketTransform | null;
-  equippedBackTransformOverride?: ItemSocketTransform | null;
+  attachmentLoadout?: AttachmentLoadout;
+  attachmentTransformOverrides?: Partial<Record<AttachmentSocketId, ItemSocketTransform | null>>;
+  axeGlowEnabled?: boolean;
+  animationPaused?: boolean;
   orbitEnabled?: boolean;
   onOrbitStart?: () => void;
   onOrbitEnd?: () => void;
-  onEquippedToolObjectChange?: (toolObject: Object3D | null) => void;
-  onRightHandSocketStateChange?: (state: RightHandSocketState) => void;
-  onBackSocketStateChange?: (state: BackSocketState) => void;
+  onAttachmentObjectChange?: (socketId: AttachmentSocketId, toolObject: Object3D | null) => void;
+  onAttachmentSocketStateChange?: (state: AttachmentSocketState) => void;
   children?: ReactNode;
 };
 
 export function PlayableCharacterPreviewScene({
   playableVariant,
-  equippedRightHand = null,
-  stowedBackItem = null,
-  equippedRightHandTransformOverride = null,
-  equippedBackTransformOverride = null,
+  attachmentLoadout,
+  attachmentTransformOverrides,
+  axeGlowEnabled = true,
+  animationPaused = false,
   orbitEnabled = true,
   onOrbitStart,
   onOrbitEnd,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
   children,
 }: PlayableCharacterPreviewSceneProps) {
-  const previewKey = `${playableVariant}:${equippedRightHand ?? "none"}:${stowedBackItem ?? "none"}`;
+  const previewKey = `${playableVariant}:${JSON.stringify(attachmentLoadout ?? null)}`;
 
   return (
     <>
@@ -101,16 +99,15 @@ export function PlayableCharacterPreviewScene({
             pose={PLAYABLE_PREVIEW_POSE}
             playableVariant={playableVariant}
             renderContext="preview"
-            equippedRightHand={equippedRightHand}
-            stowedBackItem={stowedBackItem}
-            equippedRightHandTransformOverride={equippedRightHandTransformOverride}
-            equippedBackTransformOverride={equippedBackTransformOverride}
+            attachmentLoadout={attachmentLoadout}
+            attachmentTransformOverrides={attachmentTransformOverrides}
+            axeGlowEnabled={axeGlowEnabled}
+            animationPaused={animationPaused}
             fightManOrbitMeshScaleMult={
               playableVariant === "fight_man" ? FIGHT_MAN_ORBIT_MESH_SCALE_MULT : undefined
             }
-            onEquippedToolObjectChange={onEquippedToolObjectChange}
-            onRightHandSocketStateChange={onRightHandSocketStateChange}
-            onBackSocketStateChange={onBackSocketStateChange}
+            onAttachmentObjectChange={onAttachmentObjectChange}
+            onAttachmentSocketStateChange={onAttachmentSocketStateChange}
           />
         </Suspense>
       </group>

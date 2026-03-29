@@ -83,6 +83,7 @@ const PLACEABLE_TYPES = [
   { key: "taverne", label: "Taverne" },
   { key: "floatingForge", label: "Forge" },
   { key: "farmingChicken", label: "Chicken" },
+  { key: "torchDecoration", label: "Torch" },
   { key: "magicTower", label: "Magic Tower" },
   { key: "wellTile", label: "Well" },
   { key: "well2Tile", label: "Well Square" },

@@ -49,6 +49,10 @@ const NPC_GROUND_PROFILES = {
     ...DEFAULT_PLAYER_PROFILE,
     visualGroundOffsetY: 0.1,
   },
+  enemyRobot: {
+    ...DEFAULT_PLAYER_PROFILE,
+    visualGroundOffsetY: 0.08,
+  },
 } as const;
 
 export type NpcGroundProfileId = keyof typeof NPC_GROUND_PROFILES;

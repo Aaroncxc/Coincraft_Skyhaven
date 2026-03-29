@@ -94,7 +94,11 @@ export function hydrateCustomIsland(): IslandMap {
 
 export function persistCustomIsland(island: IslandMap): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(CUSTOM_ISLAND_STORAGE_KEY, JSON.stringify(island));
+  try {
+    window.localStorage.setItem(CUSTOM_ISLAND_STORAGE_KEY, JSON.stringify(island));
+  } catch (error) {
+    console.error("Skyhaven: failed to persist custom island.", error);
+  }
 }
 
 const ISLAND_OVERRIDE_PREFIX = "skyhaven.islandOverride.";
@@ -105,7 +109,11 @@ export function persistIslandOverride(islandId: string, island: IslandMap): void
     persistCustomIsland(island);
     return;
   }
-  window.localStorage.setItem(ISLAND_OVERRIDE_PREFIX + islandId, JSON.stringify(island));
+  try {
+    window.localStorage.setItem(ISLAND_OVERRIDE_PREFIX + islandId, JSON.stringify(island));
+  } catch (error) {
+    console.error(`Skyhaven: failed to persist island override for "${islandId}".`, error);
+  }
 }
 
 export function hydrateIslandOverride(islandId: string, fallback: IslandMap): IslandMap {

@@ -20,6 +20,7 @@ const ISO_ORTHO_NEAR = 0.001;
 const ISO_ORTHO_FAR = 25_000;
 const FOLLOW_ZOOM_THRESHOLD = 140;
 const FOLLOW_STIFFNESS = 6;
+const TPS_TARGET_FOLLOW_STIFFNESS = 4.3;
 const FOLLOW_DEAD_ZONE = 0.02;
 
 const TPS_FOV = 55;
@@ -78,6 +79,7 @@ type IslandCameraProps = {
   followCharacter?: boolean;
   orbitEnabled?: boolean;
   tpsEnabled?: boolean;
+  forceIsoToken?: number;
   tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
   cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 };
@@ -118,6 +120,7 @@ export function IslandCamera({
   followCharacter = false,
   orbitEnabled = true,
   tpsEnabled = false,
+  forceIsoToken = 0,
   tpsCameraStateRef,
   cameraOccludersRef,
 }: IslandCameraProps) {
@@ -156,6 +159,7 @@ export function IslandCamera({
   const distanceTargetRef = useRef(TPS_MAX_DISTANCE);
   const modeRef = useRef<CameraMode>("iso");
   modeRef.current = mode;
+  const prevForceIsoTokenRef = useRef(forceIsoToken);
 
   useEffect(() => {
     const camera = orthoCameraRef.current;
@@ -352,6 +356,16 @@ export function IslandCamera({
       }
     }
   }, [beginExitToIso, characterPose, finishExitToIso, followCharacter, mode, orbitEnabled, tpsEnabled]);
+
+  useEffect(() => {
+    if (forceIsoToken === prevForceIsoTokenRef.current) return;
+    prevForceIsoTokenRef.current = forceIsoToken;
+    if (modeRef.current === "tps") {
+      beginExitToIso(0);
+    } else if (modeRef.current === "tps_exit") {
+      finishExitToIso();
+    }
+  }, [beginExitToIso, finishExitToIso, forceIsoToken]);
 
   useEffect(() => {
     if (mode !== "tps") return;
@@ -615,7 +629,8 @@ export function IslandCamera({
         Math.abs(dy) >= FOLLOW_DEAD_ZONE ||
         Math.abs(dz) >= FOLLOW_DEAD_ZONE
       ) {
-        const alpha = 1 - Math.exp(-FOLLOW_STIFFNESS * delta);
+        const followStiffness = tpsDriving ? TPS_TARGET_FOLLOW_STIFFNESS : FOLLOW_STIFFNESS;
+        const alpha = 1 - Math.exp(-followStiffness * delta);
         targetRef.current.x += dx * alpha;
         targetRef.current.y += dy * alpha;
         targetRef.current.z += dz * alpha;

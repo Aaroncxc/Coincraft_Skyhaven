@@ -1,6 +1,7 @@
 import { useGLTF, useAnimations, useTexture } from "@react-three/drei";
-import { useFrame, useLoader } from "@react-three/fiber";
+import { createPortal, useFrame, useLoader } from "@react-three/fiber";
 import {
+  useCallback,
   useRef,
   useEffect,
   useLayoutEffect,
@@ -18,13 +19,17 @@ import {
   MINING_MAN_MODELS,
   MAGIC_MAN_MODELS,
   FIGHT_MAN_SWORD_MODELS,
+  FIGHT_MAN_TORCH_MODELS,
   FIGHT_MAN_ADV_MODELS,
   FIGHT_MAN_SWORD_FBX_URLS,
   FIGHT_MAN_ADV_FBX_URLS,
+  FIGHT_MAN_TORCH_FBX_URLS,
   FIGHT_MAN_ALBEDO_MAP,
   FIGHT_MAN_ADV_IDLE_COUNT,
   FIGHT_MAN_SWORD_IDLE_COUNT,
   AXE_PROP_GLB,
+  SHIELD_PROP_GLB,
+  TORCH_PROP_GLB,
   MAIN_CHAR_AXE_CHOP_ANIM_GLB,
   AXE_CHOP_PLAYBACK_SEC,
 } from "./assets3d";
@@ -33,10 +38,14 @@ import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
 import { tuneRigPbrForIslandLighting } from "./tuneRigPbr";
 import { getPlayableAvatarGroundProfile } from "./avatarGrounding";
+import { DecorationMysticParticles } from "./DecorationMysticParticles";
 import type { CharacterPose3D, TpsCameraState } from "./useCharacterMovement";
 import {
-  getEquippableItemBackTransform,
-  getEquippableItemRightHandTransform,
+  getEquippableItemSocketTransform,
+  isEquippableItemCombatItem,
+  TORCH_ITEM_ID,
+  type AttachmentLoadout,
+  type AttachmentSocketId,
   type EquippableItemId,
   type ItemSocketTransform,
 } from "../equipment";
@@ -45,10 +54,14 @@ import { FBXLoader } from "./fbxLoader";
 
 Object.values(CHAR_3D_MODELS).forEach((p) => useGLTF.preload(p));
 useGLTF.preload(AXE_PROP_GLB);
+useGLTF.preload(SHIELD_PROP_GLB);
+useGLTF.preload(TORCH_PROP_GLB);
 useGLTF.preload(MAIN_CHAR_AXE_CHOP_ANIM_GLB);
 useLoader.preload(FBXLoader, FIGHT_MAN_SWORD_MODELS.base);
 useLoader.preload(FBXLoader, FIGHT_MAN_SWORD_MODELS.idle0);
 useLoader.preload(FBXLoader, FIGHT_MAN_ADV_MODELS.idle0);
+useLoader.preload(FBXLoader, FIGHT_MAN_TORCH_MODELS.walk);
+useLoader.preload(FBXLoader, FIGHT_MAN_TORCH_MODELS.run);
 
 const CROSSFADE_DURATION = 0.14;
 const BASE_ROT_Y = -Math.PI / 4;
@@ -71,6 +84,18 @@ function allowCrossfadeWarpFrom(prevClipName: string): boolean {
 function isClipLayerActive(action: THREE.AnimationAction | null | undefined): boolean {
   if (!action) return false;
   return action.isRunning() && action.getEffectiveWeight() > 0.02;
+}
+
+function usePausedAnimationActions(
+  actions: Record<string, THREE.AnimationAction | null | undefined>,
+  paused: boolean,
+): void {
+  useEffect(() => {
+    for (const action of Object.values(actions)) {
+      if (!action) continue;
+      action.paused = paused;
+    }
+  }, [actions, paused]);
 }
 
 /**
@@ -123,16 +148,16 @@ const FIGHT_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("fight_man").visual
 const FIGHT_MAN_HEAD_YAW_MAX_RAD = 0.95;
 /** Lerp toward target head yaw per second (higher = snappier, less fight with fast idle). */
 const FIGHT_MAN_HEAD_LOOK_SMOOTH_SPEED = 14;
-const warnedMissingRightHandSocketVariants = new Set<PlayableCharacterId>();
-const warnedMissingBackSocketVariants = new Set<PlayableCharacterId>();
+const warnedMissingSocketKeys = new Set<string>();
+const WOOD_AXE_GLOW_COLOR = new THREE.Color(0xff5a68);
+const WOOD_AXE_GLOW_BASE_SCALE = 1.055;
+const WOOD_AXE_GLOW_PULSE_SCALE = 0.024;
+const WOOD_AXE_GLOW_BASE_OPACITY = 0.12;
+const WOOD_AXE_GLOW_PULSE_OPACITY = 0.07;
+const WOOD_AXE_GLOW_PULSE_SPEED = 3.2;
 
-export type RightHandSocketState = {
-  found: boolean;
-  variant: PlayableCharacterId;
-  nodeName: string | null;
-};
-
-export type BackSocketState = {
+export type AttachmentSocketState = {
+  socketId: AttachmentSocketId;
   found: boolean;
   variant: PlayableCharacterId;
   nodeName: string | null;
@@ -145,16 +170,25 @@ type BaseProps = {
   tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
   /** `preview` is for lightweight overlay canvases; `world` keeps the full gameplay animation set. */
   renderContext?: "world" | "preview";
-  equippedRightHand?: EquippableItemId | null;
-  equippedRightHandTransformOverride?: ItemSocketTransform | null;
-  /** Stowed weapon when in inventory but not on action bar (mutually exclusive with hand in App). */
-  stowedBackItem?: EquippableItemId | null;
-  equippedBackTransformOverride?: ItemSocketTransform | null;
-  onEquippedToolObjectChange?: (toolObject: THREE.Object3D | null) => void;
-  onRightHandSocketStateChange?: (state: RightHandSocketState) => void;
-  onBackSocketStateChange?: (state: BackSocketState) => void;
+  attachmentLoadout?: AttachmentLoadout;
+  attachmentTransformOverrides?: Partial<Record<AttachmentSocketId, ItemSocketTransform | null>>;
+  axeGlowEnabled?: boolean;
+  onAttachmentObjectChange?: (
+    socketId: AttachmentSocketId,
+    toolObject: THREE.Object3D | null,
+  ) => void;
+  onAttachmentSocketStateChange?: (state: AttachmentSocketState) => void;
+  animationPaused?: boolean;
   /** Character debug / profile: pass `FIGHT_MAN_ORBIT_MESH_SCALE_MULT` for `fight_man` only. */
   fightManOrbitMeshScaleMult?: number;
+};
+
+const EMPTY_ATTACHMENT_LOADOUT: AttachmentLoadout = {
+  right_hand: null,
+  left_hand: null,
+  back_right: null,
+  back_left: null,
+  hip_left: null,
 };
 
 function applySocketTransform(object: THREE.Object3D, transform: ItemSocketTransform): void {
@@ -209,6 +243,16 @@ function createToolObject(itemId: EquippableItemId): THREE.Object3D {
   switch (itemId) {
     case "wood_axe_placeholder":
       return buildWoodAxePlaceholder();
+    case "shield_placeholder": {
+      const fallback = new THREE.Group();
+      fallback.name = "ShieldPlaceholder";
+      return fallback;
+    }
+    case "torch_placeholder": {
+      const fallback = new THREE.Group();
+      fallback.name = "TorchPlaceholder";
+      return fallback;
+    }
     default: {
       const fallback = new THREE.Group();
       fallback.name = "UnknownToolPlaceholder";
@@ -217,9 +261,56 @@ function createToolObject(itemId: EquippableItemId): THREE.Object3D {
   }
 }
 
-function cloneWoodAxeFromGltf(axeTemplate: THREE.Object3D): THREE.Group {
+function attachWoodAxeGlow(toolRoot: THREE.Group): void {
+  const glowRoot = toolRoot.clone(true) as THREE.Group;
+  const glowMaterials: THREE.MeshBasicMaterial[] = [];
+  glowRoot.name = "WoodAxeGlow";
+  glowRoot.scale.setScalar(WOOD_AXE_GLOW_BASE_SCALE);
+  glowRoot.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry = child.geometry.clone();
+    const glowMaterial = new THREE.MeshBasicMaterial({
+      color: WOOD_AXE_GLOW_COLOR,
+      transparent: true,
+      opacity: WOOD_AXE_GLOW_BASE_OPACITY,
+      side: THREE.BackSide,
+      depthWrite: false,
+      toneMapped: false,
+      blending: THREE.AdditiveBlending,
+      fog: false,
+    });
+    child.material = glowMaterial;
+    child.castShadow = false;
+    child.receiveShadow = false;
+    child.renderOrder = 8;
+    glowMaterials.push(glowMaterial);
+  });
+  toolRoot.add(glowRoot);
+  toolRoot.userData.axeGlowShell = glowRoot;
+  toolRoot.userData.axeGlowMaterials = glowMaterials;
+  toolRoot.userData.axeGlowPulsePhase = Math.random() * Math.PI * 2;
+}
+
+function cloneWoodAxeFromGltf(axeTemplate: THREE.Object3D, axeGlowEnabled: boolean): THREE.Group {
   const group = axeTemplate.clone(true) as THREE.Group;
   group.name = "WoodAxeGltf";
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry = child.geometry.clone();
+    child.material = Array.isArray(child.material)
+      ? child.material.map((material) => material.clone())
+      : child.material.clone();
+  });
+  tuneSkinnedSceneMaterials(group);
+  if (axeGlowEnabled) {
+    attachWoodAxeGlow(group);
+  }
+  return group;
+}
+
+function cloneStaticPropFromGltf(template: THREE.Object3D, groupName: string): THREE.Group {
+  const group = template.clone(true) as THREE.Group;
+  group.name = groupName;
   group.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
     child.geometry = child.geometry.clone();
@@ -231,11 +322,86 @@ function cloneWoodAxeFromGltf(axeTemplate: THREE.Object3D): THREE.Group {
   return group;
 }
 
-function makeEquippedToolObject(itemId: EquippableItemId, axeTemplate: THREE.Object3D): THREE.Object3D {
-  if (itemId === "wood_axe_placeholder") {
-    return cloneWoodAxeFromGltf(axeTemplate);
+function cloneShieldFromGltf(shieldTemplate: THREE.Object3D): THREE.Group {
+  return cloneStaticPropFromGltf(shieldTemplate, "ShieldGltf");
+}
+
+function cloneTorchFromGltf(torchTemplate: THREE.Object3D): THREE.Group {
+  const group = cloneStaticPropFromGltf(torchTemplate, "TorchGltf");
+  const box = new THREE.Box3().setFromObject(group);
+  group.userData.torchFlameEmitterLocalY = Number.isFinite(box.max.y) ? box.max.y : 0;
+  return group;
+}
+
+function getTorchFlameInverseScale(target: THREE.Object3D): [number, number, number] {
+  const scaleX = Math.abs(target.scale.x) > 1e-4 ? 1 / Math.abs(target.scale.x) : 1;
+  const scaleY = Math.abs(target.scale.y) > 1e-4 ? 1 / Math.abs(target.scale.y) : 1;
+  const scaleZ = Math.abs(target.scale.z) > 1e-4 ? 1 / Math.abs(target.scale.z) : 1;
+  return [scaleX, scaleY, scaleZ];
+}
+
+function getTorchFlameEmitterLocalY(target: THREE.Object3D): number {
+  const stored = Number(target.userData.torchFlameEmitterLocalY);
+  if (Number.isFinite(stored)) {
+    return stored;
+  }
+  const box = new THREE.Box3().setFromObject(target);
+  const safeScaleY = Math.abs(target.scale.y) > 1e-4 ? Math.abs(target.scale.y) : 1;
+  return Number.isFinite(box.max.y) ? box.max.y / safeScaleY : 0;
+}
+
+function HeldTorchFlamePortal({
+  target,
+  enabled,
+}: {
+  target: THREE.Object3D | null;
+  enabled: boolean;
+}) {
+  if (!target || !enabled) return null;
+  const emitterLocalY = getTorchFlameEmitterLocalY(target);
+  const inverseScale = getTorchFlameInverseScale(target);
+  return createPortal(
+    <group position={[0, emitterLocalY, 0]} scale={inverseScale}>
+      <DecorationMysticParticles decoration="torchDecoration" emitterLocalY={0} enabled />
+    </group>,
+    target,
+  );
+}
+
+function makeAttachmentObject(
+  itemId: EquippableItemId,
+  templates: Partial<Record<EquippableItemId, THREE.Object3D>>,
+  axeGlowEnabled: boolean,
+): THREE.Object3D {
+  if (itemId === "wood_axe_placeholder" && templates.wood_axe_placeholder) {
+    return cloneWoodAxeFromGltf(templates.wood_axe_placeholder, axeGlowEnabled);
+  }
+  if (itemId === "shield_placeholder" && templates.shield_placeholder) {
+    return cloneShieldFromGltf(templates.shield_placeholder);
+  }
+  if (itemId === TORCH_ITEM_ID && templates[TORCH_ITEM_ID]) {
+    return cloneTorchFromGltf(templates[TORCH_ITEM_ID]);
   }
   return createToolObject(itemId);
+}
+
+function useAnimateToolGlow(toolObjectRef: MutableRefObject<THREE.Object3D | null>): void {
+  useFrame(({ clock }) => {
+    const toolObject = toolObjectRef.current;
+    if (!toolObject) return;
+    const glowShell = toolObject.userData.axeGlowShell as THREE.Object3D | undefined;
+    const glowMaterials = toolObject.userData.axeGlowMaterials as
+      | THREE.MeshBasicMaterial[]
+      | undefined;
+    if (!glowShell || !glowMaterials?.length) return;
+    const pulsePhase = Number(toolObject.userData.axeGlowPulsePhase ?? 0);
+    const pulse = 0.5 + 0.5 * Math.sin(clock.getElapsedTime() * WOOD_AXE_GLOW_PULSE_SPEED + pulsePhase);
+    glowShell.scale.setScalar(WOOD_AXE_GLOW_BASE_SCALE + WOOD_AXE_GLOW_PULSE_SCALE * pulse);
+    const opacity = WOOD_AXE_GLOW_BASE_OPACITY + WOOD_AXE_GLOW_PULSE_OPACITY * pulse;
+    for (const material of glowMaterials) {
+      material.opacity = opacity;
+    }
+  });
 }
 
 /** GLB rigs use `RightHand`; Mixamo FBX often uses `mixamorigRightHand` / `mixamorig:RightHand`. */
@@ -261,6 +427,34 @@ function findRightHandAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D 
     }
     const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
     if (/^mixamorigRightHand$/i.test(leaf) || /^RightHand$/i.test(leaf)) {
+      found = child;
+    }
+  });
+  return found;
+}
+
+function findLeftHandAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D | null {
+  const exact = [
+    "LeftHand",
+    "mixamorigLeftHand",
+    "MixamorigLeftHand",
+    "mixamorig:LeftHand",
+    "Mixamorig:LeftHand",
+  ];
+  for (const name of exact) {
+    const o = modelRoot.getObjectByName(name);
+    if (o) return o;
+  }
+  let found: THREE.Object3D | null = null;
+  modelRoot.traverse((child) => {
+    if (found) return;
+    const n = child.name;
+    if (/(^|[.:])LeftHand$/i.test(n)) {
+      found = child;
+      return;
+    }
+    const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
+    if (/^mixamorigLeftHand$/i.test(leaf) || /^LeftHand$/i.test(leaf)) {
       found = child;
     }
   });
@@ -306,11 +500,79 @@ function findBackAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D | nul
   return found;
 }
 
-function useAttachRightHandSocket(
+/** Hips / pelvis anchor for side-stowed props like the torch. */
+function findHipAttachmentBone(modelRoot: THREE.Object3D): THREE.Object3D | null {
+  const exact = [
+    "Hips",
+    "hips",
+    "Pelvis",
+    "pelvis",
+    "mixamorigHips",
+    "MixamorigHips",
+    "mixamorig:Hips",
+    "Mixamorig:Hips",
+  ];
+  for (const name of exact) {
+    const o = modelRoot.getObjectByName(name);
+    if (o) return o;
+  }
+  let found: THREE.Object3D | null = null;
+  modelRoot.traverse((child) => {
+    if (found) return;
+    const n = child.name;
+    if (/(^|[.:])(Hips|Pelvis)$/i.test(n)) {
+      found = child;
+      return;
+    }
+    const leaf = n.includes(":") ? n.split(":").pop()! : n.includes("|") ? n.split("|").pop()! : n;
+    if (/^mixamorighips$/i.test(leaf) || /^hips$/i.test(leaf) || /^pelvis$/i.test(leaf)) {
+      found = child;
+    }
+  });
+  return found;
+}
+
+function getAttachmentBone(
+  modelRoot: THREE.Object3D,
+  socketId: AttachmentSocketId,
+): THREE.Object3D | null {
+  switch (socketId) {
+    case "right_hand":
+      return findRightHandAttachmentBone(modelRoot);
+    case "left_hand":
+      return findLeftHandAttachmentBone(modelRoot);
+    case "back_right":
+    case "back_left":
+      return findBackAttachmentBone(modelRoot);
+    case "hip_left":
+      return findHipAttachmentBone(modelRoot);
+    default:
+      return null;
+  }
+}
+
+function getSocketDisplayName(socketId: AttachmentSocketId): string {
+  switch (socketId) {
+    case "right_hand":
+      return "RightHand";
+    case "left_hand":
+      return "LeftHand";
+    case "back_right":
+    case "back_left":
+      return "back (spine/chest)";
+    case "hip_left":
+      return "hip (hips/pelvis)";
+    default:
+      return socketId;
+  }
+}
+
+function useAttachSocket(
   modelRef: RefObject<THREE.Group | null>,
-  rightHandSocket: THREE.Group,
+  socketGroup: THREE.Group,
   playableVariant: PlayableCharacterId,
-  onRightHandSocketStateChange?: (state: RightHandSocketState) => void,
+  socketId: AttachmentSocketId,
+  onAttachmentSocketStateChange?: (state: AttachmentSocketState) => void,
 ): boolean {
   const [socketReady, setSocketReady] = useState(false);
 
@@ -321,16 +583,18 @@ function useAttachRightHandSocket(
       return;
     }
 
-    const rightHand = findRightHandAttachmentBone(modelRoot);
-    if (!rightHand) {
+    const targetBone = getAttachmentBone(modelRoot, socketId);
+    if (!targetBone) {
       setSocketReady(false);
-      if (!warnedMissingRightHandSocketVariants.has(playableVariant)) {
-        warnedMissingRightHandSocketVariants.add(playableVariant);
+      const warnKey = `${playableVariant}:${socketId}`;
+      if (!warnedMissingSocketKeys.has(warnKey)) {
+        warnedMissingSocketKeys.add(warnKey);
         console.warn(
-          `[CharacterModel] Missing RightHand socket for playableVariant "${playableVariant}".`,
+          `[CharacterModel] Missing ${getSocketDisplayName(socketId)} socket for playableVariant "${playableVariant}".`,
         );
       }
-      onRightHandSocketStateChange?.({
+      onAttachmentSocketStateChange?.({
+        socketId,
         found: false,
         variant: playableVariant,
         nodeName: null,
@@ -338,207 +602,100 @@ function useAttachRightHandSocket(
       return;
     }
 
-    onRightHandSocketStateChange?.({
+    onAttachmentSocketStateChange?.({
+      socketId,
       found: true,
       variant: playableVariant,
-      nodeName: rightHand.name,
+      nodeName: targetBone.name,
     });
     setSocketReady(true);
-    rightHand.add(rightHandSocket);
+    targetBone.add(socketGroup);
 
     return () => {
       setSocketReady(false);
-      rightHand.remove(rightHandSocket);
-      onRightHandSocketStateChange?.({
+      targetBone.remove(socketGroup);
+      onAttachmentSocketStateChange?.({
+        socketId,
         found: false,
         variant: playableVariant,
-        nodeName: rightHand.name,
+        nodeName: targetBone.name,
       });
     };
-  }, [modelRef, onRightHandSocketStateChange, playableVariant, rightHandSocket]);
+  }, [modelRef, onAttachmentSocketStateChange, playableVariant, socketGroup, socketId]);
 
   return socketReady;
 }
 
-function useEquippedRightHandTool(
-  rightHandSocket: THREE.Group,
+function useSocketAttachmentItem(
+  socketId: AttachmentSocketId,
+  socketGroup: THREE.Group,
   socketReady: boolean,
-  equippedRightHand: EquippableItemId | null,
-  axeTemplate: THREE.Object3D,
+  attachedItemId: EquippableItemId | null,
+  templates: Partial<Record<EquippableItemId, THREE.Object3D>>,
   playableVariant: PlayableCharacterId,
-  equippedRightHandTransformOverride?: ItemSocketTransform | null,
-  onEquippedToolObjectChange?: (toolObject: THREE.Object3D | null) => void,
+  transformOverride?: ItemSocketTransform | null,
+  axeGlowEnabled: boolean = true,
+  onAttachmentObjectChange?: (socketId: AttachmentSocketId, toolObject: THREE.Object3D | null) => void,
 ): void {
   const toolObjectRef = useRef<THREE.Object3D | null>(null);
-  const transformOverrideRef = useRef<ItemSocketTransform | null | undefined>(
-    equippedRightHandTransformOverride,
-  );
-  transformOverrideRef.current = equippedRightHandTransformOverride;
+  const transformOverrideRef = useRef<ItemSocketTransform | null | undefined>(transformOverride);
+  transformOverrideRef.current = transformOverride;
+  useAnimateToolGlow(toolObjectRef);
   useEffect(() => {
     const previousTool = toolObjectRef.current;
     if (previousTool) {
-      rightHandSocket.remove(previousTool);
-      onEquippedToolObjectChange?.(null);
+      socketGroup.remove(previousTool);
+      onAttachmentObjectChange?.(socketId, null);
       disposeObject3D(previousTool);
       toolObjectRef.current = null;
     }
 
-    if (!socketReady || !equippedRightHand) {
+    if (!socketReady || !attachedItemId) {
       return;
     }
 
-    const toolObject = makeEquippedToolObject(equippedRightHand, axeTemplate);
+    const toolObject = makeAttachmentObject(attachedItemId, templates, axeGlowEnabled);
     const initialTransform =
-      transformOverrideRef.current ??
-      getEquippableItemRightHandTransform(equippedRightHand, playableVariant);
+      transformOverrideRef.current ?? getEquippableItemSocketTransform(attachedItemId, socketId, playableVariant);
     if (initialTransform) {
       applySocketTransform(toolObject, initialTransform);
     }
-    rightHandSocket.add(toolObject);
+    socketGroup.add(toolObject);
     toolObjectRef.current = toolObject;
-    onEquippedToolObjectChange?.(toolObject);
+    onAttachmentObjectChange?.(socketId, toolObject);
 
     return () => {
-      rightHandSocket.remove(toolObject);
-      onEquippedToolObjectChange?.(null);
-      disposeObject3D(toolObject);
-      if (toolObjectRef.current === toolObject) {
-        toolObjectRef.current = null;
-      }
-    };
-  }, [equippedRightHand, rightHandSocket, axeTemplate, onEquippedToolObjectChange, socketReady]);
-
-  useLayoutEffect(() => {
-    if (!socketReady || !equippedRightHand || !toolObjectRef.current) return;
-    const transform =
-      equippedRightHandTransformOverride ??
-      getEquippableItemRightHandTransform(equippedRightHand, playableVariant);
-    if (!transform) return;
-    applySocketTransform(toolObjectRef.current, transform);
-  }, [
-    equippedRightHand,
-    equippedRightHandTransformOverride,
-    playableVariant,
-    socketReady,
-  ]);
-}
-
-function useAttachBackSocket(
-  modelRef: RefObject<THREE.Group | null>,
-  backSocket: THREE.Group,
-  playableVariant: PlayableCharacterId,
-  onBackSocketStateChange?: (state: BackSocketState) => void,
-): boolean {
-  const [socketReady, setSocketReady] = useState(false);
-
-  useEffect(() => {
-    const modelRoot = modelRef.current;
-    if (!modelRoot) {
-      setSocketReady(false);
-      return;
-    }
-
-    const backBone = findBackAttachmentBone(modelRoot);
-    if (!backBone) {
-      setSocketReady(false);
-      if (!warnedMissingBackSocketVariants.has(playableVariant)) {
-        warnedMissingBackSocketVariants.add(playableVariant);
-        console.warn(
-          `[CharacterModel] Missing back (spine/chest) socket for playableVariant "${playableVariant}".`,
-        );
-      }
-      onBackSocketStateChange?.({
-        found: false,
-        variant: playableVariant,
-        nodeName: null,
-      });
-      return;
-    }
-
-    onBackSocketStateChange?.({
-      found: true,
-      variant: playableVariant,
-      nodeName: backBone.name,
-    });
-    setSocketReady(true);
-    backBone.add(backSocket);
-
-    return () => {
-      setSocketReady(false);
-      backBone.remove(backSocket);
-      onBackSocketStateChange?.({
-        found: false,
-        variant: playableVariant,
-        nodeName: backBone.name,
-      });
-    };
-  }, [modelRef, onBackSocketStateChange, playableVariant, backSocket]);
-
-  return socketReady;
-}
-
-function useStowedBackTool(
-  backSocket: THREE.Group,
-  socketReady: boolean,
-  stowedBackItem: EquippableItemId | null,
-  axeTemplate: THREE.Object3D,
-  playableVariant: PlayableCharacterId,
-  equippedBackTransformOverride?: ItemSocketTransform | null,
-  onEquippedToolObjectChange?: (toolObject: THREE.Object3D | null) => void,
-): void {
-  const toolObjectRef = useRef<THREE.Object3D | null>(null);
-  const transformOverrideRef = useRef<ItemSocketTransform | null | undefined>(
-    equippedBackTransformOverride,
-  );
-  transformOverrideRef.current = equippedBackTransformOverride;
-  useEffect(() => {
-    const previousTool = toolObjectRef.current;
-    if (previousTool) {
-      backSocket.remove(previousTool);
-      onEquippedToolObjectChange?.(null);
-      disposeObject3D(previousTool);
-      toolObjectRef.current = null;
-    }
-
-    if (!socketReady || !stowedBackItem) {
-      return;
-    }
-
-    const toolObject = makeEquippedToolObject(stowedBackItem, axeTemplate);
-    const initialTransform =
-      transformOverrideRef.current ?? getEquippableItemBackTransform(stowedBackItem, playableVariant);
-    if (initialTransform) {
-      applySocketTransform(toolObject, initialTransform);
-    }
-    backSocket.add(toolObject);
-    toolObjectRef.current = toolObject;
-    onEquippedToolObjectChange?.(toolObject);
-
-    return () => {
-      backSocket.remove(toolObject);
-      onEquippedToolObjectChange?.(null);
+      socketGroup.remove(toolObject);
+      onAttachmentObjectChange?.(socketId, null);
       disposeObject3D(toolObject);
       if (toolObjectRef.current === toolObject) {
         toolObjectRef.current = null;
       }
     };
   }, [
-    stowedBackItem,
-    backSocket,
-    axeTemplate,
-    onEquippedToolObjectChange,
+    attachedItemId,
+    socketGroup,
+    socketId,
+    templates,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
     playableVariant,
     socketReady,
   ]);
 
   useLayoutEffect(() => {
-    if (!socketReady || !stowedBackItem || !toolObjectRef.current) return;
+    if (!socketReady || !attachedItemId || !toolObjectRef.current) return;
     const transform =
-      equippedBackTransformOverride ??
-      getEquippableItemBackTransform(stowedBackItem, playableVariant);
+      transformOverride ?? getEquippableItemSocketTransform(attachedItemId, socketId, playableVariant);
     if (!transform) return;
     applySocketTransform(toolObjectRef.current, transform);
-  }, [stowedBackItem, equippedBackTransformOverride, playableVariant, socketReady]);
+  }, [
+    attachedItemId,
+    playableVariant,
+    socketReady,
+    socketId,
+    transformOverride,
+  ]);
 }
 
 function tuneSkinnedSceneMaterials(scene: THREE.Object3D): void {
@@ -664,13 +821,12 @@ function useCharacterFrame(
 function DefaultCharacterModel({
   pose,
   mouseGroundRef,
-  equippedRightHand = null,
-  equippedRightHandTransformOverride = null,
-  stowedBackItem = null,
-  equippedBackTransformOverride = null,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  attachmentLoadout = EMPTY_ATTACHMENT_LOADOUT,
+  attachmentTransformOverrides = {},
+  axeGlowEnabled = true,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
+  animationPaused = false,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -692,22 +848,32 @@ function DefaultCharacterModel({
   const spellGltf = useGLTF(CHAR_3D_MODELS.spell);
   const rollGltf = useGLTF(CHAR_3D_MODELS.roll);
   const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const shieldPropGltf = useGLTF(SHIELD_PROP_GLB);
+  const torchPropGltf = useGLTF(TORCH_PROP_GLB);
   const axeChopGltf = useGLTF(MAIN_CHAR_AXE_CHOP_ANIM_GLB);
+  const toolTemplates = useMemo(
+    () => ({
+      wood_axe_placeholder: axePropGltf.scene,
+      shield_placeholder: shieldPropGltf.scene,
+      [TORCH_ITEM_ID]: torchPropGltf.scene,
+    }),
+    [axePropGltf.scene, shieldPropGltf.scene, torchPropGltf.scene],
+  );
 
   const modelScene = useMemo(
     () => SkeletonUtils.clone(idleGltf.scene) as THREE.Group,
     [idleGltf.scene],
   );
-  const rightHandSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "RightHandSocket";
-    return socket;
-  }, []);
-  const backSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "BackSocket";
-    return socket;
-  }, []);
+  const rightHandSocket = useMemo(() => new THREE.Group(), []);
+  const leftHandSocket = useMemo(() => new THREE.Group(), []);
+  const backRightSocket = useMemo(() => new THREE.Group(), []);
+  const backLeftSocket = useMemo(() => new THREE.Group(), []);
+  const hipLeftSocket = useMemo(() => new THREE.Group(), []);
+  rightHandSocket.name = "RightHandSocket";
+  leftHandSocket.name = "LeftHandSocket";
+  backRightSocket.name = "BackRightSocket";
+  backLeftSocket.name = "BackLeftSocket";
+  hipLeftSocket.name = "HipLeftSocket";
 
   useMemo(() => {
     tuneSkinnedSceneMaterials(modelScene);
@@ -777,38 +943,102 @@ function DefaultCharacterModel({
   ]);
 
   const { actions } = useAnimations(allClips, modelRef);
+  usePausedAnimationActions(actions, animationPaused);
 
-  const hasRightHandSocket = useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachSocket(
     modelRef,
     rightHandSocket,
     "default",
-    onRightHandSocketStateChange,
+    "right_hand",
+    onAttachmentSocketStateChange,
   );
 
-  useEquippedRightHandTool(
+  useSocketAttachmentItem(
+    "right_hand",
     rightHandSocket,
     hasRightHandSocket,
-    equippedRightHand,
-    axePropGltf.scene,
+    attachmentLoadout.right_hand,
+    toolTemplates,
     "default",
-    equippedRightHandTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.right_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
-  const hasBackSocket = useAttachBackSocket(
+  const hasLeftHandSocket = useAttachSocket(
     modelRef,
-    backSocket,
+    leftHandSocket,
     "default",
-    onBackSocketStateChange,
+    "left_hand",
+    onAttachmentSocketStateChange,
   );
-  useStowedBackTool(
-    backSocket,
-    hasBackSocket,
-    stowedBackItem,
-    axePropGltf.scene,
+  useSocketAttachmentItem(
+    "left_hand",
+    leftHandSocket,
+    hasLeftHandSocket,
+    attachmentLoadout.left_hand,
+    toolTemplates,
     "default",
-    equippedBackTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.left_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackRightSocket = useAttachSocket(
+    modelRef,
+    backRightSocket,
+    "default",
+    "back_right",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_right",
+    backRightSocket,
+    hasBackRightSocket,
+    attachmentLoadout.back_right,
+    toolTemplates,
+    "default",
+    attachmentTransformOverrides.back_right,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackLeftSocket = useAttachSocket(
+    modelRef,
+    backLeftSocket,
+    "default",
+    "back_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_left",
+    backLeftSocket,
+    hasBackLeftSocket,
+    attachmentLoadout.back_left,
+    toolTemplates,
+    "default",
+    attachmentTransformOverrides.back_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasHipLeftSocket = useAttachSocket(
+    modelRef,
+    hipLeftSocket,
+    "default",
+    "hip_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "hip_left",
+    hipLeftSocket,
+    hasHipLeftSocket,
+    attachmentLoadout.hip_left,
+    toolTemplates,
+    "default",
+    attachmentTransformOverrides.hip_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
   useEffect(() => {
@@ -836,7 +1066,7 @@ function DefaultCharacterModel({
         break;
       case "chop":
         target =
-          equippedRightHand === "wood_axe_placeholder" && actions["chopAxe"]
+          attachmentLoadout.right_hand === "wood_axe_placeholder" && actions["chopAxe"]
             ? "chopAxe"
             : "skill";
         break;
@@ -925,7 +1155,7 @@ function DefaultCharacterModel({
     pose.rollDuration,
     pose.chopDuration,
     pose.chopSwingId,
-    equippedRightHand,
+    attachmentLoadout.right_hand,
   ]);
 
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, DEFAULT_GROUND_OFFSET_Y);
@@ -954,6 +1184,12 @@ type FightManClipPolicy =
       key: keyof typeof FIGHT_MAN_SWORD_MODELS;
       outName: string;
       stripRootTranslation?: boolean;
+    }
+  | {
+      prefix: "torch";
+      key: keyof typeof FIGHT_MAN_TORCH_MODELS;
+      outName: string;
+      stripRootTranslation?: boolean;
     };
 
 const FIGHT_MAN_CLIP_DEFAULTS = Object.freeze({
@@ -976,12 +1212,16 @@ const FIGHT_MAN_WORLD_CLIP_POLICIES: readonly FightManClipPolicy[] = [
   { prefix: "adv", key: "landing", outName: "landing" },
   { prefix: "adv", key: "roll", outName: "roll" },
   { prefix: "adv", key: "spell", outName: "spell" },
+  { prefix: "torch", key: "walk", outName: "walk" },
+  { prefix: "torch", key: "run", outName: "run" },
   { prefix: "sword", key: "idle0", outName: "idle0" },
   { prefix: "sword", key: "rmbLook", outName: "rmbLook" },
   { prefix: "sword", key: "walk", outName: "walk" },
+  { prefix: "sword", key: "walkBack", outName: "walkBack" },
   { prefix: "sword", key: "strafeWalkL", outName: "strafeWalkL" },
   { prefix: "sword", key: "strafeWalkR", outName: "strafeWalkR" },
   { prefix: "sword", key: "run", outName: "run" },
+  { prefix: "sword", key: "runBack", outName: "runBack" },
   { prefix: "sword", key: "strafeRunL", outName: "strafeL" },
   { prefix: "sword", key: "strafeRunR", outName: "strafeR" },
   { prefix: "sword", key: "turn90L", outName: "turn90L" },
@@ -991,6 +1231,8 @@ const FIGHT_MAN_WORLD_CLIP_POLICIES: readonly FightManClipPolicy[] = [
   { prefix: "sword", key: "landing", outName: "landing" },
   { prefix: "sword", key: "attack", outName: "attack" },
   { prefix: "sword", key: "skill", outName: "skill" },
+  { prefix: "sword", key: "block", outName: "block" },
+  { prefix: "sword", key: "blockIdle", outName: "blockIdle" },
   { prefix: "sword", key: "spell", outName: "spell" },
   { prefix: "sword", key: "roll", outName: "roll" },
 ] as const;
@@ -1001,9 +1243,14 @@ const FIGHT_MAN_PREVIEW_CLIP_POLICIES: readonly FightManClipPolicy[] = [
 ] as const;
 
 function resolveFightManClipUrl(policy: FightManClipPolicy): string {
-  return policy.prefix === "adv"
-    ? FIGHT_MAN_ADV_MODELS[policy.key]
-    : FIGHT_MAN_SWORD_MODELS[policy.key];
+  switch (policy.prefix) {
+    case "adv":
+      return FIGHT_MAN_ADV_MODELS[policy.key];
+    case "sword":
+      return FIGHT_MAN_SWORD_MODELS[policy.key];
+    case "torch":
+      return FIGHT_MAN_TORCH_MODELS[policy.key];
+  }
 }
 
 function cloneFirstAnimationClip(
@@ -1044,13 +1291,12 @@ function buildFightManAnimationClips(
 function FightManPreviewModel({
   pose,
   mouseGroundRef,
-  equippedRightHand = null,
-  equippedRightHandTransformOverride = null,
-  stowedBackItem = null,
-  equippedBackTransformOverride = null,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  attachmentLoadout = EMPTY_ATTACHMENT_LOADOUT,
+  attachmentTransformOverrides = {},
+  axeGlowEnabled = true,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
+  animationPaused = false,
   fightManOrbitMeshScaleMult = 1,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
@@ -1058,28 +1304,36 @@ function FightManPreviewModel({
   const poseRef = useRef(pose);
   poseRef.current = pose;
   const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
-  const hipsBoneRef = useRef<THREE.Bone | null>(null);
-  const hipsRestPositionRef = useRef<THREE.Vector3 | null>(null);
 
   const baseRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.base) as THREE.Group;
   const swordIdleRoot = useLoader(FBXLoader, FIGHT_MAN_SWORD_MODELS.idle0) as THREE.Group;
   const advIdleRoot = useLoader(FBXLoader, FIGHT_MAN_ADV_MODELS.idle0) as THREE.Group;
   const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const shieldPropGltf = useGLTF(SHIELD_PROP_GLB);
+  const torchPropGltf = useGLTF(TORCH_PROP_GLB);
+  const toolTemplates = useMemo(
+    () => ({
+      wood_axe_placeholder: axePropGltf.scene,
+      shield_placeholder: shieldPropGltf.scene,
+      [TORCH_ITEM_ID]: torchPropGltf.scene,
+    }),
+    [axePropGltf.scene, shieldPropGltf.scene, torchPropGltf.scene],
+  );
   const modelScene = useMemo(
     () => SkeletonUtils.clone(baseRoot) as THREE.Group,
     [baseRoot],
   );
 
-  const rightHandSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "RightHandSocket";
-    return socket;
-  }, []);
-  const backSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "BackSocket";
-    return socket;
-  }, []);
+  const rightHandSocket = useMemo(() => new THREE.Group(), []);
+  const leftHandSocket = useMemo(() => new THREE.Group(), []);
+  const backRightSocket = useMemo(() => new THREE.Group(), []);
+  const backLeftSocket = useMemo(() => new THREE.Group(), []);
+  const hipLeftSocket = useMemo(() => new THREE.Group(), []);
+  rightHandSocket.name = "RightHandSocket";
+  leftHandSocket.name = "LeftHandSocket";
+  backRightSocket.name = "BackRightSocket";
+  backLeftSocket.name = "BackLeftSocket";
+  hipLeftSocket.name = "HipLeftSocket";
 
   useMemo(() => {
     tuneSkinnedSceneMaterials(modelScene);
@@ -1107,12 +1361,6 @@ function FightManPreviewModel({
     });
   }, [modelScene, bodyAlbedo]);
 
-  useLayoutEffect(() => {
-    const hipsBone = findFightManHipsBone(modelScene);
-    hipsBoneRef.current = hipsBone;
-    hipsRestPositionRef.current = hipsBone ? hipsBone.position.clone() : null;
-  }, [modelScene]);
-
   const allClips = useMemo(() => {
     const fbxByUrl = new Map<string, THREE.Group>([
       [FIGHT_MAN_SWORD_MODELS.base, baseRoot],
@@ -1123,42 +1371,109 @@ function FightManPreviewModel({
   }, [baseRoot, swordIdleRoot, advIdleRoot]);
 
   const { actions } = useAnimations(allClips, modelRef);
+  usePausedAnimationActions(actions, animationPaused);
 
-  const hasRightHandSocket = useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachSocket(
     modelRef,
     rightHandSocket,
     "fight_man",
-    onRightHandSocketStateChange,
+    "right_hand",
+    onAttachmentSocketStateChange,
   );
 
-  useEquippedRightHandTool(
+  useSocketAttachmentItem(
+    "right_hand",
     rightHandSocket,
     hasRightHandSocket,
-    equippedRightHand,
-    axePropGltf.scene,
+    attachmentLoadout.right_hand,
+    toolTemplates,
     "fight_man",
-    equippedRightHandTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.right_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
-  const hasBackSocket = useAttachBackSocket(
+  const hasLeftHandSocket = useAttachSocket(
     modelRef,
-    backSocket,
+    leftHandSocket,
     "fight_man",
-    onBackSocketStateChange,
+    "left_hand",
+    onAttachmentSocketStateChange,
   );
-  useStowedBackTool(
-    backSocket,
-    hasBackSocket,
-    stowedBackItem,
-    axePropGltf.scene,
+  useSocketAttachmentItem(
+    "left_hand",
+    leftHandSocket,
+    hasLeftHandSocket,
+    attachmentLoadout.left_hand,
+    toolTemplates,
     "fight_man",
-    equippedBackTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.left_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackRightSocket = useAttachSocket(
+    modelRef,
+    backRightSocket,
+    "fight_man",
+    "back_right",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_right",
+    backRightSocket,
+    hasBackRightSocket,
+    attachmentLoadout.back_right,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.back_right,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackLeftSocket = useAttachSocket(
+    modelRef,
+    backLeftSocket,
+    "fight_man",
+    "back_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_left",
+    backLeftSocket,
+    hasBackLeftSocket,
+    attachmentLoadout.back_left,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.back_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasHipLeftSocket = useAttachSocket(
+    modelRef,
+    hipLeftSocket,
+    "fight_man",
+    "hip_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "hip_left",
+    hipLeftSocket,
+    hasHipLeftSocket,
+    attachmentLoadout.hip_left,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.hip_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
   useEffect(() => {
-    const preferredName = equippedRightHand ? "sword_idle0" : "adv_idle0";
+    const useCombatIdle =
+      isEquippableItemCombatItem(attachmentLoadout.right_hand) ||
+      isEquippableItemCombatItem(attachmentLoadout.left_hand);
+    const preferredName = useCombatIdle ? "sword_idle0" : "adv_idle0";
     const nextAction =
       actions[preferredName] ?? actions["adv_idle0"] ?? actions["sword_idle0"];
     if (!nextAction) return;
@@ -1173,15 +1488,7 @@ function FightManPreviewModel({
     nextAction.timeScale = 1;
     nextAction.clampWhenFinished = false;
     nextAction.play();
-  }, [actions, equippedRightHand]);
-
-  useFrame(() => {
-    const hipsBone = hipsBoneRef.current;
-    const restPosition = hipsRestPositionRef.current;
-    if (!hipsBone || !restPosition) return;
-    hipsBone.position.x = restPosition.x;
-    hipsBone.position.z = restPosition.z;
-  }, 100);
+  }, [actions, attachmentLoadout.left_hand, attachmentLoadout.right_hand]);
 
   useCharacterFrame(outerRef, modelRef, poseRef, mouseGroundRef, FIGHT_GROUND_OFFSET_Y);
 
@@ -1231,15 +1538,21 @@ function fightManLocomotionActionName(
   prefix: string,
   animState: "walk" | "run",
   locomotionStrafe: CharacterPose3D["locomotionStrafe"],
+  locomotionBackwards?: boolean,
+  forwardOverridePrefix?: string,
 ): string {
   const s = locomotionStrafe ?? "none";
   if (animState === "walk") {
     if (s === "left") return `${prefix}_strafeWalkL`;
     if (s === "right") return `${prefix}_strafeWalkR`;
+    if (prefix === "sword" && locomotionBackwards) return `${prefix}_walkBack`;
+    if (forwardOverridePrefix) return `${forwardOverridePrefix}_walk`;
     return `${prefix}_walk`;
   }
   if (s === "left") return `${prefix}_strafeL`;
   if (s === "right") return `${prefix}_strafeR`;
+  if (prefix === "sword" && locomotionBackwards) return `${prefix}_runBack`;
+  if (forwardOverridePrefix) return `${forwardOverridePrefix}_run`;
   return `${prefix}_run`;
 }
 
@@ -1259,13 +1572,12 @@ function FightManPlayableModel({
   pose,
   mouseGroundRef,
   tpsCameraStateRef,
-  equippedRightHand = null,
-  equippedRightHandTransformOverride = null,
-  stowedBackItem = null,
-  equippedBackTransformOverride = null,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  attachmentLoadout = EMPTY_ATTACHMENT_LOADOUT,
+  attachmentTransformOverrides = {},
+  axeGlowEnabled = true,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
+  animationPaused = false,
   fightManOrbitMeshScaleMult = 1,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
@@ -1279,6 +1591,7 @@ function FightManPlayableModel({
   const headBoneRef = useRef<THREE.Bone | null>(null);
   const hipsBoneRef = useRef<THREE.Bone | null>(null);
   const hipsRestPositionRef = useRef<THREE.Vector3 | null>(null);
+  const [leftHandAttachmentObject, setLeftHandAttachmentObject] = useState<THREE.Object3D | null>(null);
   const fightManMeshScale = FIGHT_MAN_FBX_SCALE * fightManOrbitMeshScaleMult;
   const headLookEulerRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
   const headLookSmoothedYRef = useRef(0);
@@ -1286,6 +1599,7 @@ function FightManPlayableModel({
   /** Split loaders: one huge `useLoader(url[])` was crashing the WebView; two stable arrays are OK. */
   const swordFbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
   const advFbxRoots = useLoader(FBXLoader, FIGHT_MAN_ADV_FBX_URLS) as THREE.Group[];
+  const torchFbxRoots = useLoader(FBXLoader, FIGHT_MAN_TORCH_FBX_URLS) as THREE.Group[];
   const fbxByUrl = useMemo(() => {
     const m = new Map<string, THREE.Group>();
     for (let i = 0; i < FIGHT_MAN_SWORD_FBX_URLS.length; i++) {
@@ -1294,26 +1608,39 @@ function FightManPlayableModel({
     for (let i = 0; i < FIGHT_MAN_ADV_FBX_URLS.length; i++) {
       m.set(FIGHT_MAN_ADV_FBX_URLS[i], advFbxRoots[i]);
     }
+    for (let i = 0; i < FIGHT_MAN_TORCH_FBX_URLS.length; i++) {
+      m.set(FIGHT_MAN_TORCH_FBX_URLS[i], torchFbxRoots[i]);
+    }
     return m;
-  }, [swordFbxRoots, advFbxRoots]);
+  }, [swordFbxRoots, advFbxRoots, torchFbxRoots]);
 
   const baseRoot = fbxByUrl.get(FIGHT_MAN_SWORD_MODELS.base)!;
   const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const shieldPropGltf = useGLTF(SHIELD_PROP_GLB);
+  const torchPropGltf = useGLTF(TORCH_PROP_GLB);
+  const toolTemplates = useMemo(
+    () => ({
+      wood_axe_placeholder: axePropGltf.scene,
+      shield_placeholder: shieldPropGltf.scene,
+      [TORCH_ITEM_ID]: torchPropGltf.scene,
+    }),
+    [axePropGltf.scene, shieldPropGltf.scene, torchPropGltf.scene],
+  );
   const modelScene = useMemo(
     () => SkeletonUtils.clone(baseRoot) as THREE.Group,
     [baseRoot],
   );
 
-  const rightHandSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "RightHandSocket";
-    return socket;
-  }, []);
-  const backSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "BackSocket";
-    return socket;
-  }, []);
+  const rightHandSocket = useMemo(() => new THREE.Group(), []);
+  const leftHandSocket = useMemo(() => new THREE.Group(), []);
+  const backRightSocket = useMemo(() => new THREE.Group(), []);
+  const backLeftSocket = useMemo(() => new THREE.Group(), []);
+  const hipLeftSocket = useMemo(() => new THREE.Group(), []);
+  rightHandSocket.name = "RightHandSocket";
+  leftHandSocket.name = "LeftHandSocket";
+  backRightSocket.name = "BackRightSocket";
+  backLeftSocket.name = "BackLeftSocket";
+  hipLeftSocket.name = "HipLeftSocket";
 
   useMemo(() => {
     tuneSkinnedSceneMaterials(modelScene);
@@ -1357,25 +1684,58 @@ function FightManPlayableModel({
   );
 
   const { actions } = useAnimations(allClips, modelRef);
+  usePausedAnimationActions(actions, animationPaused);
 
   type FightManAirPhase = "takeoff" | "fall" | "landing" | null;
   const [fightManAirPhase, setFightManAirPhase] = useState<FightManAirPhase>(null);
+  const [blockPhase, setBlockPhase] = useState<"enter" | "hold">("hold");
   const fightManAirPhaseRef = useRef<FightManAirPhase>(null);
+  const blockPhaseRef = useRef<"enter" | "hold">("hold");
+  const wasBlockingRef = useRef(false);
   const prevGroundedRef = useRef(true);
   const actionsRef = useRef(actions);
-  const equippedRightHandRef = useRef(equippedRightHand);
+  const combatSetActive =
+    isEquippableItemCombatItem(attachmentLoadout.right_hand) ||
+    isEquippableItemCombatItem(attachmentLoadout.left_hand);
+  const torchSetActive = attachmentLoadout.left_hand === TORCH_ITEM_ID;
+  const torchFlameVisible = torchSetActive && Boolean(pose.isTorchLit);
+  const handleLeftHandAttachmentObjectChange = useCallback(
+    (socketId: AttachmentSocketId, toolObject: THREE.Object3D | null) => {
+      setLeftHandAttachmentObject(toolObject);
+      onAttachmentObjectChange?.(socketId, toolObject);
+    },
+    [onAttachmentObjectChange],
+  );
+  const combatSetActiveRef = useRef(combatSetActive);
   const fightManAirPhaseHeadRef = useRef<FightManAirPhase>(null);
 
   actionsRef.current = actions;
-  equippedRightHandRef.current = equippedRightHand;
+  combatSetActiveRef.current = combatSetActive;
   fightManAirPhaseHeadRef.current = fightManAirPhase;
+  blockPhaseRef.current = blockPhase;
+
+  useEffect(() => {
+    if (pose.isBlocking) {
+      if (!wasBlockingRef.current) {
+        wasBlockingRef.current = true;
+        blockPhaseRef.current = "enter";
+        setBlockPhase("enter");
+      }
+      return;
+    }
+    if (wasBlockingRef.current || blockPhaseRef.current !== "hold") {
+      wasBlockingRef.current = false;
+      blockPhaseRef.current = "hold";
+      setBlockPhase("hold");
+    }
+  }, [pose.isBlocking]);
 
   useFrame(() => {
     const p = poseRef.current;
     const grounded = p.grounded ?? true;
     const wasGrounded = prevGroundedRef.current;
     const actMap = actionsRef.current;
-    const prefix = equippedRightHandRef.current ? "sword" : "adv";
+    const prefix = combatSetActiveRef.current ? "sword" : "adv";
     const jumpAct = actMap[`${prefix}_jump`];
     const landAct = actMap[`${prefix}_landing`];
 
@@ -1441,37 +1801,118 @@ function FightManPlayableModel({
     prevGroundedRef.current = grounded;
   });
 
-  const hasRightHandSocket = useAttachRightHandSocket(
+  useFrame(() => {
+    if (!poseRef.current.isBlocking || blockPhaseRef.current !== "enter") return;
+    const blockAction = actionsRef.current["sword_block"];
+    if (!blockAction) {
+      blockPhaseRef.current = "hold";
+      setBlockPhase("hold");
+      return;
+    }
+    const duration = blockAction.getClip().duration;
+    const nearEnd = blockAction.isRunning() && duration > 1e-4 && blockAction.time >= duration - 0.04;
+    const stoppedAtEnd =
+      !blockAction.isRunning() && duration > 1e-4 && blockAction.time >= duration - 0.06;
+    if (nearEnd || stoppedAtEnd || duration < 1e-4) {
+      blockPhaseRef.current = "hold";
+      setBlockPhase("hold");
+    }
+  });
+
+  const hasRightHandSocket = useAttachSocket(
     modelRef,
     rightHandSocket,
     "fight_man",
-    onRightHandSocketStateChange,
+    "right_hand",
+    onAttachmentSocketStateChange,
   );
 
-  useEquippedRightHandTool(
+  useSocketAttachmentItem(
+    "right_hand",
     rightHandSocket,
     hasRightHandSocket,
-    equippedRightHand,
-    axePropGltf.scene,
+    attachmentLoadout.right_hand,
+    toolTemplates,
     "fight_man",
-    equippedRightHandTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.right_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
-  const hasBackSocket = useAttachBackSocket(
+  const hasLeftHandSocket = useAttachSocket(
     modelRef,
-    backSocket,
+    leftHandSocket,
     "fight_man",
-    onBackSocketStateChange,
+    "left_hand",
+    onAttachmentSocketStateChange,
   );
-  useStowedBackTool(
-    backSocket,
-    hasBackSocket,
-    stowedBackItem,
-    axePropGltf.scene,
+  useSocketAttachmentItem(
+    "left_hand",
+    leftHandSocket,
+    hasLeftHandSocket,
+    attachmentLoadout.left_hand,
+    toolTemplates,
     "fight_man",
-    equippedBackTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.left_hand,
+    axeGlowEnabled,
+    handleLeftHandAttachmentObjectChange,
+  );
+
+  const hasBackRightSocket = useAttachSocket(
+    modelRef,
+    backRightSocket,
+    "fight_man",
+    "back_right",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_right",
+    backRightSocket,
+    hasBackRightSocket,
+    attachmentLoadout.back_right,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.back_right,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackLeftSocket = useAttachSocket(
+    modelRef,
+    backLeftSocket,
+    "fight_man",
+    "back_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_left",
+    backLeftSocket,
+    hasBackLeftSocket,
+    attachmentLoadout.back_left,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.back_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasHipLeftSocket = useAttachSocket(
+    modelRef,
+    hipLeftSocket,
+    "fight_man",
+    "hip_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "hip_left",
+    hipLeftSocket,
+    hasHipLeftSocket,
+    attachmentLoadout.hip_left,
+    toolTemplates,
+    "fight_man",
+    attachmentTransformOverrides.hip_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
   useEffect(() => {
@@ -1480,23 +1921,26 @@ function FightManPlayableModel({
     lastIdleIndexRef.current = -1;
     fightManAirPhaseRef.current = null;
     setFightManAirPhase(null);
+    blockPhaseRef.current = "hold";
+    setBlockPhase("hold");
+    wasBlockingRef.current = false;
     prevGroundedRef.current = true;
     const idleAdv = actions["adv_idle0"];
     const idleSword = actions["sword_idle0"];
-    const idle = idleAdv ?? idleSword;
-    const startName = idleAdv ? "adv_idle0" : "sword_idle0";
+    const idle = combatSetActive ? (idleSword ?? idleAdv) : (idleAdv ?? idleSword);
+    const startName = combatSetActive ? "sword_idle0" : "adv_idle0";
     if (idle) {
       idle.reset().setLoop(THREE.LoopRepeat, Infinity).play();
       idle.timeScale = 1;
       prevClipRef.current = startName;
       initDoneRef.current = true;
     }
-  }, [actions]);
+  }, [actions, combatSetActive]);
 
   useLayoutEffect(() => {
     if (!initDoneRef.current) return;
-    const prefix = equippedRightHand ? "sword" : "adv";
-    const idleCount = equippedRightHand ? FIGHT_MAN_SWORD_IDLE_COUNT : FIGHT_MAN_ADV_IDLE_COUNT;
+    const prefix = combatSetActive ? "sword" : "adv";
+    const idleCount = combatSetActive ? FIGHT_MAN_SWORD_IDLE_COUNT : FIGHT_MAN_ADV_IDLE_COUNT;
 
     let target: string;
     if (pose.fightManTurnStep === "left") {
@@ -1509,13 +1953,27 @@ function FightManPlayableModel({
       target = `${prefix}_fallIdle`;
     } else if (fightManAirPhase === "takeoff") {
       target = `${prefix}_jump`;
+    } else if (prefix === "sword" && pose.animState === "block") {
+      target = blockPhase === "enter" ? "sword_block" : "sword_blockIdle";
     } else {
       switch (pose.animState) {
         case "walk":
-          target = fightManLocomotionActionName(prefix, "walk", pose.locomotionStrafe);
+          target = fightManLocomotionActionName(
+            prefix,
+            "walk",
+            pose.locomotionStrafe,
+            pose.locomotionBackwards,
+            torchSetActive ? "torch" : undefined,
+          );
           break;
         case "run":
-          target = fightManLocomotionActionName(prefix, "run", pose.locomotionStrafe);
+          target = fightManLocomotionActionName(
+            prefix,
+            "run",
+            pose.locomotionStrafe,
+            pose.locomotionBackwards,
+            torchSetActive ? "torch" : undefined,
+          );
           break;
         case "attack":
           target = `${prefix}_attack`;
@@ -1552,6 +2010,7 @@ function FightManPlayableModel({
       }
     }
 
+    const isBlockEnter = target === "sword_block";
     const isOneShot =
       pose.fightManTurnStep != null ||
       pose.animState === "attack" ||
@@ -1560,7 +2019,8 @@ function FightManPlayableModel({
       fightManAirPhase === "landing" ||
       (pose.animState === "jump" && fightManAirPhase === null) ||
       pose.animState === "spell" ||
-      pose.animState === "roll";
+      pose.animState === "roll" ||
+      isBlockEnter;
 
     const chopSwingReplay =
       pose.animState === "chop" &&
@@ -1622,6 +2082,8 @@ function FightManPlayableModel({
         desiredDuration = clipDuration;
       } else if (pose.fightManTurnStep) {
         desiredDuration = clipDuration;
+      } else if (isBlockEnter) {
+        desiredDuration = clipDuration;
       }
       if (clipDuration > 1e-4 && desiredDuration > 1e-4) {
         nextAction.timeScale = clipDuration / desiredDuration;
@@ -1646,15 +2108,18 @@ function FightManPlayableModel({
     pose.animState,
     pose.grounded,
     pose.locomotionStrafe,
+    pose.locomotionBackwards,
     pose.fightManTurnStep,
     fightManAirPhase,
     actions,
-    equippedRightHand,
+    combatSetActive,
+    torchSetActive,
     pose.jumpDuration,
     pose.rollDuration,
     pose.chopDuration,
     pose.chopSwingId,
     pose.tpsRmbLook,
+    blockPhase,
   ]);
 
   useFrame((_, delta) => {
@@ -1712,6 +2177,7 @@ function FightManPlayableModel({
           <primitive object={modelScene} />
         </group>
       </group>
+      <HeldTorchFlamePortal target={leftHandAttachmentObject} enabled={torchFlameVisible} />
     </group>
   );
 }
@@ -1719,13 +2185,12 @@ function FightManPlayableModel({
 function MiningPlayableModel({
   pose,
   mouseGroundRef,
-  equippedRightHand = null,
-  equippedRightHandTransformOverride = null,
-  stowedBackItem = null,
-  equippedBackTransformOverride = null,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  attachmentLoadout = EMPTY_ATTACHMENT_LOADOUT,
+  attachmentTransformOverrides = {},
+  axeGlowEnabled = true,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
+  animationPaused = false,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -1741,21 +2206,31 @@ function MiningPlayableModel({
   const attackGltf = useGLTF(MINING_MAN_MODELS.attack);
   const talkGltf = useGLTF(MINING_MAN_MODELS.talk);
   const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const shieldPropGltf = useGLTF(SHIELD_PROP_GLB);
+  const torchPropGltf = useGLTF(TORCH_PROP_GLB);
+  const toolTemplates = useMemo(
+    () => ({
+      wood_axe_placeholder: axePropGltf.scene,
+      shield_placeholder: shieldPropGltf.scene,
+      [TORCH_ITEM_ID]: torchPropGltf.scene,
+    }),
+    [axePropGltf.scene, shieldPropGltf.scene, torchPropGltf.scene],
+  );
 
   const modelScene = useMemo(
     () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
     [baseGltf.scene],
   );
-  const rightHandSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "RightHandSocket";
-    return socket;
-  }, []);
-  const backSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "BackSocket";
-    return socket;
-  }, []);
+  const rightHandSocket = useMemo(() => new THREE.Group(), []);
+  const leftHandSocket = useMemo(() => new THREE.Group(), []);
+  const backRightSocket = useMemo(() => new THREE.Group(), []);
+  const backLeftSocket = useMemo(() => new THREE.Group(), []);
+  const hipLeftSocket = useMemo(() => new THREE.Group(), []);
+  rightHandSocket.name = "RightHandSocket";
+  leftHandSocket.name = "LeftHandSocket";
+  backRightSocket.name = "BackRightSocket";
+  backLeftSocket.name = "BackLeftSocket";
+  hipLeftSocket.name = "HipLeftSocket";
 
   useMemo(() => {
     tuneSkinnedSceneMaterials(modelScene);
@@ -1784,38 +2259,102 @@ function MiningPlayableModel({
   }, [walkGltf.animations, attackGltf.animations, talkGltf.animations]);
 
   const { actions } = useAnimations(allClips, modelRef);
+  usePausedAnimationActions(actions, animationPaused);
 
-  const hasRightHandSocket = useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachSocket(
     modelRef,
     rightHandSocket,
     "mining_man",
-    onRightHandSocketStateChange,
+    "right_hand",
+    onAttachmentSocketStateChange,
   );
 
-  useEquippedRightHandTool(
+  useSocketAttachmentItem(
+    "right_hand",
     rightHandSocket,
     hasRightHandSocket,
-    equippedRightHand,
-    axePropGltf.scene,
+    attachmentLoadout.right_hand,
+    toolTemplates,
     "mining_man",
-    equippedRightHandTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.right_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
-  const hasBackSocket = useAttachBackSocket(
+  const hasLeftHandSocket = useAttachSocket(
     modelRef,
-    backSocket,
+    leftHandSocket,
     "mining_man",
-    onBackSocketStateChange,
+    "left_hand",
+    onAttachmentSocketStateChange,
   );
-  useStowedBackTool(
-    backSocket,
-    hasBackSocket,
-    stowedBackItem,
-    axePropGltf.scene,
+  useSocketAttachmentItem(
+    "left_hand",
+    leftHandSocket,
+    hasLeftHandSocket,
+    attachmentLoadout.left_hand,
+    toolTemplates,
     "mining_man",
-    equippedBackTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.left_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackRightSocket = useAttachSocket(
+    modelRef,
+    backRightSocket,
+    "mining_man",
+    "back_right",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_right",
+    backRightSocket,
+    hasBackRightSocket,
+    attachmentLoadout.back_right,
+    toolTemplates,
+    "mining_man",
+    attachmentTransformOverrides.back_right,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackLeftSocket = useAttachSocket(
+    modelRef,
+    backLeftSocket,
+    "mining_man",
+    "back_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_left",
+    backLeftSocket,
+    hasBackLeftSocket,
+    attachmentLoadout.back_left,
+    toolTemplates,
+    "mining_man",
+    attachmentTransformOverrides.back_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasHipLeftSocket = useAttachSocket(
+    modelRef,
+    hipLeftSocket,
+    "mining_man",
+    "hip_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "hip_left",
+    hipLeftSocket,
+    hasHipLeftSocket,
+    attachmentLoadout.hip_left,
+    toolTemplates,
+    "mining_man",
+    attachmentTransformOverrides.hip_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
   useEffect(() => {
@@ -1950,13 +2489,12 @@ function MiningPlayableModel({
 function MagicPlayableModel({
   pose,
   mouseGroundRef,
-  equippedRightHand = null,
-  equippedRightHandTransformOverride = null,
-  stowedBackItem = null,
-  equippedBackTransformOverride = null,
-  onEquippedToolObjectChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  attachmentLoadout = EMPTY_ATTACHMENT_LOADOUT,
+  attachmentTransformOverrides = {},
+  axeGlowEnabled = true,
+  onAttachmentObjectChange,
+  onAttachmentSocketStateChange,
+  animationPaused = false,
 }: BaseProps) {
   const outerRef = useRef<THREE.Group>(null);
   const modelRef = useRef<THREE.Group>(null);
@@ -1972,21 +2510,31 @@ function MagicPlayableModel({
   const idleGltf = useGLTF(MAGIC_MAN_MODELS.idle);
   const zauberGltf = useGLTF(MAGIC_MAN_MODELS.zauber);
   const axePropGltf = useGLTF(AXE_PROP_GLB);
+  const shieldPropGltf = useGLTF(SHIELD_PROP_GLB);
+  const torchPropGltf = useGLTF(TORCH_PROP_GLB);
+  const toolTemplates = useMemo(
+    () => ({
+      wood_axe_placeholder: axePropGltf.scene,
+      shield_placeholder: shieldPropGltf.scene,
+      [TORCH_ITEM_ID]: torchPropGltf.scene,
+    }),
+    [axePropGltf.scene, shieldPropGltf.scene, torchPropGltf.scene],
+  );
 
   const modelScene = useMemo(
     () => SkeletonUtils.clone(baseGltf.scene) as THREE.Group,
     [baseGltf.scene],
   );
-  const rightHandSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "RightHandSocket";
-    return socket;
-  }, []);
-  const backSocket = useMemo(() => {
-    const socket = new THREE.Group();
-    socket.name = "BackSocket";
-    return socket;
-  }, []);
+  const rightHandSocket = useMemo(() => new THREE.Group(), []);
+  const leftHandSocket = useMemo(() => new THREE.Group(), []);
+  const backRightSocket = useMemo(() => new THREE.Group(), []);
+  const backLeftSocket = useMemo(() => new THREE.Group(), []);
+  const hipLeftSocket = useMemo(() => new THREE.Group(), []);
+  rightHandSocket.name = "RightHandSocket";
+  leftHandSocket.name = "LeftHandSocket";
+  backRightSocket.name = "BackRightSocket";
+  backLeftSocket.name = "BackLeftSocket";
+  hipLeftSocket.name = "HipLeftSocket";
 
   useMemo(() => {
     tuneSkinnedSceneMaterials(modelScene);
@@ -2014,38 +2562,102 @@ function MagicPlayableModel({
   }, [idleGltf.animations, walkGltf.animations, zauberGltf.animations]);
 
   const { actions } = useAnimations(allClips, modelRef);
+  usePausedAnimationActions(actions, animationPaused);
 
-  const hasRightHandSocket = useAttachRightHandSocket(
+  const hasRightHandSocket = useAttachSocket(
     modelRef,
     rightHandSocket,
     "magic_man",
-    onRightHandSocketStateChange,
+    "right_hand",
+    onAttachmentSocketStateChange,
   );
 
-  useEquippedRightHandTool(
+  useSocketAttachmentItem(
+    "right_hand",
     rightHandSocket,
     hasRightHandSocket,
-    equippedRightHand,
-    axePropGltf.scene,
+    attachmentLoadout.right_hand,
+    toolTemplates,
     "magic_man",
-    equippedRightHandTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.right_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
-  const hasBackSocket = useAttachBackSocket(
+  const hasLeftHandSocket = useAttachSocket(
     modelRef,
-    backSocket,
+    leftHandSocket,
     "magic_man",
-    onBackSocketStateChange,
+    "left_hand",
+    onAttachmentSocketStateChange,
   );
-  useStowedBackTool(
-    backSocket,
-    hasBackSocket,
-    stowedBackItem,
-    axePropGltf.scene,
+  useSocketAttachmentItem(
+    "left_hand",
+    leftHandSocket,
+    hasLeftHandSocket,
+    attachmentLoadout.left_hand,
+    toolTemplates,
     "magic_man",
-    equippedBackTransformOverride,
-    onEquippedToolObjectChange,
+    attachmentTransformOverrides.left_hand,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackRightSocket = useAttachSocket(
+    modelRef,
+    backRightSocket,
+    "magic_man",
+    "back_right",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_right",
+    backRightSocket,
+    hasBackRightSocket,
+    attachmentLoadout.back_right,
+    toolTemplates,
+    "magic_man",
+    attachmentTransformOverrides.back_right,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasBackLeftSocket = useAttachSocket(
+    modelRef,
+    backLeftSocket,
+    "magic_man",
+    "back_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "back_left",
+    backLeftSocket,
+    hasBackLeftSocket,
+    attachmentLoadout.back_left,
+    toolTemplates,
+    "magic_man",
+    attachmentTransformOverrides.back_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
+  );
+
+  const hasHipLeftSocket = useAttachSocket(
+    modelRef,
+    hipLeftSocket,
+    "magic_man",
+    "hip_left",
+    onAttachmentSocketStateChange,
+  );
+  useSocketAttachmentItem(
+    "hip_left",
+    hipLeftSocket,
+    hasHipLeftSocket,
+    attachmentLoadout.hip_left,
+    toolTemplates,
+    "magic_man",
+    attachmentTransformOverrides.hip_left,
+    axeGlowEnabled,
+    onAttachmentObjectChange,
   );
 
   useEffect(() => {

@@ -128,6 +128,12 @@ export const MAGIC_MAN_MODELS = {
   zauber: "/ingame_assets/3d/Magic_Man/Meshy_AI_biped/Meshy_AI_biped/Meshy_AI_Animation_Call_Gesture_withSkin.glb",
 };
 
+export const ENEMY_ROBOT_MODELS = {
+  base: "/ingame_assets/3d/EnemyRobot/Meshy_AI_First_Enemy_biped_Character_output.glb",
+  walk: "/ingame_assets/3d/EnemyRobot/Meshy_AI_First_Enemy_biped_Animation_Walking_withSkin.glb",
+  attack: "/ingame_assets/3d/EnemyRobot/Meshy_AI_First_Enemy_biped_Animation_Charged_Upward_Slash_withSkin.glb",
+} as const;
+
 const FIGHT_MAN_SWORD_DIR = "/ingame_assets/3d/Fight_Man_Real/Main_Movement/FBX";
 const FIGHT_MAN_ADV_DIR = "/ingame_assets/3d/Fight_Man_Real/Main_Movement/FBX_Adventure";
 
@@ -135,16 +141,20 @@ const FIGHT_MAN_ADV_DIR = "/ingame_assets/3d/Fight_Man_Real/Main_Movement/FBX_Ad
 export const FIGHT_MAN_SWORD_MODELS = {
   base: `${FIGHT_MAN_SWORD_DIR}/Meshy_AI_mainy_0321192423_texture.fbx`,
   idle0: `${FIGHT_MAN_SWORD_DIR}/sword and shield idle.fbx`,
-  walk: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe.fbx`,
+  walk: `${FIGHT_MAN_SWORD_DIR}/Sword And Shield Walk.fbx`,
+  walkBack: `${FIGHT_MAN_SWORD_DIR}/Sword And Shield Walk Backwards.fbx`,
   strafeWalkL: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe.fbx`,
   strafeWalkR: `${FIGHT_MAN_SWORD_DIR}/sword and shield strafe (2).fbx`,
   run: `${FIGHT_MAN_SWORD_DIR}/sword and shield run.fbx`,
+  runBack: `${FIGHT_MAN_SWORD_DIR}/Sword And Shield Run Back.fbx`,
   strafeRunL: `${FIGHT_MAN_SWORD_DIR}/sword and shield run.fbx`,
   strafeRunR: `${FIGHT_MAN_SWORD_DIR}/sword and shield run (2).fbx`,
   turn90L: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
   turn90R: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn (2).fbx`,
   attack: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack.fbx`,
   skill: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (2).fbx`,
+  block: `${FIGHT_MAN_SWORD_DIR}/sword and shield block.fbx`,
+  blockIdle: `${FIGHT_MAN_SWORD_DIR}/sword and shield block idle.fbx`,
   spell: `${FIGHT_MAN_SWORD_DIR}/draw sword 1.fbx`,
   roll: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
   /** Same Mixamo jump as adventure set; sword pack has no dedicated jump FBX. */
@@ -153,6 +163,12 @@ export const FIGHT_MAN_SWORD_MODELS = {
   landing: `${FIGHT_MAN_ADV_DIR}/Falling To Landing.fbx`,
   /** TPS RMB look: head-friendly idle (same path as adventure set). */
   rmbLook: `${FIGHT_MAN_ADV_DIR}/idleHeadMove.fbx`,
+} as const;
+
+/** Torch-carry locomotion clips (used when the torch is equipped in the main hand). */
+export const FIGHT_MAN_TORCH_MODELS = {
+  walk: `${FIGHT_MAN_ADV_DIR}/Standing Torch Walk Forward.fbx`,
+  run: `${FIGHT_MAN_ADV_DIR}/Standing Torch Run Forward.fbx`,
 } as const;
 
 /** Adventure animation set (default, no weapon). idle (2).fbx excluded (corrupt). Second idles omitted for consistent foot height vs walk. */
@@ -190,9 +206,13 @@ export const FIGHT_MAN_ADV_FBX_URLS: string[] = Array.from(
   ),
 );
 
+export const FIGHT_MAN_TORCH_FBX_URLS: string[] = Array.from(
+  new Set(Object.values(FIGHT_MAN_TORCH_MODELS)),
+);
+
 /** All unique URLs for the playable model (sword + adventure animations). */
 export const FIGHT_MAN_FBX_UNIQUE_URLS: string[] = Array.from(
-  new Set([...FIGHT_MAN_SWORD_FBX_URLS, ...FIGHT_MAN_ADV_FBX_URLS]),
+  new Set([...FIGHT_MAN_SWORD_FBX_URLS, ...FIGHT_MAN_ADV_FBX_URLS, ...FIGHT_MAN_TORCH_FBX_URLS]),
 );
 
 /** Albedo for Aaron / fight_man (GLB often ships without embedded `map`; filename as on disk). */
@@ -204,6 +224,8 @@ export const MAIN_CHAR_ALBEDO_MAP = "/ingame_assets/3d/Main_Char/texture_0.png";
 
 /** Wood axe prop (right hand). */
 export const AXE_PROP_GLB = "/ingame_assets/3d/Waffen/Axt.glb";
+export const SHIELD_PROP_GLB = "/ingame_assets/3d/Waffen/Shield.glb";
+export const TORCH_PROP_GLB = "/ingame_assets/3d/Torch_Decoration.glb";
 
 /** Chop animation for default main character (same rig as base char). */
 export const MAIN_CHAR_AXE_CHOP_ANIM_GLB = "/ingame_assets/3d/Main_Char/Axt_Schlag_Anim.glb";
@@ -233,13 +255,16 @@ export const ALL_GAME_GLTF_PATHS = Array.from(
     ...ALL_MODEL_PATHS,
     ...Object.values(MINING_MAN_MODELS),
     ...Object.values(MAGIC_MAN_MODELS),
+    ...Object.values(ENEMY_ROBOT_MODELS),
     ...Object.values(CHAR_3D_MODELS),
     SKULLY_MODEL_PATH,
     AXE_PROP_GLB,
+    SHIELD_PROP_GLB,
+    TORCH_PROP_GLB,
     MAIN_CHAR_AXE_CHOP_ANIM_GLB,
     CLOUDS_GLB,
   ]),
 );
 
-/** Sword FBX preloaded eagerly; adventure FBX loaded on demand by playable model. */
-export const ALL_GAME_FBX_PATHS: string[] = [...FIGHT_MAN_SWORD_FBX_URLS];
+/** Sword FBX plus torch locomotion are preloaded eagerly; full adventure pack stays on demand. */
+export const ALL_GAME_FBX_PATHS: string[] = [...FIGHT_MAN_SWORD_FBX_URLS, ...FIGHT_MAN_TORCH_FBX_URLS];

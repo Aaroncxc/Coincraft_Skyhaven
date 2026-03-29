@@ -611,6 +611,41 @@ export function isInsideBlockedCell(surface: IslandSurfaceData, x: number, z: nu
   return false;
 }
 
+export function getBlockedPenetrationDepth(
+  surface: IslandSurfaceData,
+  x: number,
+  z: number,
+  radius = 0,
+): number {
+  const cx = Math.round(x / TILE_UNIT_SIZE);
+  const cz = Math.round(z / TILE_UNIT_SIZE);
+  let bestDepth = Infinity;
+
+  for (let gy = cz - 2; gy <= cz + 2; gy += 1) {
+    for (let gx = cx - 2; gx <= cx + 2; gx += 1) {
+      const key = cellKey(gx, gy);
+      if (!surface.blockedCells.has(key)) continue;
+
+      const bounds = getBlockedBounds(gx, gy);
+      if (!isInsideBounds(bounds, x, z, radius)) continue;
+
+      const minX = bounds.minX - radius;
+      const maxX = bounds.maxX + radius;
+      const minZ = bounds.minZ - radius;
+      const maxZ = bounds.maxZ + radius;
+      const depth = Math.min(
+        Math.abs(x - minX),
+        Math.abs(maxX - x),
+        Math.abs(z - minZ),
+        Math.abs(maxZ - z),
+      );
+      bestDepth = Math.min(bestDepth, depth);
+    }
+  }
+
+  return isFinite(bestDepth) ? bestDepth : 0;
+}
+
 function resolveAxisAgainstBoundaryWalls(
   walls: readonly WallSegment[],
   prevPrimary: number,
@@ -707,7 +742,12 @@ export function resolveHorizontalCollision(
   z = resolveAxisAgainstBoundaryWalls(surface.boundaryWalls, prevZ, z, x, radius, "z");
   z = resolveAxisAgainstBlockedCells(surface.blockedCells, prevZ, z, x, radius, "z");
 
-  if (isInsideBlockedCell(surface, x, z, radius)) {
+  const nextBlockedPenetration = getBlockedPenetrationDepth(surface, x, z, radius);
+  if (nextBlockedPenetration > 1e-5) {
+    const prevBlockedPenetration = getBlockedPenetrationDepth(surface, prevX, prevZ, radius);
+    if (prevBlockedPenetration > 1e-5 && nextBlockedPenetration + 1e-4 < prevBlockedPenetration) {
+      return { x, z };
+    }
     return { x: prevX, z: prevZ };
   }
 

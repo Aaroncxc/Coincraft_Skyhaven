@@ -48,7 +48,11 @@ export function hydrateInventory(): Inventory {
 
 export function persistInventory(inventory: Inventory): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
+  try {
+    window.localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
+  } catch (error) {
+    console.error("Skyhaven: failed to persist inventory.", error);
+  }
 }
 
 /** Reset inventory to starter resources (e.g. after clearing save) */

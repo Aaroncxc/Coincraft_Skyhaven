@@ -1,7 +1,9 @@
 import { useRef, useMemo, useEffect } from "react";
 import { useFrame } from "@react-three/fiber";
+import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { getParticleTileWorldXZ } from "./WorldParticles";
+import { getModelPath } from "./assets3d";
+import { computeTileGltfNormalization, getNormalizationModelKey } from "./tileGltfNormalization";
 
 const ORANGE_PARTICLE_COUNT = 25;
 const PARTICLE_LIFETIME_MIN = 3;
@@ -11,8 +13,8 @@ const FLOAT_AMPLITUDE = 0.03;
 const FLOAT_FREQ = 2;
 const BASE_SIZE = 0.018;
 const SPAWN_INTERVAL = 0.15;
-/** Spawn height above island surface — well above tower mesh so dots aren’t hidden inside the GLB. */
-const ORANGE_BASE_OFFSET_Y = 2.65;
+/** Above the actual tower tip after GLB normalization / placement. */
+const TOP_PARTICLE_ABOVE_MESH_Y = 0.08;
 
 const RING_COUNT = 3;
 const RING_CYCLE_DURATION = 5.6;
@@ -29,8 +31,8 @@ const RING_LIGHT_HEIGHT_OFFSET = -0.58;
 const RING_LIGHT_INTENSITY = 3.05;
 const RING_LIGHT_DISTANCE = 6.4;
 
-/** World Y above tile surface — orange point light + glow core (rings unchanged). */
-const TOWER_TOP_BEACON_OFFSET_Y = 2.78;
+/** Slightly above the normalized tower tip, so the beacon visibly caps the spire. */
+const TOWER_TOP_BEACON_ABOVE_MESH_Y = 0.28;
 const TOP_BEACON_LIGHT_INTENSITY = 11;
 const TOP_BEACON_LIGHT_DISTANCE = 14;
 const TOP_BEACON_COLOR = "#ff6a18";
@@ -47,6 +49,8 @@ const BURST_UPWARD_SPEED_MAX = 0.22;
 const BURST_GRAVITY = 0.7;
 const BURST_SIZE_MIN = 0.018;
 const BURST_SIZE_MAX = 0.05;
+const MAGIC_TOWER_NORMALIZATION_MODEL_KEY = getNormalizationModelKey("magicTower");
+const MAGIC_TOWER_NORMALIZATION_PATH = getModelPath(MAGIC_TOWER_NORMALIZATION_MODEL_KEY);
 
 type Particle = {
   x: number;
@@ -77,17 +81,25 @@ export type MagicTowerParticleAnchor = {
   gx: number;
   gy: number;
   surfaceY: number;
+  worldX: number;
+  worldZ: number;
+  baseY: number;
+  scaleY: number;
 };
 
 type MagicTowerParticlesProps = {
   magicTowerTiles: MagicTowerParticleAnchor[];
 };
 
-function getMagicTowerWorldCenter(gx: number, gy: number) {
-  return getParticleTileWorldXZ(gx, gy, 2);
-}
-
-function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
+function MagicTowerEmitter({
+  tower,
+  towerMeshLiftY,
+  towerTopLocalY,
+}: {
+  tower: MagicTowerParticleAnchor;
+  towerMeshLiftY: number;
+  towerTopLocalY: number;
+}) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const burstMeshRef = useRef<THREE.InstancedMesh>(null);
   const ringRefs = useRef<Array<THREE.Mesh | null>>([]);
@@ -114,7 +126,7 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
     burstParticlesRef.current = Array.from({ length: BURST_PARTICLE_CAPACITY }, () => null);
     ringPrevProgressRef.current = Array.from({ length: RING_COUNT }, () => -1);
     spawnTimerRef.current = 0;
-  }, [tower.gx, tower.gy, tower.id, tower.surfaceY]);
+  }, [tower.baseY, tower.gx, tower.gy, tower.id, tower.scaleY, tower.surfaceY, tower.worldX, tower.worldZ]);
 
   const colorsArr = useMemo(() => {
     const arr = new Float32Array(ORANGE_PARTICLE_COUNT * 3);
@@ -134,8 +146,10 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
     const mesh = meshRef.current;
     const burstMesh = burstMeshRef.current;
     const dt = Math.min(0.05, delta);
-    const { x: cx, z: cz } = getMagicTowerWorldCenter(tower.gx, tower.gy);
-    const particleBaseY = tower.surfaceY + ORANGE_BASE_OFFSET_Y;
+    const cx = tower.worldX;
+    const cz = tower.worldZ;
+    const towerTopY = tower.baseY + towerMeshLiftY + towerTopLocalY * tower.scaleY;
+    const particleBaseY = towerTopY + TOP_PARTICLE_ABOVE_MESH_Y;
     const ringStartY = tower.surfaceY + RING_START_OFFSET_Y;
     const ringEndY = tower.surfaceY + RING_END_OFFSET_Y;
     const ringMidY = tower.surfaceY + (RING_START_OFFSET_Y + RING_END_OFFSET_Y) * 0.5;
@@ -143,7 +157,7 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
     const glowLight = glowLightRef.current;
     const topBeaconLight = topBeaconLightRef.current;
     const topBeaconCore = topBeaconCoreRef.current;
-    const topBeaconY = tower.surfaceY + TOWER_TOP_BEACON_OFFSET_Y;
+    const topBeaconY = towerTopY + TOWER_TOP_BEACON_ABOVE_MESH_Y;
 
     if (glowLight) {
       const pulse = 0.9 + 0.1 * Math.sin(elapsed * 0.75 + tower.gx * 0.7 + tower.gy * 0.9);
@@ -504,12 +518,28 @@ function MagicTowerEmitter({ tower }: { tower: MagicTowerParticleAnchor }) {
 }
 
 export function MagicTowerParticles({ magicTowerTiles }: MagicTowerParticlesProps) {
+  const { scene: normalizationScene } = useGLTF(MAGIC_TOWER_NORMALIZATION_PATH);
+  const { scale, offsetY, size, center } = useMemo(
+    () =>
+      computeTileGltfNormalization(
+        normalizationScene,
+        MAGIC_TOWER_NORMALIZATION_PATH,
+        MAGIC_TOWER_NORMALIZATION_MODEL_KEY,
+      ),
+    [normalizationScene],
+  );
+  const towerTopLocalY = useMemo(() => (center.y + size.y * 0.5) * scale, [center.y, scale, size.y]);
   if (magicTowerTiles.length === 0) return null;
 
   return (
     <group>
       {magicTowerTiles.map((tower) => (
-        <MagicTowerEmitter key={tower.id} tower={tower} />
+        <MagicTowerEmitter
+          key={tower.id}
+          tower={tower}
+          towerMeshLiftY={offsetY}
+          towerTopLocalY={towerTopLocalY}
+        />
       ))}
     </group>
   );

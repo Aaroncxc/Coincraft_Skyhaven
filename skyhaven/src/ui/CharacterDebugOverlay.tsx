@@ -1,19 +1,14 @@
 import { TransformControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import {
-  startTransition,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
-  WOOD_AXE_ITEM_ID,
+  EQUIPPABLE_ITEMS,
   cloneItemSocketTransform,
-  getEquippableItemDefaultBackByVariant,
-  getEquippableItemDefaultRightHandByVariant,
+  getEquippableItemDefaultSocketByVariant,
+  type AttachmentLoadout,
+  type AttachmentSocketId,
+  type EquipmentState,
   type EquippableItemId,
   type ItemSocketTransform,
   type ItemSocketTransformByVariant,
@@ -23,8 +18,7 @@ import {
   type PlayableCharacterId,
 } from "../game/playableCharacters";
 import {
-  type BackSocketState,
-  type RightHandSocketState,
+  type AttachmentSocketState,
 } from "../game/three/CharacterModel";
 import {
   PLAYABLE_PREVIEW_POSE,
@@ -32,13 +26,28 @@ import {
 } from "./PlayableCharacterPreviewScene";
 
 type GizmoMode = "translate" | "rotate" | "scale";
-type SocketMode = "right_hand" | "back";
 
 type CharacterDebugOverlayProps = {
   open: boolean;
   onClose: () => void;
   currentPlayableVariant: PlayableCharacterId;
-  equippedRightHand: EquippableItemId | null;
+  equipmentState: EquipmentState;
+  axeGlowEnabled: boolean;
+  onAxeGlowEnabledChange: (enabled: boolean) => void;
+};
+
+type CharacterDebugSceneProps = {
+  playableVariant: PlayableCharacterId;
+  socketId: AttachmentSocketId;
+  previewItemId: EquippableItemId;
+  transform: ItemSocketTransform;
+  axeGlowEnabled: boolean;
+  animationPaused: boolean;
+  gizmoMode: GizmoMode;
+  gizmoDragging: boolean;
+  onTransformChange: (transform: ItemSocketTransform) => void;
+  onGizmoDraggingChange: (dragging: boolean) => void;
+  onAttachmentSocketStateChange: (state: AttachmentSocketState) => void;
 };
 
 const CHARACTER_LABELS: Record<PlayableCharacterId, string> = {
@@ -48,7 +57,21 @@ const CHARACTER_LABELS: Record<PlayableCharacterId, string> = {
   magic_man: "Magic Man",
 };
 
-const CHARACTER_DEBUG_POSE = PLAYABLE_PREVIEW_POSE;
+const SOCKET_LABELS: Record<AttachmentSocketId, string> = {
+  right_hand: "Right Hand",
+  left_hand: "Left Hand",
+  back_right: "Back Right",
+  back_left: "Back Left",
+  hip_left: "Hip Left",
+};
+
+const SOCKET_NODE_LABELS: Record<AttachmentSocketId, string> = {
+  right_hand: "RightHand",
+  left_hand: "LeftHand",
+  back_right: "back (spine / chest)",
+  back_left: "back (spine / chest)",
+  hip_left: "hip (hips / pelvis)",
+};
 
 function buildFallbackTransforms(): ItemSocketTransformByVariant {
   const identity: ItemSocketTransform = {
@@ -64,15 +87,25 @@ function buildFallbackTransforms(): ItemSocketTransformByVariant {
   };
 }
 
-function getInitialTransforms(itemId: EquippableItemId): ItemSocketTransformByVariant {
-  return (
-    getEquippableItemDefaultRightHandByVariant(itemId) ??
-    buildFallbackTransforms()
-  );
+function getInitialTransforms(
+  itemId: EquippableItemId,
+  socketId: AttachmentSocketId,
+): ItemSocketTransformByVariant {
+  return getEquippableItemDefaultSocketByVariant(itemId, socketId) ?? buildFallbackTransforms();
 }
 
-function getInitialBackTransforms(itemId: EquippableItemId): ItemSocketTransformByVariant {
-  return getEquippableItemDefaultBackByVariant(itemId) ?? buildFallbackTransforms();
+function buildInitialTransformState(): Record<EquippableItemId, Record<AttachmentSocketId, ItemSocketTransformByVariant>> {
+  const result = {} as Record<EquippableItemId, Record<AttachmentSocketId, ItemSocketTransformByVariant>>;
+  for (const itemId of Object.keys(EQUIPPABLE_ITEMS) as EquippableItemId[]) {
+    result[itemId] = {
+      right_hand: getInitialTransforms(itemId, "right_hand"),
+      left_hand: getInitialTransforms(itemId, "left_hand"),
+      back_right: getInitialTransforms(itemId, "back_right"),
+      back_left: getInitialTransforms(itemId, "back_left"),
+      hip_left: getInitialTransforms(itemId, "hip_left"),
+    };
+  }
+  return result;
 }
 
 function readToolTransform(object: THREE.Object3D): ItemSocketTransform {
@@ -89,10 +122,7 @@ function roundForExport(value: number): number {
 }
 
 function areVec3Equal(a: readonly number[], b: readonly number[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((value, index) => Math.abs(value - b[index]) <= 1e-6)
-  );
+  return a.length === b.length && a.every((value, index) => Math.abs(value - b[index]) <= 1e-6);
 }
 
 function areTransformsEqual(a: ItemSocketTransform, b: ItemSocketTransform): boolean {
@@ -111,8 +141,11 @@ function formatVecForCode(vec: readonly number[]): string {
   return `[${vec.map((value) => roundForExport(value)).join(", ")}]`;
 }
 
-function buildExportText(transforms: ItemSocketTransformByVariant): string {
-  const lines = ["rightHandByVariant: {"];
+function buildSocketExportText(
+  socketId: AttachmentSocketId,
+  transforms: ItemSocketTransformByVariant,
+): string {
+  const lines = [`${socketId}: {`];
   for (const variant of PLAYABLE_CHARACTER_ORDER) {
     const transform = transforms[variant];
     lines.push(`  ${variant}: {`);
@@ -125,18 +158,33 @@ function buildExportText(transforms: ItemSocketTransformByVariant): string {
   return lines.join("\n");
 }
 
-function buildBackExportText(transforms: ItemSocketTransformByVariant): string {
-  const lines = ["backByVariant: {"];
-  for (const variant of PLAYABLE_CHARACTER_ORDER) {
-    const transform = transforms[variant];
-    lines.push(`  ${variant}: {`);
-    lines.push(`    position: ${formatVecForCode(transform.position)},`);
-    lines.push(`    rotation: ${formatVecForCode(transform.rotation)},`);
-    lines.push(`    scale: ${formatVecForCode(transform.scale)},`);
-    lines.push("  },");
-  }
-  lines.push("}");
-  return lines.join("\n");
+function buildCombinedExportText(
+  transformsBySocket: Record<AttachmentSocketId, ItemSocketTransformByVariant>,
+): string {
+  return [
+    "socketTransforms: {",
+    buildSocketExportText("right_hand", transformsBySocket.right_hand)
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+    buildSocketExportText("left_hand", transformsBySocket.left_hand)
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+    buildSocketExportText("back_right", transformsBySocket.back_right)
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+    buildSocketExportText("back_left", transformsBySocket.back_left)
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+    buildSocketExportText("hip_left", transformsBySocket.hip_left)
+      .split("\n")
+      .map((line) => `  ${line}`)
+      .join("\n"),
+    "}",
+  ].join("\n");
 }
 
 async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -163,37 +211,44 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   return copied;
 }
 
-type CharacterDebugSceneProps = {
-  playableVariant: PlayableCharacterId;
-  socketMode: SocketMode;
-  previewItemId: EquippableItemId;
-  transform: ItemSocketTransform;
-  gizmoMode: GizmoMode;
-  gizmoDragging: boolean;
-  onTransformChange: (transform: ItemSocketTransform) => void;
-  onGizmoDraggingChange: (dragging: boolean) => void;
-  onRightHandSocketStateChange: (state: RightHandSocketState) => void;
-  onBackSocketStateChange: (state: BackSocketState) => void;
-};
-
 function CharacterDebugScene({
   playableVariant,
-  socketMode,
+  socketId,
   previewItemId,
   transform,
+  axeGlowEnabled,
+  animationPaused,
   gizmoMode,
   gizmoDragging,
   onTransformChange,
   onGizmoDraggingChange,
-  onRightHandSocketStateChange,
-  onBackSocketStateChange,
+  onAttachmentSocketStateChange,
 }: CharacterDebugSceneProps) {
   const [toolObject, setToolObject] = useState<THREE.Object3D | null>(null);
   const controlsRef = useRef<any>(null);
+  const previewKey = `${playableVariant}:${socketId}:${previewItemId}`;
+  const attachmentLoadout = useMemo<AttachmentLoadout>(
+    () => ({
+      right_hand: socketId === "right_hand" ? previewItemId : null,
+      left_hand: socketId === "left_hand" ? previewItemId : null,
+      back_right: socketId === "back_right" ? previewItemId : null,
+      back_left: socketId === "back_left" ? previewItemId : null,
+      hip_left: socketId === "hip_left" ? previewItemId : null,
+    }),
+    [previewItemId, socketId],
+  );
+  const attachmentTransformOverrides = useMemo(
+    () => ({ [socketId]: transform }) as Partial<Record<AttachmentSocketId, ItemSocketTransform | null>>,
+    [socketId, transform],
+  );
 
-  const handleToolObjectChange = useCallback((object: THREE.Object3D | null) => {
-    setToolObject(object);
-  }, []);
+  const handleAttachmentObjectChange = useCallback(
+    (changedSocketId: AttachmentSocketId, object: THREE.Object3D | null) => {
+      if (changedSocketId !== socketId) return;
+      setToolObject(object);
+    },
+    [socketId],
+  );
 
   const handleObjectChange = useCallback(() => {
     if (!toolObject) return;
@@ -216,20 +271,24 @@ function CharacterDebugScene({
       controls.removeEventListener("dragging-changed", handleDraggingChanged);
       onGizmoDraggingChange(false);
     };
-  }, [onGizmoDraggingChange, toolObject, gizmoMode]);
+  }, [gizmoMode, onGizmoDraggingChange, toolObject]);
+
+  useEffect(() => {
+    setToolObject(null);
+  }, [previewKey]);
 
   return (
     <>
       <PlayableCharacterPreviewScene
+        key={previewKey}
         playableVariant={playableVariant}
-        equippedRightHand={socketMode === "right_hand" ? previewItemId : null}
-        stowedBackItem={socketMode === "back" ? previewItemId : null}
-        equippedRightHandTransformOverride={socketMode === "right_hand" ? transform : null}
-        equippedBackTransformOverride={socketMode === "back" ? transform : null}
+        attachmentLoadout={attachmentLoadout}
+        attachmentTransformOverrides={attachmentTransformOverrides}
+        axeGlowEnabled={axeGlowEnabled}
+        animationPaused={animationPaused}
         orbitEnabled={!gizmoDragging}
-        onEquippedToolObjectChange={handleToolObjectChange}
-        onRightHandSocketStateChange={onRightHandSocketStateChange}
-        onBackSocketStateChange={onBackSocketStateChange}
+        onAttachmentObjectChange={handleAttachmentObjectChange}
+        onAttachmentSocketStateChange={onAttachmentSocketStateChange}
       />
       {toolObject ? (
         <TransformControls
@@ -252,150 +311,139 @@ export function CharacterDebugOverlay({
   open,
   onClose,
   currentPlayableVariant,
-  equippedRightHand,
+  equipmentState,
+  axeGlowEnabled,
+  onAxeGlowEnabledChange,
 }: CharacterDebugOverlayProps) {
-  const previewItemId = equippedRightHand ?? WOOD_AXE_ITEM_ID;
+  const defaultPreviewItemId =
+    equipmentState.equipped.mainHand ??
+    equipmentState.equipped.offHand ??
+    equipmentState.inventoryItems.slot4 ??
+    equipmentState.inventoryItems.slot5 ??
+    equipmentState.inventoryItems.slot6 ??
+    "wood_axe_placeholder";
+
   const [selectedVariant, setSelectedVariant] = useState<PlayableCharacterId>(currentPlayableVariant);
-  const [socketMode, setSocketMode] = useState<SocketMode>("right_hand");
+  const [selectedItemId, setSelectedItemId] = useState<EquippableItemId>(defaultPreviewItemId);
+  const [socketId, setSocketId] = useState<AttachmentSocketId>("right_hand");
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
-  const [workingTransforms, setWorkingTransforms] = useState<ItemSocketTransformByVariant>(() =>
-    getInitialTransforms(previewItemId),
-  );
-  const [workingBackTransforms, setWorkingBackTransforms] = useState<ItemSocketTransformByVariant>(() =>
-    getInitialBackTransforms(previewItemId),
-  );
-  const [rightHandSocketState, setRightHandSocketState] = useState<RightHandSocketState | null>(null);
-  const [backSocketState, setBackSocketState] = useState<BackSocketState | null>(null);
+  const [workingTransforms, setWorkingTransforms] = useState(() => buildInitialTransformState());
+  const [socketStates, setSocketStates] = useState<Partial<Record<AttachmentSocketId, AttachmentSocketState>>>({});
+  const [animationPaused, setAnimationPaused] = useState(false);
   const [gizmoDragging, setGizmoDragging] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setSelectedVariant(currentPlayableVariant);
-    setSocketMode("right_hand");
+    setSelectedItemId(defaultPreviewItemId);
+    setSocketId("right_hand");
     setGizmoMode("translate");
-    setRightHandSocketState(null);
-    setBackSocketState(null);
+    setAnimationPaused(false);
+    setSocketStates({});
     setGizmoDragging(false);
     setCopyFeedback(null);
-    setWorkingTransforms(getInitialTransforms(previewItemId));
-    setWorkingBackTransforms(getInitialBackTransforms(previewItemId));
-  }, [currentPlayableVariant, open, previewItemId]);
+    setWorkingTransforms(buildInitialTransformState());
+  }, [currentPlayableVariant, defaultPreviewItemId, open]);
 
   useEffect(() => {
     if (!copyFeedback) return;
-    const timerId = window.setTimeout(() => {
-      setCopyFeedback(null);
-    }, 2200);
-    return () => {
-      window.clearTimeout(timerId);
-    };
+    const timerId = window.setTimeout(() => setCopyFeedback(null), 2200);
+    return () => window.clearTimeout(timerId);
   }, [copyFeedback]);
 
-  const activeTransform =
-    socketMode === "right_hand"
-      ? workingTransforms[selectedVariant]
-      : workingBackTransforms[selectedVariant];
-
+  const itemTransforms = workingTransforms[selectedItemId];
+  const activeTransform = itemTransforms[socketId][selectedVariant];
   const exportText = useMemo(
-    () =>
-      socketMode === "right_hand"
-        ? buildExportText(workingTransforms)
-        : buildBackExportText(workingBackTransforms),
-    [socketMode, workingTransforms, workingBackTransforms],
+    () => buildSocketExportText(socketId, itemTransforms[socketId]),
+    [itemTransforms, socketId],
+  );
+  const combinedExportText = useMemo(
+    () => buildCombinedExportText(itemTransforms),
+    [itemTransforms],
   );
 
   const handleTransformChange = useCallback(
     (transform: ItemSocketTransform) => {
       startTransition(() => {
         const nextTransform = cloneItemSocketTransform(transform);
-        if (socketMode === "right_hand") {
-          setWorkingTransforms((previous) => {
-            if (areTransformsEqual(previous[selectedVariant], nextTransform)) {
-              return previous;
-            }
-            return {
-              ...previous,
-              [selectedVariant]: nextTransform,
-            };
-          });
-        } else {
-          setWorkingBackTransforms((previous) => {
-            if (areTransformsEqual(previous[selectedVariant], nextTransform)) {
-              return previous;
-            }
-            return {
-              ...previous,
-              [selectedVariant]: nextTransform,
-            };
-          });
-        }
+        setWorkingTransforms((previous) => {
+          const current = previous[selectedItemId][socketId][selectedVariant];
+          if (areTransformsEqual(current, nextTransform)) return previous;
+          return {
+            ...previous,
+            [selectedItemId]: {
+              ...previous[selectedItemId],
+              [socketId]: {
+                ...previous[selectedItemId][socketId],
+                [selectedVariant]: nextTransform,
+              },
+            },
+          };
+        });
       });
     },
-    [selectedVariant, socketMode],
+    [selectedItemId, selectedVariant, socketId],
   );
 
-  const handleRightHandSocketStateChange = useCallback((state: RightHandSocketState) => {
-    setRightHandSocketState((previous) => {
+  const handleAttachmentSocketStateChange = useCallback((state: AttachmentSocketState) => {
+    setSocketStates((previous) => {
+      const current = previous[state.socketId];
       if (
-        previous?.found === state.found &&
-        previous?.variant === state.variant &&
-        previous?.nodeName === state.nodeName
+        current?.found === state.found &&
+        current?.variant === state.variant &&
+        current?.nodeName === state.nodeName
       ) {
         return previous;
       }
-      return state;
-    });
-  }, []);
-
-  const handleBackSocketStateChange = useCallback((state: BackSocketState) => {
-    setBackSocketState((previous) => {
-      if (
-        previous?.found === state.found &&
-        previous?.variant === state.variant &&
-        previous?.nodeName === state.nodeName
-      ) {
-        return previous;
-      }
-      return state;
+      return {
+        ...previous,
+        [state.socketId]: state,
+      };
     });
   }, []);
 
   const handleResetCurrent = useCallback(() => {
-    if (socketMode === "right_hand") {
-      const defaults = getInitialTransforms(previewItemId);
-      setWorkingTransforms((previous) => ({
-        ...previous,
-        [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
-      }));
-    } else {
-      const defaults = getInitialBackTransforms(previewItemId);
-      setWorkingBackTransforms((previous) => ({
-        ...previous,
-        [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
-      }));
-    }
-  }, [previewItemId, selectedVariant, socketMode]);
+    const defaults = getInitialTransforms(selectedItemId, socketId);
+    setWorkingTransforms((previous) => ({
+      ...previous,
+      [selectedItemId]: {
+        ...previous[selectedItemId],
+        [socketId]: {
+          ...previous[selectedItemId][socketId],
+          [selectedVariant]: cloneItemSocketTransform(defaults[selectedVariant]),
+        },
+      },
+    }));
+  }, [selectedItemId, selectedVariant, socketId]);
 
   const handleResetAll = useCallback(() => {
-    if (socketMode === "right_hand") {
-      setWorkingTransforms(getInitialTransforms(previewItemId));
-    } else {
-      setWorkingBackTransforms(getInitialBackTransforms(previewItemId));
-    }
-  }, [previewItemId, socketMode]);
+    setWorkingTransforms((previous) => ({
+      ...previous,
+      [selectedItemId]: {
+        right_hand: getInitialTransforms(selectedItemId, "right_hand"),
+        left_hand: getInitialTransforms(selectedItemId, "left_hand"),
+        back_right: getInitialTransforms(selectedItemId, "back_right"),
+        back_left: getInitialTransforms(selectedItemId, "back_left"),
+        hip_left: getInitialTransforms(selectedItemId, "hip_left"),
+      },
+    }));
+  }, [selectedItemId]);
 
   const handleCopyExport = useCallback(async () => {
     const copied = await copyTextToClipboard(exportText);
     setCopyFeedback(copied ? "Export copied to clipboard." : "Clipboard copy failed.");
   }, [exportText]);
 
+  const handleCopyCombinedExport = useCallback(async () => {
+    const copied = await copyTextToClipboard(combinedExportText);
+    setCopyFeedback(copied ? "Combined export copied to clipboard." : "Clipboard copy failed.");
+  }, [combinedExportText]);
+
   if (!open) return null;
 
-  const socketMissing =
-    socketMode === "right_hand"
-      ? rightHandSocketState?.variant === selectedVariant && rightHandSocketState.found === false
-      : backSocketState?.variant === selectedVariant && backSocketState.found === false;
+  const socketState = socketStates[socketId];
+  const socketMissing = socketState?.variant === selectedVariant && socketState.found === false;
 
   return (
     <section className="character-debug-overlay" aria-modal="true" role="dialog">
@@ -410,8 +458,7 @@ export function CharacterDebugOverlay({
           <div>
             <h2 className="character-debug-title">Character Debug</h2>
             <p className="character-debug-subtitle">
-              Tune wood axe attachment in hand or on the back (spine / chest socket) per playable
-              character.
+              Tune item attachments per playable for right hand, left hand, back right and back left.
             </p>
           </div>
           <button
@@ -426,11 +473,7 @@ export function CharacterDebugOverlay({
 
         <div className="character-debug-layout">
           <div className="character-debug-preview-column">
-            <div
-              className={`character-debug-stage${
-                gizmoDragging ? " is-gizmo-dragging" : ""
-              }`}
-            >
+            <div className={`character-debug-stage${gizmoDragging ? " is-gizmo-dragging" : ""}`}>
               <Canvas
                 className="character-debug-canvas"
                 gl={{ antialias: true, alpha: true }}
@@ -438,46 +481,31 @@ export function CharacterDebugOverlay({
               >
                 <CharacterDebugScene
                   playableVariant={selectedVariant}
-                  socketMode={socketMode}
-                  previewItemId={previewItemId}
+                  socketId={socketId}
+                  previewItemId={selectedItemId}
                   transform={activeTransform}
-                  gizmoMode={gizmoMode}
-                  gizmoDragging={gizmoDragging}
-                  onTransformChange={handleTransformChange}
-                  onGizmoDraggingChange={setGizmoDragging}
-                  onRightHandSocketStateChange={handleRightHandSocketStateChange}
-                  onBackSocketStateChange={handleBackSocketStateChange}
-                />
+                  axeGlowEnabled={axeGlowEnabled}
+                animationPaused={animationPaused}
+                gizmoMode={gizmoMode}
+                gizmoDragging={gizmoDragging}
+                onTransformChange={handleTransformChange}
+                onGizmoDraggingChange={setGizmoDragging}
+                onAttachmentSocketStateChange={handleAttachmentSocketStateChange}
+              />
               </Canvas>
             </div>
 
-            <div
-              className={`character-debug-stage-note${
-                socketMissing ? " is-warning" : ""
-              }`}
-            >
+            <div className={`character-debug-stage-note${socketMissing ? " is-warning" : ""}`}>
               {socketMissing ? (
-                socketMode === "right_hand" ? (
-                  <>
-                    Missing <code>RightHand</code> socket on{" "}
-                    <strong>{CHARACTER_LABELS[selectedVariant]}</strong>. The axe cannot be attached
-                    until that rig exposes a usable hand bone.
-                  </>
-                ) : (
-                  <>
-                    Missing back (spine / chest) socket on{" "}
-                    <strong>{CHARACTER_LABELS[selectedVariant]}</strong>. The axe cannot be stowed
-                    until that rig exposes a usable upper-body bone.
-                  </>
-                )
+                <>
+                  Missing <code>{SOCKET_NODE_LABELS[socketId]}</code> socket on{" "}
+                  <strong>{CHARACTER_LABELS[selectedVariant]}</strong>.{" "}
+                  <strong>{EQUIPPABLE_ITEMS[selectedItemId].label}</strong> cannot attach there until the rig exposes a usable bone.
+                </>
               ) : (
                 <>
-                  Preview item: <strong>Wood Axe</strong>
-                  {socketMode === "back"
-                    ? " (back / holstered)."
-                    : equippedRightHand == null
-                      ? " (hand preview; axe not on action bar in loadout)."
-                      : " (hand; from current loadout)."}
+                  Preview item: <strong>{EQUIPPABLE_ITEMS[selectedItemId].label}</strong> on{" "}
+                  <strong>{SOCKET_LABELS[socketId]}</strong>.
                 </>
               )}
             </div>
@@ -485,22 +513,34 @@ export function CharacterDebugOverlay({
 
           <div className="character-debug-sidebar">
             <section className="character-debug-section">
+              <span className="character-debug-section-title">Item</span>
+              <div className="character-debug-chip-row">
+                {(Object.keys(EQUIPPABLE_ITEMS) as EquippableItemId[]).map((itemId) => (
+                  <button
+                    key={itemId}
+                    type="button"
+                    className={`character-debug-chip${selectedItemId === itemId ? " is-active" : ""}`}
+                    onClick={() => setSelectedItemId(itemId)}
+                  >
+                    {EQUIPPABLE_ITEMS[itemId].label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="character-debug-section">
               <span className="character-debug-section-title">Socket</span>
               <div className="character-debug-chip-row">
-                <button
-                  type="button"
-                  className={`character-debug-chip${socketMode === "right_hand" ? " is-active" : ""}`}
-                  onClick={() => setSocketMode("right_hand")}
-                >
-                  Hand
-                </button>
-                <button
-                  type="button"
-                  className={`character-debug-chip${socketMode === "back" ? " is-active" : ""}`}
-                  onClick={() => setSocketMode("back")}
-                >
-                  Back
-                </button>
+                {(["right_hand", "left_hand", "back_right", "back_left", "hip_left"] as AttachmentSocketId[]).map((nextSocketId) => (
+                  <button
+                    key={nextSocketId}
+                    type="button"
+                    className={`character-debug-chip${socketId === nextSocketId ? " is-active" : ""}`}
+                    onClick={() => setSocketId(nextSocketId)}
+                  >
+                    {SOCKET_LABELS[nextSocketId]}
+                  </button>
+                ))}
               </div>
             </section>
 
@@ -511,9 +551,7 @@ export function CharacterDebugOverlay({
                   <button
                     key={variant}
                     type="button"
-                    className={`character-debug-chip${
-                      selectedVariant === variant ? " is-active" : ""
-                    }`}
+                    className={`character-debug-chip${selectedVariant === variant ? " is-active" : ""}`}
                     onClick={() => setSelectedVariant(variant)}
                   >
                     {CHARACTER_LABELS[variant]}
@@ -529,9 +567,7 @@ export function CharacterDebugOverlay({
                   <button
                     key={mode}
                     type="button"
-                    className={`character-debug-chip${
-                      gizmoMode === mode ? " is-active" : ""
-                    }`}
+                    className={`character-debug-chip${gizmoMode === mode ? " is-active" : ""}`}
                     onClick={() => setGizmoMode(mode)}
                   >
                     {mode}
@@ -541,11 +577,51 @@ export function CharacterDebugOverlay({
             </section>
 
             <section className="character-debug-section">
-              <span className="character-debug-section-title">Preview pose</span>
+              <span className="character-debug-section-title">Animation</span>
+              <div className="character-debug-chip-row">
+                <button
+                  type="button"
+                  className={`character-debug-chip${!animationPaused ? " is-active" : ""}`}
+                  onClick={() => setAnimationPaused(false)}
+                >
+                  Playing
+                </button>
+                <button
+                  type="button"
+                  className={`character-debug-chip${animationPaused ? " is-active" : ""}`}
+                  onClick={() => setAnimationPaused(true)}
+                >
+                  Paused
+                </button>
+              </div>
+            </section>
+
+            <section className="character-debug-section">
+              <span className="character-debug-section-title">Axe Glow</span>
+              <div className="character-debug-chip-row">
+                <button
+                  type="button"
+                  className={`character-debug-chip${axeGlowEnabled ? " is-active" : ""}`}
+                  onClick={() => onAxeGlowEnabledChange(true)}
+                >
+                  On
+                </button>
+                <button
+                  type="button"
+                  className={`character-debug-chip${!axeGlowEnabled ? " is-active" : ""}`}
+                  onClick={() => onAxeGlowEnabledChange(false)}
+                >
+                  Off
+                </button>
+              </div>
+            </section>
+
+            <section className="character-debug-section">
+              <span className="character-debug-section-title">Preview Pose</span>
               <div className="character-debug-transform-list">
                 <div className="character-debug-transform-row">
                   <span>surfaceY</span>
-                  <code>{CHARACTER_DEBUG_POSE.surfaceY?.toFixed(4) ?? "—"}</code>
+                  <code>{PLAYABLE_PREVIEW_POSE.surfaceY?.toFixed(4) ?? "—"}</code>
                 </div>
                 <div className="character-debug-transform-row">
                   <span>worldY</span>
@@ -595,14 +671,21 @@ export function CharacterDebugOverlay({
                   className="character-debug-btn secondary"
                   onClick={handleResetAll}
                 >
-                  Reset All
+                  Reset Item
                 </button>
                 <button
                   type="button"
                   className="character-debug-btn primary"
                   onClick={handleCopyExport}
                 >
-                  Export
+                  Export Socket
+                </button>
+                <button
+                  type="button"
+                  className="character-debug-btn primary"
+                  onClick={handleCopyCombinedExport}
+                >
+                  Export Item
                 </button>
               </div>
               {copyFeedback ? (
@@ -611,10 +694,20 @@ export function CharacterDebugOverlay({
             </section>
 
             <section className="character-debug-section">
-              <span className="character-debug-section-title">Export</span>
+              <span className="character-debug-section-title">Export Socket</span>
               <textarea
                 className="character-debug-export"
                 value={exportText}
+                readOnly
+                spellCheck={false}
+              />
+            </section>
+
+            <section className="character-debug-section">
+              <span className="character-debug-section-title">Export Item</span>
+              <textarea
+                className="character-debug-export"
+                value={combinedExportText}
                 readOnly
                 spellCheck={false}
               />

@@ -21,6 +21,7 @@ import { SkullyCompanion } from "./SkullyCompanion";
 import { MiningManNPC } from "./MiningManNPC";
 import { MagicManNPC } from "./MagicManNPC";
 import { FightManNPCWithSuspense } from "./FightManNPC";
+import { EnemyRobot } from "./EnemyRobot";
 import { pickRandomLuxFightLine } from "../npcDialogue";
 import { SpeechBubble } from "./SpeechBubble";
 import {
@@ -30,6 +31,7 @@ import {
   findNearbyAncientTempleTile,
   buildTileTypeMap,
   type CharacterMovementDebugSnapshot,
+  type PlayerAttackSnapshot,
   type SpellCastEvent,
   type TpsCameraState,
 } from "./useCharacterMovement";
@@ -41,6 +43,7 @@ import { ChopParticles } from "./ChopParticles";
 import { SpellParticles } from "./SpellParticles";
 import { MagicTowerParticles } from "./MagicTowerParticles";
 import { MagicTowerHoverSfx } from "./MagicTowerHoverSfx";
+import { TorchBurnLoopSfx } from "./TorchBurnLoopSfx";
 import { FpsReporter } from "./FpsReporter";
 import { WorldParticles, getParticleTileWorldXZ, BUBBLING_DEFAULT_SPAWN_Y } from "./WorldParticles";
 import { TileHighlight } from "./TileHighlight";
@@ -76,7 +79,7 @@ import { MINE_TILES, DECORATION_TILES, NO_DECORATION_TILES } from "../types";
 import type { PlayableCharacterId } from "../playableCharacters";
 import { findNearbyPoiAction, type PoiActionRequest } from "../poiActions";
 import type { FocusSession } from "../types";
-import type { EquippableItemId } from "../equipment";
+import type { AttachmentLoadout, EquippableItemId } from "../equipment";
 
 /** Well tiles: brighter HDR bubbles + bloom + point fill */
 const WELL_BUBBLE_COUNT = 56;
@@ -205,10 +208,16 @@ export type IslandSceneProps = {
   onOpenCharacterSelect?: () => void;
   /** Active playable skin; duplicate world NPC hidden when it matches. */
   playableVariant?: PlayableCharacterId;
-  /** Equipped prop shown in the player's right hand. */
-  equippedRightHand?: EquippableItemId | null;
-  /** Holstered on back when in inventory but not in the action primary slot. */
-  stowedBackItem?: EquippableItemId | null;
+  /** Current renderable item-to-socket loadout for hands and back sockets. */
+  attachmentLoadout?: AttachmentLoadout;
+  /** Equipped items affect combat locomotion and blocking input. */
+  equippedMainHand?: EquippableItemId | null;
+  equippedOffHand?: EquippableItemId | null;
+  respawnToken?: number;
+  onPlayerDamage?: (damage: number) => void;
+  forceIsoToken?: number;
+  /** Lightweight local halo around the player's axe; shared with previews. */
+  axeGlowEnabled?: boolean;
   onTpsModeChange?: (active: boolean) => void;
   /** TPS + Lux (fight man) dialogue: drives DOM overlay in App. */
   onLuxTpsDialogueChange?: (payload: { open: boolean; text: string }) => void;
@@ -678,8 +687,13 @@ export function IslandScene({
   onRuneVfxToggle,
   onOpenCharacterSelect,
   playableVariant = "default",
-  equippedRightHand = null,
-  stowedBackItem = null,
+  attachmentLoadout,
+  equippedMainHand = null,
+  equippedOffHand = null,
+  respawnToken = 0,
+  onPlayerDamage,
+  forceIsoToken = 0,
+  axeGlowEnabled = true,
   onTpsModeChange,
   onLuxTpsDialogueChange,
   tpsNpcDialogueDismissRef,
@@ -706,6 +720,7 @@ export function IslandScene({
   const [fightManTalking, setFightManTalking] = useState(false);
   const [fightManSpeech, setFightManSpeech] = useState("");
   const [tpsModeActive, setTpsModeActive] = useState(false);
+  const [enemyRobotAlive, setEnemyRobotAlive] = useState(true);
 
   const npcTalkTimersRef = useRef<{ mining: number | null; magic: number | null; fight: number | null }>({
     mining: null,
@@ -715,6 +730,7 @@ export function IslandScene({
   const miningTalkingRef = useRef(false);
   const magicTalkingRef = useRef(false);
   const fightTalkingRef = useRef(false);
+  const playerAttackRef = useRef<PlayerAttackSnapshot | null>(null);
   miningTalkingRef.current = miningManTalking;
   magicTalkingRef.current = magicManTalking;
   fightTalkingRef.current = fightManTalking;
@@ -798,6 +814,17 @@ export function IslandScene({
     () => `${selectedIslandId}|${island.tiles.map((t) => t.id).sort().join(",")}`,
     [selectedIslandId, island.tiles],
   );
+  const enemyRobotPresent = selectedIslandId === "mining" && hasMiningTile;
+  const enemyCombatEnabled =
+    enemyRobotPresent &&
+    playableVariant === "fight_man" &&
+    tpsModeActive &&
+    !debugMode &&
+    !editMode;
+
+  useEffect(() => {
+    setEnemyRobotAlive(true);
+  }, [npcPatrolIslandKey, respawnToken, selectedIslandId]);
 
   const wellTiles = useMemo(
     () =>
@@ -875,7 +902,11 @@ export function IslandScene({
     onRuneVfxToggle,
     onOpenCharacterSelect,
     playerSfxVolume,
-    equippedRightHand,
+    equippedMainHand,
+    equippedOffHand,
+    combatAttackEnabled: enemyCombatEnabled && enemyRobotAlive,
+    respawnToken,
+    attackSwingRef: playerAttackRef,
     movementDebugRef,
   });
 
@@ -948,12 +979,19 @@ export function IslandScene({
     () =>
       island.tiles
         .filter((tile) => tile.type === "magicTower" && tile.vfxEnabled === true)
-        .map((tile) => ({
-          id: tile.id,
-          gx: tile.gx,
-          gy: tile.gy,
-          surfaceY: getCellSurfaceY(tile.gx, tile.gy),
-        })),
+        .map((tile) => {
+          const center = getParticleTileWorldXZ(tile.gx, tile.gy, 2);
+          return {
+            id: tile.id,
+            gx: tile.gx,
+            gy: tile.gy,
+            surfaceY: getCellSurfaceY(tile.gx, tile.gy),
+            worldX: tile.pos3d?.x ?? center.x,
+            worldZ: tile.pos3d?.z ?? center.z,
+            baseY: tile.pos3d?.y ?? 0,
+            scaleY: tile.scale3d?.y ?? 1,
+          };
+        }),
     [getCellSurfaceY, island],
   );
   const nearbyPoi = useMemo(
@@ -1150,6 +1188,7 @@ export function IslandScene({
         orbitEnabled={!gizmoDragging}
         tpsCameraStateRef={tpsCameraStateRef}
         cameraOccludersRef={cameraOccludersRef}
+        forceIsoToken={forceIsoToken}
         tpsEnabled={
           characterActive &&
           !debugMode &&
@@ -1170,6 +1209,13 @@ export function IslandScene({
           sfxVolume={playerSfxVolume}
         />
       )}
+      <TorchBurnLoopSfx
+        equippedOffHand={equippedOffHand}
+        playableVariant={playableVariant}
+        torchLit={Boolean(charPose.isTorchLit)}
+        tpsActive={tpsModeActive}
+        sfxVolume={playerSfxVolume}
+      />
 
       <hemisphereLight args={[snap.colors.hemiSky, snap.colors.hemiGround, snap.lighting.hemisphereIntensity]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[gridExtent.planeCx, surfaceData.safeFloorY, gridExtent.planeCz]}>
@@ -1341,8 +1387,8 @@ export function IslandScene({
                 mouseGroundRef={mouseGroundRef}
                 tpsCameraStateRef={tpsCameraStateRef}
                 playableVariant={playableVariant}
-                equippedRightHand={equippedRightHand}
-                stowedBackItem={stowedBackItem}
+                attachmentLoadout={attachmentLoadout}
+                axeGlowEnabled={axeGlowEnabled}
               />
             </Suspense>
             <SkullyCompanion pose={charPose} />
@@ -1398,6 +1444,18 @@ export function IslandScene({
                 npcPosRef={npcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
+              />
+            )}
+            {enemyRobotPresent && (
+              <EnemyRobot
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                playerPose={charPose}
+                combatEnabled={enemyCombatEnabled}
+                playerAttackRef={playerAttackRef}
+                respawnToken={respawnToken}
+                onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
+                onAliveChange={setEnemyRobotAlive}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (
@@ -1457,8 +1515,8 @@ export function IslandScene({
                 mouseGroundRef={mouseGroundRef}
                 tpsCameraStateRef={tpsCameraStateRef}
                 playableVariant={playableVariant}
-                equippedRightHand={equippedRightHand}
-                stowedBackItem={stowedBackItem}
+                attachmentLoadout={attachmentLoadout}
+                axeGlowEnabled={axeGlowEnabled}
               />
             </Suspense>
             <SkullyCompanion pose={charPose} />
@@ -1514,6 +1572,18 @@ export function IslandScene({
                 npcPosRef={npcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
+              />
+            )}
+            {enemyRobotPresent && (
+              <EnemyRobot
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                playerPose={charPose}
+                combatEnabled={enemyCombatEnabled}
+                playerAttackRef={playerAttackRef}
+                respawnToken={respawnToken}
+                onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
+                onAliveChange={setEnemyRobotAlive}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (
@@ -1562,8 +1632,8 @@ export function IslandScene({
                 mouseGroundRef={mouseGroundRef}
                 tpsCameraStateRef={tpsCameraStateRef}
                 playableVariant={playableVariant}
-                equippedRightHand={equippedRightHand}
-                stowedBackItem={stowedBackItem}
+                attachmentLoadout={attachmentLoadout}
+                axeGlowEnabled={axeGlowEnabled}
               />
             </Suspense>
             <SkullyCompanion pose={charPose} />
@@ -1619,6 +1689,18 @@ export function IslandScene({
                 npcPosRef={npcPosRef}
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
+              />
+            )}
+            {enemyRobotPresent && (
+              <EnemyRobot
+                island={island}
+                patrolIslandKey={npcPatrolIslandKey}
+                playerPose={charPose}
+                combatEnabled={enemyCombatEnabled}
+                playerAttackRef={playerAttackRef}
+                respawnToken={respawnToken}
+                onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
+                onAliveChange={setEnemyRobotAlive}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (

@@ -65,7 +65,7 @@ import type {
   ResourceAmount,
   TileDef,
 } from "./game/types";
-import { DECORATION_TILES } from "./game/types";
+import { DECORATION_TILES, DECORATION_VFX_TYPES } from "./game/types";
 import { ClockOverlay } from "./ui/ClockOverlay";
 import { DebugDock, type DebugSurfaceScope, type DebugSurfaceVizMode } from "./ui/DebugDock";
 import { Hud } from "./ui/Hud";
@@ -78,6 +78,7 @@ import { CanvasGizmoSheet } from "./ui/CanvasGizmoSheet";
 import { PoiActionOverlay } from "./ui/PoiActionOverlay";
 import { useIslandMusic, MUSIC_PLAYLIST_LENGTH } from "./game/useIslandMusic";
 import { useWorldAmbience } from "./game/useWorldAmbience";
+import { playToolboxDecorationPlaceSfx, playToolboxTilePlaceSfx } from "./game/toolboxPlaceSfx";
 import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats } from "./game/actionStats";
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
@@ -93,7 +94,7 @@ import {
 } from "./game/playableCharacters";
 import { isSkyhavenWidgetRuntime } from "./runtime/isWidgetRuntime";
 import {
-  getStowedBackItemFromEquipment,
+  getRenderableAttachmentLoadout,
   hydrateEquipment,
   moveEquipmentItem,
   persistEquipment,
@@ -107,11 +108,14 @@ import {
   saveGraphicsSettings,
   type GraphicsSettings,
 } from "./game/graphicsSettings";
+import { loadAxeGlowEnabled, saveAxeGlowEnabled } from "./game/axeGlowSettings";
 
 const EXPANDED_WINDOW_SIZE = { width: 960, height: 618 };
 const COMPACT_WINDOW_SIZE = { width: 520, height: 520 };
 const APP_ENTRANCE_DURATION_MS = 1500;
 const XP_GAIN_PULSE_MS = 900;
+const PLAYER_MAX_HP = 100;
+const RESPAWN_FADE_MS = 780;
 
 function MovementDebugHud({
   snapshotRef,
@@ -163,6 +167,8 @@ function MovementDebugHud({
       ) : (
         <>
           {row("anim", s.animState)}
+          {row("block", s.isBlocking ? "1" : "0")}
+          {row("torch", s.isTorchLit ? "1" : "0")}
           {row("chopTimer", s.chopTimer.toFixed(3))}
           {row("chopPlaySec", s.chopPlaybackSec.toFixed(3))}
           {row("rollTimer", s.rollTimer.toFixed(3))}
@@ -253,6 +259,16 @@ export default function App() {
   const [pendingPoiAction, setPendingPoiAction] = useState<PoiActionRequest | null>(null);
   const [inventory, setInventory] = useState(() => hydrateInventory());
   const [equipment, setEquipment] = useState<EquipmentState>(() => hydrateEquipment());
+  const renderAttachmentLoadout = useMemo(
+    () => getRenderableAttachmentLoadout(equipment, playableCharacterId),
+    [equipment, playableCharacterId],
+  );
+  const [playerHp, setPlayerHp] = useState(PLAYER_MAX_HP);
+  const playerHpRef = useRef(PLAYER_MAX_HP);
+  const [combatRespawnToken, setCombatRespawnToken] = useState(0);
+  const [respawnFadeKey, setRespawnFadeKey] = useState(0);
+  const [respawnFadeVisible, setRespawnFadeVisible] = useState(false);
+  const respawnFadeTimerRef = useRef<number | null>(null);
   const [progression, setProgression] = useState<ProgressionState>(() => hydrateProgression());
   const [expGainPulse, setExpGainPulse] = useState(false);
   const [selectedTileType, setSelectedTileType] = useState<AssetKey | null>(null);
@@ -275,6 +291,10 @@ export default function App() {
   useEffect(() => {
     saveGraphicsSettings(graphicsSettings);
   }, [graphicsSettings]);
+  const [axeGlowEnabled, setAxeGlowEnabled] = useState<boolean>(() => loadAxeGlowEnabled());
+  useEffect(() => {
+    saveAxeGlowEnabled(axeGlowEnabled);
+  }, [axeGlowEnabled]);
 
   const [debugShowFps, setDebugShowFps] = useState(false);
   const fpsHudRef = useRef<{ fps: number }>({ fps: 0 });
@@ -461,8 +481,42 @@ export default function App() {
       if (noResourcesTimerRef.current !== null) {
         window.clearTimeout(noResourcesTimerRef.current);
       }
+      if (respawnFadeTimerRef.current !== null) {
+        window.clearTimeout(respawnFadeTimerRef.current);
+      }
     };
   }, []);
+
+  const triggerRespawnFade = useCallback(() => {
+    if (respawnFadeTimerRef.current !== null) {
+      window.clearTimeout(respawnFadeTimerRef.current);
+    }
+    setRespawnFadeKey((prev) => prev + 1);
+    setRespawnFadeVisible(true);
+    respawnFadeTimerRef.current = window.setTimeout(() => {
+      setRespawnFadeVisible(false);
+      respawnFadeTimerRef.current = null;
+    }, RESPAWN_FADE_MS);
+  }, []);
+
+  const handlePlayerDefeat = useCallback(() => {
+    playerHpRef.current = PLAYER_MAX_HP;
+    setPlayerHp(PLAYER_MAX_HP);
+    setSelectedIslandId("mining");
+    setCombatRespawnToken((prev) => prev + 1);
+    setTpsModeActive(false);
+    triggerRespawnFade();
+  }, [triggerRespawnFade]);
+
+  const handlePlayerDamage = useCallback((damage: number) => {
+    if (damage <= 0) return;
+    const nextHp = Math.max(0, playerHpRef.current - damage);
+    playerHpRef.current = nextHp;
+    setPlayerHp(nextHp);
+    if (nextHp <= 0) {
+      handlePlayerDefeat();
+    }
+  }, [handlePlayerDefeat]);
 
   const triggerNoResourcesHint = useCallback(() => {
     setNoResourcesHint(true);
@@ -487,37 +541,48 @@ export default function App() {
 
   const handlePlaceTile = useCallback(
     (gx: number, gy: number, type: AssetKey) => {
-      if (selectedIslandId !== "custom") return;
-      const recipe = getTileRecipe(type);
-      if (!recipe || !canAfford(inventory, recipe)) {
-        if (recipe && !canAfford(inventory, recipe)) {
-          triggerNoResourcesHint();
+      try {
+        if (selectedIslandId !== "custom") return;
+        const recipe = getTileRecipe(type);
+        if (!recipe || !canAfford(inventory, recipe)) {
+          if (recipe && !canAfford(inventory, recipe)) {
+            triggerNoResourcesHint();
+          }
+          return;
         }
-        return;
+        const nextInv = spendResources(inventory, recipe);
+        if (!nextInv) return;
+
+        buildUndoStackRef.current = [
+          ...buildUndoStackRef.current.slice(-49),
+          { island: customIslandRef.current, inventory },
+        ];
+        setBuildCanUndo(true);
+
+        let nextIsland: IslandMap;
+        const isDecoration = (DECORATION_TILES as readonly string[]).includes(type);
+        if (isDecoration) {
+          nextIsland = updateTile(customIslandRef.current, gx, gy, { decoration: type });
+        } else {
+          nextIsland = addTile(customIslandRef.current, gx, gy, type);
+        }
+
+        customIslandRef.current = nextIsland;
+        setCustomIsland(nextIsland);
+        setInventory(nextInv);
+        persistCustomIsland(nextIsland);
+        persistInventory(nextInv);
+        const sfx01 = Math.max(0, Math.min(100, sfxVolume)) / 100;
+        if (isDecoration) {
+          playToolboxDecorationPlaceSfx(sfx01);
+        } else {
+          playToolboxTilePlaceSfx(sfx01);
+        }
+      } catch (error) {
+        console.error("Skyhaven: failed to place toolbox tile.", { gx, gy, type, error });
       }
-      const nextInv = spendResources(inventory, recipe);
-      if (!nextInv) return;
-
-      buildUndoStackRef.current = [
-        ...buildUndoStackRef.current.slice(-49),
-        { island: customIslandRef.current, inventory },
-      ];
-      setBuildCanUndo(true);
-
-      let nextIsland: IslandMap;
-      if ((DECORATION_TILES as readonly string[]).includes(type)) {
-        nextIsland = updateTile(customIslandRef.current, gx, gy, { decoration: type });
-      } else {
-        nextIsland = addTile(customIslandRef.current, gx, gy, type);
-      }
-
-      customIslandRef.current = nextIsland;
-      setCustomIsland(nextIsland);
-      setInventory(nextInv);
-      persistCustomIsland(nextIsland);
-      persistInventory(nextInv);
     },
-    [selectedIslandId, inventory, triggerNoResourcesHint]
+    [selectedIslandId, inventory, sfxVolume, triggerNoResourcesHint]
   );
 
   const handleRemoveTile = useCallback(
@@ -792,39 +857,70 @@ export default function App() {
 
   const handleDebugPlaceTile = useCallback(
     (gx: number, gy: number, modelKey: string) => {
-      if (!debugIslandRef.current) return;
-      const typeMap: Record<string, AssetKey> = {
-        grass: "grass",
-        dirt: "dirt",
-        pathCross: "pathCross",
-        pathStraight: "pathStraight",
-        ancientStone: "ancientStone",
-        ancientStoneWall: "ancientStoneWall",
-        ancientCornerWall: "ancientCornerWall",
-        mine: "mineTile",
-        tree: "tree1",
-        treeMiddle: "treeMiddle",
-        farm2x2: "farm2x2",
-        poisFarming: "poisFarming",
-        grasBlumen: "grasBlumen",
-        taverne: "taverne",
-        floatingForge: "floatingForge",
-        farmingChicken: "farmingChicken",
-        magicTower: "magicTower",
-        wellTile: "wellTile",
-        well2Tile: "well2Tile",
-        halfGrownCropTile: "halfGrownCropTile",
-        cottaTile: "cottaTile",
-        ancientTempleTile: "ancientTempleTile",
-        kaserneTile: "kaserneTile",
-        runeTile: "runeTile",
-      };
-      const assetKey = typeMap[modelKey];
-      if (!assetKey) return;
-      debugPushUndo();
-      const nextIsland = addTile(debugIslandRef.current, gx, gy, assetKey);
-      debugIslandRef.current = nextIsland;
-      setDebugIsland(nextIsland);
+      try {
+        if (!debugIslandRef.current) return;
+        const typeMap: Record<string, AssetKey> = {
+          grass: "grass",
+          dirt: "dirt",
+          pathCross: "pathCross",
+          pathStraight: "pathStraight",
+          ancientStone: "ancientStone",
+          ancientStoneWall: "ancientStoneWall",
+          ancientCornerWall: "ancientCornerWall",
+          mine: "mineTile",
+          tree: "tree1",
+          treeMiddle: "treeMiddle",
+          farm2x2: "farm2x2",
+          poisFarming: "poisFarming",
+          grasBlumen: "grasBlumen",
+          taverne: "taverne",
+          floatingForge: "floatingForge",
+          farmingChicken: "farmingChicken",
+          torchDecoration: "torchDecoration",
+          magicTower: "magicTower",
+          wellTile: "wellTile",
+          well2Tile: "well2Tile",
+          halfGrownCropTile: "halfGrownCropTile",
+          cottaTile: "cottaTile",
+          ancientTempleTile: "ancientTempleTile",
+          kaserneTile: "kaserneTile",
+          runeTile: "runeTile",
+        };
+        const assetKey = typeMap[modelKey];
+        if (!assetKey) return;
+
+        debugPushUndo();
+
+        const isDecoration = (DECORATION_TILES as readonly string[]).includes(assetKey);
+        let nextIsland = debugIslandRef.current;
+        if (isDecoration) {
+          const existingTile = nextIsland.tiles.find((tile) => tile.gx === gx && tile.gy === gy) ?? null;
+          if (existingTile) {
+            nextIsland = updateTile(nextIsland, gx, gy, {
+              decoration: assetKey,
+              decoPos3d: undefined,
+              decoScale3d: undefined,
+              decoRotY: undefined,
+              vfxEnabled: (DECORATION_VFX_TYPES as readonly string[]).includes(assetKey)
+                ? true
+                : existingTile.vfxEnabled,
+            });
+          } else {
+            nextIsland = addTile(nextIsland, gx, gy, "grass");
+            nextIsland = updateTile(nextIsland, gx, gy, {
+              decoration: assetKey,
+              vfxEnabled: (DECORATION_VFX_TYPES as readonly string[]).includes(assetKey),
+            });
+          }
+        } else {
+          nextIsland = addTile(nextIsland, gx, gy, assetKey);
+        }
+
+        debugIslandRef.current = nextIsland;
+        setDebugIsland(nextIsland);
+      } catch (error) {
+        console.error("Skyhaven: failed to place debug tile.", { gx, gy, modelKey, error });
+      }
     },
     [debugPushUndo],
   );
@@ -1719,8 +1815,13 @@ export default function App() {
               onRuneVfxToggle={handleRuneVfxToggle}
               onOpenCharacterSelect={() => setCharacterSelectOpen(true)}
               playableVariant={playableCharacterId}
-              equippedRightHand={equipment.equippedRightHand}
-              stowedBackItem={getStowedBackItemFromEquipment(equipment)}
+              attachmentLoadout={renderAttachmentLoadout}
+              equippedMainHand={equipment.equipped.mainHand}
+              equippedOffHand={equipment.equipped.offHand}
+              respawnToken={combatRespawnToken}
+              onPlayerDamage={handlePlayerDamage}
+              forceIsoToken={combatRespawnToken}
+              axeGlowEnabled={axeGlowEnabled}
               onTpsModeChange={setTpsModeActive}
               onLuxTpsDialogueChange={handleLuxTpsDialogueChange}
               tpsNpcDialogueDismissRef={tpsNpcDialogueDismissRef}
@@ -1737,6 +1838,7 @@ export default function App() {
           </Canvas>
         </div>
         <LuxTpsDialogueOverlay open={luxTpsDialogue.open} text={luxTpsDialogue.text} />
+        {respawnFadeVisible ? <div key={respawnFadeKey} className="combat-respawn-fade" aria-hidden="true" /> : null}
         <CanvasGizmoSheet
           selectedTile={debugMode ? activeDebugTile : activeEditTile}
           gizmoMode={debugMode ? debugGizmoMode : editGizmoMode}
@@ -1923,13 +2025,16 @@ export default function App() {
           inventory={inventory}
           equipmentState={equipment}
           playableVariant={playableCharacterId}
+          axeGlowEnabled={axeGlowEnabled}
           onMoveItem={handleMoveProfileItem}
         />
         <CharacterDebugOverlay
           open={characterDebugOpen}
           onClose={() => setCharacterDebugOpen(false)}
           currentPlayableVariant={playableCharacterId}
-          equippedRightHand={equipment.equippedRightHand}
+          equipmentState={equipment}
+          axeGlowEnabled={axeGlowEnabled}
+          onAxeGlowEnabledChange={setAxeGlowEnabled}
         />
         <CharacterSelectOverlay
           open={characterSelectOpen}
@@ -1972,11 +2077,16 @@ export default function App() {
         />
 
         <Hud
+          playerHp={playerHp}
+          playerMaxHp={PLAYER_MAX_HP}
           expLevel={expLevel}
           expCurrent={expCurrent}
           expMax={expMax}
           expIsMaxLevel={expIsMaxLevel}
           expGainPulse={expGainPulse}
+          equipmentState={equipment}
+          playableVariant={playableCharacterId}
+          tpsModeActive={tpsModeActive}
         />
 
         {!debugMode && (
