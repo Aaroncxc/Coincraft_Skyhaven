@@ -33,6 +33,7 @@ import {
   isEquippableItemCombatItem,
   type EquippableItemId,
 } from "../equipment";
+import type { TargetableSnapshot } from "./targetLock";
 
 export type CharacterPose3D = {
   gx: number;
@@ -571,7 +572,7 @@ export type CharacterMovementOptions = {
   /** E near Ancient Temple: open character selection (handled in React overlay). */
   onOpenCharacterSelect?: () => void;
   /** Ref containing NPC positions keyed by id, updated by IslandScene */
-  npcPositionsRef?: MutableRefObject<Map<string, { gx: number; gy: number }>>;
+  npcPositionsRef?: MutableRefObject<Map<string, TargetableSnapshot>>;
   /** 0–100; scales footstep SFX (Sidebar SFX Vol). */
   playerSfxVolume?: number;
   /** Action-bar item: LMB / G chop only when wood axe is equipped. */
@@ -585,6 +586,9 @@ export type CharacterMovementOptions = {
   attackSwingRef?: MutableRefObject<PlayerAttackSnapshot | null>;
   /** Filled each frame when provided (for Debug dock / tooling). */
   movementDebugRef?: MutableRefObject<CharacterMovementDebugSnapshot | null>;
+  activeTargetRef?: MutableRefObject<TargetableSnapshot | null>;
+  onTargetCycleRequest?: () => void;
+  onTargetClearRequest?: () => void;
 };
 
 export function useCharacterMovement(
@@ -669,6 +673,13 @@ export function useCharacterMovement(
   const npcPositionsRef = options.npcPositionsRef;
   const npcPositionsRefRef = useRef(npcPositionsRef);
   npcPositionsRefRef.current = npcPositionsRef;
+  const activeTargetRef = options.activeTargetRef;
+  const activeTargetRefRef = useRef(activeTargetRef);
+  activeTargetRefRef.current = activeTargetRef;
+  const onTargetCycleRequestRef = useRef(options.onTargetCycleRequest);
+  onTargetCycleRequestRef.current = options.onTargetCycleRequest;
+  const onTargetClearRequestRef = useRef(options.onTargetClearRequest);
+  onTargetClearRequestRef.current = options.onTargetClearRequest;
   const onRuneVfxToggleRef = useRef(options.onRuneVfxToggle);
   onRuneVfxToggleRef.current = options.onRuneVfxToggle;
   const onOpenCharacterSelectRef = useRef(options.onOpenCharacterSelect);
@@ -775,6 +786,16 @@ export function useCharacterMovement(
     !poiMenuOpenRef.current &&
     !activePoiSessionRef.current;
 
+  const getActiveTargetSnapshot = (): TargetableSnapshot | null => activeTargetRefRef.current?.current ?? null;
+
+  const canUseTargetLock = (): boolean =>
+    playableVariantRef.current === "fight_man" &&
+    selectedIslandIdRef.current === "mining" &&
+    Boolean(tpsCameraStateRefRef.current?.current?.active) &&
+    !isMiniActionActiveRef.current &&
+    !poiMenuOpenRef.current &&
+    !activePoiSessionRef.current;
+
   const canToggleTorchFlame = (): boolean =>
     canUseTorchOffHand() &&
     !isMiniActionActiveRef.current &&
@@ -809,7 +830,13 @@ export function useCharacterMovement(
       return;
     }
     const pose = poseRef.current;
+    const activeTarget = getActiveTargetSnapshot();
+    const targetFacing =
+      activeTarget && activeTarget.alive
+        ? getFacingAngleToCell(pose.gx, pose.gy, activeTarget.gx, activeTarget.gy)
+        : null;
     const nextFacing =
+      targetFacing ??
       tpsFacingYawRef.current ??
       tpsViewYaw ??
       pose.facingAngle ??
@@ -907,6 +934,22 @@ export function useCharacterMovement(
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const k = e.key.toLowerCase();
+
+      if (pressed && (k === "escape" || e.key === "Escape")) {
+        if (getActiveTargetSnapshot() && onTargetClearRequestRef.current) {
+          onTargetClearRequestRef.current();
+        }
+      }
+
+      if (k === "q") {
+        if (!pressed) return;
+        e.preventDefault();
+        if (!canUseTargetLock()) return;
+        lastManualInputRef.current = performance.now();
+        patrolPhaseRef.current = "inactive";
+        onTargetCycleRequestRef.current?.();
+        return;
+      }
 
       if (k === "shift" || e.key === "Shift") {
         actionKeysRef.current.shift = pressed;
@@ -1418,6 +1461,12 @@ export function useCharacterMovement(
     const activePoiSession = activePoiSessionRef.current;
     const tpsCamRmb = tpsCameraStateRefRef.current?.current;
     const tpsRmbLookLive = Boolean(tpsCamRmb?.active && tpsCamRmb.steeringActive);
+    const activeTarget = getActiveTargetSnapshot();
+    const targetLockActive = Boolean(tpsActive && activeTarget?.alive);
+    const targetLockFacingAngle =
+      targetLockActive && activeTarget
+        ? getFacingAngleToCell(pose.gx, pose.gy, activeTarget.gx, activeTarget.gy)
+        : null;
 
     if (
       activePoiSession &&
@@ -1582,10 +1631,14 @@ export function useCharacterMovement(
       };
       resolvedTpsFacingAngle = pose.facingAngle;
     } else if (tpsActive) {
+      if (targetLockActive) {
+        clearFightManTurnRefs();
+      }
       const isFightManTurning =
         playableVariantRef.current === "fight_man" &&
         fightManTurnTimeRef.current > 0 &&
-        fightManTurnStepRef.current !== null;
+        fightManTurnStepRef.current !== null &&
+        !targetLockActive;
 
       if (isFightManTurning) {
         fightManTurnTimeRef.current -= dt;
@@ -1596,8 +1649,8 @@ export function useCharacterMovement(
         if (fightManTurnTimeRef.current <= 0) {
           fightManTurnStepRef.current = null;
           fightManTurnStartFacingRef.current = null;
-          resolvedTpsFacingAngle = tpsViewYaw;
-          tpsFacingYawRef.current = tpsViewYaw;
+          resolvedTpsFacingAngle = targetLockFacingAngle ?? tpsViewYaw;
+          tpsFacingYawRef.current = resolvedTpsFacingAngle;
           poseRef.current = {
             ...pose,
             gx: pose.gx,
@@ -1606,7 +1659,7 @@ export function useCharacterMovement(
             animState: "idle",
             isManualMove: false,
             locomotionStrafe: "none",
-            facingAngle: tpsViewYaw,
+            facingAngle: resolvedTpsFacingAngle,
             fightManTurnStep: undefined,
             isBlocking: false,
           };
@@ -1625,25 +1678,11 @@ export function useCharacterMovement(
           };
         }
       } else {
-        let moveX = 0;
-        let moveY = 0;
-        const basis = getBasisFromYaw(tpsViewYaw);
-        if (keys.w || mouseForwardActive) {
-          moveX += basis.forwardX;
-          moveY += basis.forwardZ;
-        }
-        if (keys.s) {
-          moveX -= basis.forwardX;
-          moveY -= basis.forwardZ;
-        }
-        if (keys.a) {
-          moveX -= basis.leftX;
-          moveY -= basis.leftZ;
-        }
-        if (keys.d) {
-          moveX += basis.leftX;
-          moveY += basis.leftZ;
-        }
+        const mouseForwardInfluence = targetLockActive ? false : mouseForwardActive;
+        const movementYaw = targetLockFacingAngle ?? tpsViewYaw;
+        const movementVector = resolveTpsInputMoveVector(keys, mouseForwardInfluence, movementYaw);
+        const moveX = movementVector?.x ?? 0;
+        const moveY = movementVector?.z ?? 0;
 
         if (moveX !== 0 || moveY !== 0) {
           lastMoveDir.current = { dx: moveX, dy: moveY };
@@ -1762,12 +1801,18 @@ export function useCharacterMovement(
           !keys.w &&
           !keys.a &&
           !keys.d &&
-          !mouseForwardActive;
+          !mouseForwardInfluence;
 
         let locomotionStrafe: NonNullable<CharacterPose3D["locomotionStrafe"]> = "none";
         if (playableVariantRef.current === "fight_man") {
-          if (keys.w && keys.a && !keys.s) locomotionStrafe = "left";
-          else if (keys.w && keys.d && !keys.s) locomotionStrafe = "right";
+          if (targetLockActive) {
+            if (keys.a && !keys.d) locomotionStrafe = "left";
+            else if (keys.d && !keys.a) locomotionStrafe = "right";
+          } else if (keys.w && keys.a && !keys.s) {
+            locomotionStrafe = "left";
+          } else if (keys.w && keys.d && !keys.s) {
+            locomotionStrafe = "right";
+          }
         }
 
         poseRef.current = {
@@ -1791,9 +1836,9 @@ export function useCharacterMovement(
           isBlocking: wantsBlock,
         };
         if (actualSpeed > TPS_MOVE_ANIM_EPSILON) {
-          resolvedTpsFacingAngle = getFacingAngleFromVector(velX, velY);
+          resolvedTpsFacingAngle = targetLockFacingAngle ?? getFacingAngleFromVector(velX, velY);
         } else {
-          resolvedTpsFacingAngle = tpsFacingYawRef.current ?? pose.facingAngle ?? tpsViewYaw;
+          resolvedTpsFacingAngle = targetLockFacingAngle ?? tpsFacingYawRef.current ?? pose.facingAngle ?? tpsViewYaw;
         }
 
         const strictTpsIdle =
@@ -1802,14 +1847,15 @@ export function useCharacterMovement(
           !keys.s &&
           !keys.a &&
           !keys.d &&
-          !mouseForwardActive;
+          !mouseForwardInfluence;
         if (
           playableVariantRef.current === "fight_man" &&
           fightManTurnCooldownRef.current <= 0 &&
           !wantsBlock &&
           !airbornTps &&
           strictTpsIdle &&
-          !tpsCamRmb?.steeringActive
+          !tpsCamRmb?.steeringActive &&
+          !targetLockActive
         ) {
           const bodyYaw = resolvedTpsFacingAngle;
           const deltaTurn = wrapMovementAngle(tpsViewYaw - bodyYaw);
@@ -2161,7 +2207,7 @@ export function useCharacterMovement(
         poseRef.current.facingAngle != null;
       const nextFacingAngle = actionFacingLocked
         ? poseRef.current.facingAngle
-        : (resolvedTpsFacingAngle ?? tpsFacingYawRef.current ?? tpsViewYaw);
+        : (targetLockFacingAngle ?? resolvedTpsFacingAngle ?? tpsFacingYawRef.current ?? tpsViewYaw);
       poseRef.current = {
         ...poseRef.current,
         facingAngle: nextFacingAngle,

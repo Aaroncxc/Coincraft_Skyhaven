@@ -22,6 +22,7 @@ import { MiningManNPC } from "./MiningManNPC";
 import { MagicManNPC } from "./MagicManNPC";
 import { FightManNPCWithSuspense } from "./FightManNPC";
 import { EnemyRobot } from "./EnemyRobot";
+import { TargetLockMarker } from "./TargetLockMarker";
 import { pickRandomLuxFightLine } from "../npcDialogue";
 import { SpeechBubble } from "./SpeechBubble";
 import {
@@ -80,6 +81,12 @@ import type { PlayableCharacterId } from "../playableCharacters";
 import { findNearbyPoiAction, type PoiActionRequest } from "../poiActions";
 import type { FocusSession } from "../types";
 import type { AttachmentLoadout, EquippableItemId } from "../equipment";
+import {
+  getTargetLockAngle,
+  normalizeTargetLockAngle,
+  type TargetLockState,
+  type TargetableSnapshot,
+} from "./targetLock";
 
 /** Well tiles: brighter HDR bubbles + bloom + point fill */
 const WELL_BUBBLE_COUNT = 56;
@@ -100,6 +107,14 @@ const RUNE_GLOW_POINT_INTENSITY = 2.55;
 const RUNE_GLOW_POINT_DISTANCE = 5.75;
 const RUNE_HELIX_COLOR_CYCLE = { from: 0xffcc55, to: 0xcc2200, periodSec: 7 } as const;
 const HOVER_OUTLINE_SELECTION_LAYER = 10;
+const TARGET_LOCK_ACQUIRE_RADIUS = 5.4;
+const TARGET_LOCK_BREAK_RADIUS = 7.2;
+
+type TargetLockCandidate = {
+  snapshot: TargetableSnapshot;
+  angle: number;
+  distance: number;
+};
 
 function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
@@ -107,6 +122,17 @@ function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
     if (a[index] !== b[index]) return false;
   }
   return true;
+}
+
+function getShortestTargetLockAngleDelta(fromAngle: number, toAngle: number): number {
+  const clockwiseDelta = normalizeTargetLockAngle(toAngle - fromAngle);
+  return Math.min(clockwiseDelta, Math.PI * 2 - clockwiseDelta);
+}
+
+function compareTargetLockCandidatesClockwise(a: TargetLockCandidate, b: TargetLockCandidate): number {
+  if (a.angle !== b.angle) return a.angle - b.angle;
+  if (a.distance !== b.distance) return a.distance - b.distance;
+  return a.snapshot.id.localeCompare(b.snapshot.id);
 }
 
 function MouseGroundTracker({
@@ -721,6 +747,7 @@ export function IslandScene({
   const [fightManSpeech, setFightManSpeech] = useState("");
   const [tpsModeActive, setTpsModeActive] = useState(false);
   const [enemyRobotAlive, setEnemyRobotAlive] = useState(true);
+  const [targetLockState, setTargetLockState] = useState<TargetLockState>({ activeTargetId: null });
 
   const npcTalkTimersRef = useRef<{ mining: number | null; magic: number | null; fight: number | null }>({
     mining: null,
@@ -731,6 +758,12 @@ export function IslandScene({
   const magicTalkingRef = useRef(false);
   const fightTalkingRef = useRef(false);
   const playerAttackRef = useRef<PlayerAttackSnapshot | null>(null);
+  const charPoseRef = useRef({ gx: 0, gy: 0 });
+  const activeTargetRef = useRef<TargetableSnapshot | null>(null);
+  const enemyRobotTargetRef = useRef<TargetableSnapshot | null>(null);
+  const targetRegistryRef = useRef(new Map<string, TargetableSnapshot>());
+  const targetLockStateRef = useRef(targetLockState);
+  targetLockStateRef.current = targetLockState;
   miningTalkingRef.current = miningManTalking;
   magicTalkingRef.current = magicManTalking;
   fightTalkingRef.current = fightManTalking;
@@ -785,10 +818,10 @@ export function IslandScene({
   });
   const cameraOccludersRef = useRef<CameraOccluderEntry[]>([]);
   const spellCastRef = useRef<SpellCastEvent | null>(null);
-  const npcPosRef = useRef<{ gx: number; gy: number } | null>(null);
-  const magicManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
-  const fightManNpcPosRef = useRef<{ gx: number; gy: number } | null>(null);
-  const npcPositionsMapRef = useRef(new Map<string, { gx: number; gy: number }>());
+  const npcPosRef = useRef<TargetableSnapshot | null>(null);
+  const magicManNpcPosRef = useRef<TargetableSnapshot | null>(null);
+  const fightManNpcPosRef = useRef<TargetableSnapshot | null>(null);
+  const npcPositionsMapRef = useRef(new Map<string, TargetableSnapshot>());
   const prevTpsActiveRef = useRef(false);
   const prevFadedOccluderKeysRef = useRef<string[]>([]);
   const onLuxTpsDialogueChangeRef = useRef(onLuxTpsDialogueChange);
@@ -878,6 +911,100 @@ export function IslandScene({
     [scheduleNpcTalkEnd],
   );
 
+  const setLockedTarget = useCallback((snapshot: TargetableSnapshot | null) => {
+    const nextState: TargetLockState = { activeTargetId: snapshot?.id ?? null };
+    targetLockStateRef.current = nextState;
+    activeTargetRef.current = snapshot;
+    setTargetLockState((prev) => (prev.activeTargetId === nextState.activeTargetId ? prev : nextState));
+  }, []);
+
+  const clearTargetLock = useCallback(() => {
+    setLockedTarget(null);
+  }, [setLockedTarget]);
+
+  const isTargetLockScopeEnabled = useCallback(
+    () =>
+      characterActive &&
+      playableVariant === "fight_man" &&
+      selectedIslandId === "mining" &&
+      tpsCameraStateRef.current.active &&
+      !debugMode &&
+      !editMode &&
+      !buildMode &&
+      !eraseMode &&
+      !cloneState &&
+      !poiMenuOpen &&
+      !activePoiSession &&
+      !isMiniActionActive,
+    [
+      activePoiSession,
+      buildMode,
+      characterActive,
+      cloneState,
+      debugMode,
+      editMode,
+      eraseMode,
+      isMiniActionActive,
+      playableVariant,
+      poiMenuOpen,
+      selectedIslandId,
+    ],
+  );
+
+  const collectTargetLockCandidates = useCallback((): TargetLockCandidate[] => {
+    if (!isTargetLockScopeEnabled()) return [];
+    const pose = charPoseRef.current;
+    const candidates: TargetLockCandidate[] = [];
+    for (const snapshot of targetRegistryRef.current.values()) {
+      if (!snapshot.alive) continue;
+      const distance = Math.hypot(snapshot.gx - pose.gx, snapshot.gy - pose.gy);
+      if (distance > TARGET_LOCK_ACQUIRE_RADIUS) continue;
+      candidates.push({
+        snapshot,
+        angle: getTargetLockAngle(pose.gx, pose.gy, snapshot.gx, snapshot.gy),
+        distance,
+      });
+    }
+    return candidates;
+  }, [isTargetLockScopeEnabled]);
+
+  const pickTargetClosestToView = useCallback((candidates: TargetLockCandidate[]): TargetableSnapshot | null => {
+    if (candidates.length === 0) return null;
+    const viewYaw = normalizeTargetLockAngle(tpsCameraStateRef.current.viewYaw ?? 0);
+    return [...candidates]
+      .sort((a, b) => {
+        const deltaA = getShortestTargetLockAngleDelta(viewYaw, a.angle);
+        const deltaB = getShortestTargetLockAngleDelta(viewYaw, b.angle);
+        if (deltaA !== deltaB) return deltaA - deltaB;
+        if (a.distance !== b.distance) return a.distance - b.distance;
+        return a.snapshot.id.localeCompare(b.snapshot.id);
+      })[0]?.snapshot ?? null;
+  }, []);
+
+  const handleTargetCycleRequest = useCallback(() => {
+    if (!isTargetLockScopeEnabled()) {
+      clearTargetLock();
+      return;
+    }
+    const candidates = collectTargetLockCandidates();
+    if (candidates.length === 0) {
+      clearTargetLock();
+      return;
+    }
+    const activeTargetId = targetLockStateRef.current.activeTargetId;
+    if (!activeTargetId) {
+      setLockedTarget(pickTargetClosestToView(candidates));
+      return;
+    }
+    const ordered = [...candidates].sort(compareTargetLockCandidatesClockwise);
+    const currentIndex = ordered.findIndex((candidate) => candidate.snapshot.id === activeTargetId);
+    if (currentIndex < 0) {
+      setLockedTarget(pickTargetClosestToView(candidates));
+      return;
+    }
+    setLockedTarget(ordered[(currentIndex + 1) % ordered.length]?.snapshot ?? null);
+  }, [clearTargetLock, collectTargetLockCandidates, isTargetLockScopeEnabled, pickTargetClosestToView, setLockedTarget]);
+
   useEffect(() => {
     const cb = onLuxTpsDialogueChangeRef.current;
     if (!cb) return;
@@ -908,26 +1035,82 @@ export function IslandScene({
     respawnToken,
     attackSwingRef: playerAttackRef,
     movementDebugRef,
+    activeTargetRef,
+    onTargetCycleRequest: handleTargetCycleRequest,
+    onTargetClearRequest: clearTargetLock,
   });
+  charPoseRef.current = { gx: charPose.gx, gy: charPose.gy };
+
+  useEffect(() => {
+    clearTargetLock();
+  }, [clearTargetLock, respawnToken, selectedIslandId]);
+
+  useEffect(() => {
+    if (
+      playableVariant !== "fight_man" ||
+      selectedIslandId !== "mining" ||
+      !characterActive ||
+      debugMode ||
+      editMode ||
+      buildMode ||
+      eraseMode ||
+      cloneState != null ||
+      poiMenuOpen ||
+      activePoiSession != null ||
+      isMiniActionActive
+    ) {
+      clearTargetLock();
+    }
+  }, [
+    activePoiSession,
+    buildMode,
+    characterActive,
+    clearTargetLock,
+    cloneState,
+    debugMode,
+    editMode,
+    eraseMode,
+    isMiniActionActive,
+    playableVariant,
+    poiMenuOpen,
+    selectedIslandId,
+  ]);
 
   useFrame(() => {
-    const pos = npcPosRef.current;
-    if (pos) {
-      npcPositionsMapRef.current.set("miningMan", pos);
-    } else {
-      npcPositionsMapRef.current.delete("miningMan");
+    const npcMap = npcPositionsMapRef.current;
+    const targetRegistry = targetRegistryRef.current;
+    npcMap.clear();
+    targetRegistry.clear();
+
+    const pos = hasMiningTile ? npcPosRef.current : null;
+    if (pos?.alive) {
+      npcMap.set(pos.id, pos);
+      targetRegistry.set(pos.id, pos);
     }
-    const magicPos = magicManNpcPosRef.current;
-    if (magicPos) {
-      npcPositionsMapRef.current.set("magicMan", magicPos);
-    } else {
-      npcPositionsMapRef.current.delete("magicMan");
+    const magicPos = hasMagicTower ? magicManNpcPosRef.current : null;
+    if (magicPos?.alive) {
+      npcMap.set(magicPos.id, magicPos);
+      targetRegistry.set(magicPos.id, magicPos);
     }
-    const fightPos = fightManNpcPosRef.current;
-    if (fightPos) {
-      npcPositionsMapRef.current.set("fightMan", fightPos);
-    } else {
-      npcPositionsMapRef.current.delete("fightMan");
+    const fightPos = hasKaserneTile ? fightManNpcPosRef.current : null;
+    if (fightPos?.alive) {
+      npcMap.set(fightPos.id, fightPos);
+      targetRegistry.set(fightPos.id, fightPos);
+    }
+    const enemyPos = enemyRobotPresent ? enemyRobotTargetRef.current : null;
+    if (enemyPos?.alive) {
+      targetRegistry.set(enemyPos.id, enemyPos);
+    }
+
+    const activeTargetId = targetLockStateRef.current.activeTargetId;
+    const activeTarget = activeTargetId ? targetRegistry.get(activeTargetId) ?? null : null;
+    activeTargetRef.current = activeTarget;
+    if (activeTargetId) {
+      const pose = charPoseRef.current;
+      const distance = activeTarget ? Math.hypot(pose.gx - activeTarget.gx, pose.gy - activeTarget.gy) : Infinity;
+      if (!isTargetLockScopeEnabled() || !activeTarget?.alive || distance > TARGET_LOCK_BREAK_RADIUS) {
+        clearTargetLock();
+      }
     }
 
     const tpsActive = tpsCameraStateRef.current.active;
@@ -946,7 +1129,7 @@ export function IslandScene({
       prevFadedOccluderKeysRef.current = [...nextFadedOccluderKeys];
       setFadedOccluderKeys(nextFadedOccluderKeys);
     }
-  });
+  }, 1);
 
   useLayoutEffect(() => {
     return () => {
@@ -1187,6 +1370,7 @@ export function IslandScene({
         followCharacter={characterActive && !debugMode && !editMode}
         orbitEnabled={!gizmoDragging}
         tpsCameraStateRef={tpsCameraStateRef}
+        lockedTargetRef={activeTargetRef}
         cameraOccludersRef={cameraOccludersRef}
         forceIsoToken={forceIsoToken}
         tpsEnabled={
@@ -1456,6 +1640,7 @@ export function IslandScene({
                 respawnToken={respawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
+                targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (
@@ -1584,6 +1769,7 @@ export function IslandScene({
                 respawnToken={respawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
+                targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (
@@ -1701,6 +1887,7 @@ export function IslandScene({
                 respawnToken={respawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
+                targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
             {hasMagicTower && playableVariant !== "magic_man" && (
@@ -1724,6 +1911,12 @@ export function IslandScene({
               />
             )}
             </FloatingBob>
+        )}
+
+        {!debugMode && !editMode && targetLockState.activeTargetId && (
+          <FloatingBob>
+            <TargetLockMarker targetRef={activeTargetRef} />
+          </FloatingBob>
         )}
 
         {!debugMode && !editMode && ghostCell && selectedTileType && (

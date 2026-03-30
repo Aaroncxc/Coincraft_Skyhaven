@@ -36,6 +36,7 @@ import {
   canNpcPatrolStepBetweenCells,
   getNpcSupportWorldY,
 } from "./islandSurface";
+import type { TargetableSnapshot } from "./targetLock";
 
 const CHAR_SCALE = 0.294;
 /** FBX from Mixamo uses centimetres; match the GLB-based characters. */
@@ -56,7 +57,7 @@ type Props = {
   island: IslandMap;
   patrolIslandKey: string;
   isTalking: boolean;
-  npcPosRef: MutableRefObject<{ gx: number; gy: number } | null>;
+  npcPosRef: MutableRefObject<TargetableSnapshot | null>;
   playerGx: number;
   playerGy: number;
 };
@@ -92,6 +93,12 @@ function buildNpcBlockedSet(island: IslandMap, kaserne: { gx: number; gy: number
 export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, playerGx, playerGy }: Props) {
   const islandRef = useRef(island);
   islandRef.current = island;
+
+  useEffect(() => {
+    return () => {
+      npcPosRef.current = null;
+    };
+  }, [npcPosRef]);
 
   const fbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
   const fbxByUrl = useMemo(() => {
@@ -304,8 +311,6 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     if (!outerRef.current || !kaserneTile || npcWalkableTiles.length === 0) return;
     const dt = Math.min(0.05, delta);
 
-    npcPosRef.current = { gx: gxRef.current, gy: gyRef.current };
-
     if (!isAvatarCellValid(walkableCells, blockedFootprint, gxRef.current, gyRef.current)) {
       const safe = findNearestValidCell(kaserneTile.gx + 2, kaserneTile.gy, walkableCells, blockedFootprint);
       gxRef.current = safe.gx;
@@ -410,8 +415,19 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     pos.z += (tz - pos.z) * sm;
     const rgx = Math.round(gxRef.current);
     const rgy = Math.round(gyRef.current);
-    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + FIGHT_NPC_GROUND_OFFSET_Y;
+    const supportY = getNpcSupportWorldY(surfaceData, rgx, rgy);
+    const targetY = supportY + FIGHT_NPC_GROUND_OFFSET_Y;
     pos.y += (targetY - pos.y) * sm;
+
+    npcPosRef.current = {
+      id: "fightMan",
+      kind: "npc",
+      alive: true,
+      gx: gxRef.current,
+      gy: gyRef.current,
+      surfaceY: supportY,
+      worldY: pos.y,
+    };
 
     if (modelRef.current) {
       let targetRot = facingAngleRef.current;

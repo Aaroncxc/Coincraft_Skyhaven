@@ -22,6 +22,7 @@ import {
   canNpcPatrolStepBetweenCells,
   getNpcSupportWorldY,
 } from "./islandSurface";
+import type { TargetableSnapshot } from "./targetLock";
 
 Object.values(MINING_MAN_MODELS).forEach((p) => useGLTF.preload(p));
 
@@ -45,7 +46,7 @@ type Props = {
   /** Changes when switching islands or editing tiles — forces respawn at the mine anchor. */
   patrolIslandKey: string;
   isTalking: boolean;
-  npcPosRef: MutableRefObject<{ gx: number; gy: number } | null>;
+  npcPosRef: MutableRefObject<TargetableSnapshot | null>;
   playerGx: number;
   playerGy: number;
 };
@@ -62,6 +63,12 @@ function findMineTile(island: IslandMap): { gx: number; gy: number } | null {
 export function MiningManNPC({ island, patrolIslandKey, isTalking, npcPosRef, playerGx, playerGy }: Props) {
   const islandRef = useRef(island);
   islandRef.current = island;
+
+  useEffect(() => {
+    return () => {
+      npcPosRef.current = null;
+    };
+  }, [npcPosRef]);
 
   const baseGltf = useGLTF(MINING_MAN_MODELS.base);
   const walkGltf = useGLTF(MINING_MAN_MODELS.walk);
@@ -236,8 +243,6 @@ export function MiningManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pl
     if (!outerRef.current || !mineTile || walkableCells.size === 0) return;
     const dt = Math.min(0.05, delta);
 
-    npcPosRef.current = { gx: gxRef.current, gy: gyRef.current };
-
     if (!isAvatarCellValid(walkableCells, patrolBlockedFootprint, gxRef.current, gyRef.current)) {
       const safe = findNearestValidCell(mineTile.gx, mineTile.gy, walkableCells, patrolBlockedFootprint);
       gxRef.current = safe.gx;
@@ -364,8 +369,19 @@ export function MiningManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pl
     pos.z += (tz - pos.z) * sm;
     const rgx = Math.round(gxRef.current);
     const rgy = Math.round(gyRef.current);
-    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + MINING_GROUND_OFFSET_Y;
+    const supportY = getNpcSupportWorldY(surfaceData, rgx, rgy);
+    const targetY = supportY + MINING_GROUND_OFFSET_Y;
     pos.y += (targetY - pos.y) * sm;
+
+    npcPosRef.current = {
+      id: "miningMan",
+      kind: "npc",
+      alive: true,
+      gx: gxRef.current,
+      gy: gyRef.current,
+      surfaceY: supportY,
+      worldY: pos.y,
+    };
 
     if (modelRef.current) {
       let targetRot = facingAngleRef.current;

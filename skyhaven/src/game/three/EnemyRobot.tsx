@@ -26,6 +26,7 @@ import {
 } from "./islandWalkability";
 import { buildIslandSurfaceData, canNpcPatrolStepBetweenCells, getNpcSupportWorldY } from "./islandSurface";
 import type { CharacterPose3D, PlayerAttackSnapshot } from "./useCharacterMovement";
+import type { TargetableSnapshot } from "./targetLock";
 
 Object.values(ENEMY_ROBOT_MODELS).forEach((path) => useGLTF.preload(path));
 
@@ -68,6 +69,7 @@ type Props = {
   respawnToken: number;
   onPlayerDamage: (damage: number) => void;
   onAliveChange?: (alive: boolean) => void;
+  targetSnapshotRef?: MutableRefObject<TargetableSnapshot | null>;
 };
 
 type FadableMaterialEntry = {
@@ -165,6 +167,7 @@ export function EnemyRobot({
   respawnToken,
   onPlayerDamage,
   onAliveChange,
+  targetSnapshotRef,
 }: Props) {
   const playerPoseRef = useRef(playerPose);
   playerPoseRef.current = playerPose;
@@ -172,6 +175,14 @@ export function EnemyRobot({
   onPlayerDamageRef.current = onPlayerDamage;
   const onAliveChangeRef = useRef(onAliveChange);
   onAliveChangeRef.current = onAliveChange;
+
+  useEffect(() => {
+    return () => {
+      if (targetSnapshotRef) {
+        targetSnapshotRef.current = null;
+      }
+    };
+  }, [targetSnapshotRef]);
 
   const baseGltf = useGLTF(ENEMY_ROBOT_MODELS.base);
   const walkGltf = useGLTF(ENEMY_ROBOT_MODELS.walk);
@@ -575,8 +586,21 @@ export function EnemyRobot({
     const sm = 1 - Math.exp(-10 * delta);
     outer.position.x += (tx - outer.position.x) * sm;
     outer.position.z += (tz - outer.position.z) * sm;
-    const targetY = getNpcSupportWorldY(surfaceData, gxRef.current, gyRef.current) + ENEMY_GROUND_OFFSET_Y;
+    const supportY = getNpcSupportWorldY(surfaceData, gxRef.current, gyRef.current);
+    const targetY = supportY + ENEMY_GROUND_OFFSET_Y;
     outer.position.y += (targetY - outer.position.y) * sm;
+
+    if (targetSnapshotRef) {
+      targetSnapshotRef.current = {
+        id: "enemyRobot",
+        kind: "enemy",
+        alive: stateRef.current !== "dead" && outer.visible,
+        gx: gxRef.current,
+        gy: gyRef.current,
+        surfaceY: supportY,
+        worldY: outer.position.y,
+      };
+    }
 
     let rotDiff = wrapAngle(facingAngleRef.current - model.rotation.y);
     model.rotation.y += rotDiff * sm;

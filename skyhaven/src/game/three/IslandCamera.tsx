@@ -8,6 +8,7 @@ import { TILE_UNIT_SIZE } from "./assets3d";
 import { DEFAULT_WALK_SURFACE_OFFSET_Y } from "./islandSurface";
 import type { CharacterPose3D, TpsCameraState } from "./useCharacterMovement";
 import type { CameraOccluderEntry } from "./cameraOcclusion";
+import type { TargetableSnapshot } from "./targetLock";
 
 const ISO_ANGLE_X = Math.atan(1 / Math.SQRT2);
 const ISO_ANGLE_Y = Math.PI / 4;
@@ -55,6 +56,12 @@ const ISO_ZOOM_LERP_SPEED = 14;
 /** deltaY is often ~100 per mouse notch; scale so one notch moves target zoom noticeably but camera eases in. */
 const ISO_ZOOM_WHEEL_SCALE = 0.085;
 const TPS_DISTANCE_LERP_SPEED = 16;
+const TPS_TARGET_LOCK_FOLLOW_STIFFNESS = 11;
+const TPS_TARGET_LOCK_YAW_STIFFNESS = 14;
+const TPS_TARGET_LOCK_DISTANCE_BASE = 2.6;
+const TPS_TARGET_LOCK_DISTANCE_FACTOR = 0.72;
+const TPS_TARGET_LOCK_PITCH_BASE = 0.34;
+const TPS_TARGET_LOCK_PITCH_DISTANCE_FACTOR = 0.04;
 
 type CameraMode = "iso" | "tps" | "tps_exit";
 
@@ -81,6 +88,7 @@ type IslandCameraProps = {
   tpsEnabled?: boolean;
   forceIsoToken?: number;
   tpsCameraStateRef?: MutableRefObject<TpsCameraState>;
+  lockedTargetRef?: MutableRefObject<TargetableSnapshot | null>;
   cameraOccludersRef?: MutableRefObject<CameraOccluderEntry[]>;
 };
 
@@ -122,6 +130,7 @@ export function IslandCamera({
   tpsEnabled = false,
   forceIsoToken = 0,
   tpsCameraStateRef,
+  lockedTargetRef,
   cameraOccludersRef,
 }: IslandCameraProps) {
   const { gl } = useThree();
@@ -135,6 +144,8 @@ export function IslandCamera({
   const distanceRef = useRef(TPS_MAX_DISTANCE);
   const charLosSmoothRef = useRef(0);
   const pointerLockActiveRef = useRef(false);
+  const targetLockActiveRef = useRef(false);
+  const prevTargetLockActiveRef = useRef(false);
   const steeringActiveRef = useRef(false);
   const mouseForwardActiveRef = useRef(false);
   const leftMouseButtonRef = useRef(false);
@@ -233,6 +244,16 @@ export function IslandCamera({
     setMouseForwardActive(modeRef.current === "tps" && leftMouseButtonRef.current && rightMouseButtonRef.current);
   }, [setMouseForwardActive]);
 
+  const releaseTpsInputCapture = useCallback(() => {
+    stopFallbackDrag();
+    exitPointerLock();
+    pointerLockActiveRef.current = false;
+    leftMouseButtonRef.current = false;
+    rightMouseButtonRef.current = false;
+    setSteeringActive(false);
+    setMouseForwardActive(false);
+  }, [exitPointerLock, setMouseForwardActive, setSteeringActive, stopFallbackDrag]);
+
   const applyLookDelta = useCallback((deltaX: number, deltaY: number) => {
     viewYawRef.current = wrapAngle(viewYawRef.current - deltaX * TPS_LOOK_SENSITIVITY);
     pitchRef.current = clamp(pitchRef.current - deltaY * TPS_LOOK_SENSITIVITY, TPS_PITCH_MIN, TPS_PITCH_MAX);
@@ -266,13 +287,7 @@ export function IslandCamera({
   }, [tpsCameraStateRef]);
 
   const beginExitToIso = useCallback((wheelDeltaY: number) => {
-    stopFallbackDrag();
-    exitPointerLock();
-    pointerLockActiveRef.current = false;
-    leftMouseButtonRef.current = false;
-    rightMouseButtonRef.current = false;
-    setSteeringActive(false);
-    setMouseForwardActive(false);
+    releaseTpsInputCapture();
     charLosSmoothRef.current = 0;
 
     const ortho = orthoCameraRef.current;
@@ -317,7 +332,7 @@ export function IslandCamera({
       targetZoomRef.current = targetZoom;
     }
     finishExitToIso();
-  }, [exitPointerLock, finishExitToIso, setSteeringActive, stopFallbackDrag]);
+  }, [finishExitToIso, releaseTpsInputCapture]);
 
   const enterTpsFromIso = useCallback(() => {
     const controls = controlsRef.current;
@@ -379,6 +394,14 @@ export function IslandCamera({
 
     const syncPointerLock = () => {
       const locked = document.pointerLockElement === canvas;
+      if (targetLockActiveRef.current) {
+        if (locked) {
+          exitPointerLock();
+        }
+        pointerLockActiveRef.current = false;
+        setSteeringActive(false);
+        return;
+      }
       pointerLockActiveRef.current = locked;
       if (locked) {
         stopFallbackDrag();
@@ -398,6 +421,16 @@ export function IslandCamera({
 
     const handlePointerDown = (event: PointerEvent) => {
       if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      if (targetLockActiveRef.current) {
+        if (event.button === 2) {
+          event.preventDefault();
+        }
+        leftMouseButtonRef.current = false;
+        rightMouseButtonRef.current = false;
+        setMouseForwardActive(false);
+        setSteeringActive(false);
+        return;
+      }
       if (event.button === 0) {
         leftMouseButtonRef.current = true;
         syncMouseForwardActive();
@@ -435,6 +468,7 @@ export function IslandCamera({
 
     const handlePointerMove = (event: PointerEvent) => {
       if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      if (targetLockActiveRef.current) return;
 
       if (pointerLockActiveRef.current) {
         if (event.movementX !== 0 || event.movementY !== 0) {
@@ -462,6 +496,13 @@ export function IslandCamera({
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (targetLockActiveRef.current) {
+        if (fallbackPointerIdRef.current === event.pointerId) {
+          canvas.releasePointerCapture?.(event.pointerId);
+        }
+        releaseTpsInputCapture();
+        return;
+      }
       if (event.button === 0) {
         leftMouseButtonRef.current = false;
         syncMouseForwardActive();
@@ -480,6 +521,12 @@ export function IslandCamera({
 
     const handleMouseDown = (event: MouseEvent) => {
       if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      if (targetLockActiveRef.current) {
+        if (event.button === 2 && eventTargetsCanvas(event)) {
+          event.preventDefault();
+        }
+        return;
+      }
       const canvasRelated =
         pointerLockActiveRef.current ||
         fallbackDraggingRef.current ||
@@ -500,6 +547,12 @@ export function IslandCamera({
     };
 
     const handleMouseUp = (event: MouseEvent) => {
+      if (targetLockActiveRef.current) {
+        leftMouseButtonRef.current = false;
+        rightMouseButtonRef.current = false;
+        setMouseForwardActive(false);
+        return;
+      }
       if (event.button === 0) {
         leftMouseButtonRef.current = false;
         syncMouseForwardActive();
@@ -513,6 +566,10 @@ export function IslandCamera({
     };
 
     const handleWindowBlur = () => {
+      if (targetLockActiveRef.current) {
+        releaseTpsInputCapture();
+        return;
+      }
       leftMouseButtonRef.current = false;
       rightMouseButtonRef.current = false;
       syncMouseForwardActive();
@@ -520,6 +577,10 @@ export function IslandCamera({
 
     const handleWheel = (event: WheelEvent) => {
       if (!tpsEnabled || !followCharacter || !orbitEnabled) return;
+      if (targetLockActiveRef.current) {
+        event.preventDefault();
+        return;
+      }
 
       event.preventDefault();
       const nextTarget = distanceTargetRef.current + event.deltaY * TPS_WHEEL_SPEED;
@@ -573,6 +634,7 @@ export function IslandCamera({
     gl,
     mode,
     orbitEnabled,
+    releaseTpsInputCapture,
     setMouseForwardActive,
     setSteeringActive,
     stopFallbackDrag,
@@ -608,6 +670,16 @@ export function IslandCamera({
     }
 
     const tpsDriving = mode === "tps" || mode === "tps_exit" || enteringTps;
+    const lockedTarget = lockedTargetRef?.current ?? null;
+    const targetLockActive = Boolean(mode === "tps" && tpsEnabled && followCharacter && characterPose && lockedTarget?.alive);
+    targetLockActiveRef.current = targetLockActive;
+    if (targetLockActive !== prevTargetLockActiveRef.current) {
+      prevTargetLockActiveRef.current = targetLockActive;
+      if (targetLockActive) {
+        releaseTpsInputCapture();
+        charLosSmoothRef.current = 0;
+      }
+    }
 
     const shouldFollowCharacter = followCharacter && characterPose;
     const shouldFollowTarget =
@@ -615,34 +687,68 @@ export function IslandCamera({
       (tpsDriving || orthoCamera.zoom >= FOLLOW_ZOOM_THRESHOLD);
 
     if (shouldFollowTarget) {
-      const desiredTargetX = characterPose.gx * TILE_UNIT_SIZE;
-      const desiredTargetY =
+      const playerTargetX = characterPose.gx * TILE_UNIT_SIZE;
+      const playerTargetY =
         (characterPose.worldY ?? characterPose.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + TPS_TARGET_OFFSET_Y;
-      const desiredTargetZ = characterPose.gy * TILE_UNIT_SIZE;
+      const playerTargetZ = characterPose.gy * TILE_UNIT_SIZE;
 
-      const dx = desiredTargetX - targetRef.current.x;
-      const dy = desiredTargetY - targetRef.current.y;
-      const dz = desiredTargetZ - targetRef.current.z;
+      if (targetLockActive && lockedTarget) {
+        const targetWorldX = lockedTarget.gx * TILE_UNIT_SIZE;
+        const targetWorldY =
+          (lockedTarget.worldY ?? lockedTarget.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y) + TPS_TARGET_OFFSET_Y;
+        const targetWorldZ = lockedTarget.gy * TILE_UNIT_SIZE;
+        const desiredTargetX = (playerTargetX + targetWorldX) * 0.5;
+        const desiredTargetY = (playerTargetY + targetWorldY) * 0.5 + 0.16;
+        const desiredTargetZ = (playerTargetZ + targetWorldZ) * 0.5;
+        const followAlpha = 1 - Math.exp(-TPS_TARGET_LOCK_FOLLOW_STIFFNESS * delta);
+        targetRef.current.x += (desiredTargetX - targetRef.current.x) * followAlpha;
+        targetRef.current.y += (desiredTargetY - targetRef.current.y) * followAlpha;
+        targetRef.current.z += (desiredTargetZ - targetRef.current.z) * followAlpha;
 
-      if (
-        Math.abs(dx) >= FOLLOW_DEAD_ZONE ||
-        Math.abs(dy) >= FOLLOW_DEAD_ZONE ||
-        Math.abs(dz) >= FOLLOW_DEAD_ZONE
-      ) {
-        const followStiffness = tpsDriving ? TPS_TARGET_FOLLOW_STIFFNESS : FOLLOW_STIFFNESS;
-        const alpha = 1 - Math.exp(-followStiffness * delta);
-        targetRef.current.x += dx * alpha;
-        targetRef.current.y += dy * alpha;
-        targetRef.current.z += dz * alpha;
+        const desiredYaw = wrapAngle(Math.atan2(targetWorldX - playerTargetX, targetWorldZ - playerTargetZ));
+        const yawAlpha = 1 - Math.exp(-TPS_TARGET_LOCK_YAW_STIFFNESS * delta);
+        viewYawRef.current = wrapAngle(
+          viewYawRef.current + wrapAngle(desiredYaw - viewYawRef.current) * yawAlpha,
+        );
+
+        const playerTargetDistance = Math.hypot(targetWorldX - playerTargetX, targetWorldZ - playerTargetZ);
+        distanceTargetRef.current = clamp(
+          TPS_TARGET_LOCK_DISTANCE_BASE + playerTargetDistance * TPS_TARGET_LOCK_DISTANCE_FACTOR,
+          TPS_MIN_DISTANCE,
+          TPS_MAX_DISTANCE,
+        );
+        pitchRef.current = clamp(
+          TPS_TARGET_LOCK_PITCH_BASE + Math.min(playerTargetDistance, 6) * TPS_TARGET_LOCK_PITCH_DISTANCE_FACTOR,
+          TPS_PITCH_MIN,
+          TPS_PITCH_MAX,
+        );
+      } else {
+        const dx = playerTargetX - targetRef.current.x;
+        const dy = playerTargetY - targetRef.current.y;
+        const dz = playerTargetZ - targetRef.current.z;
+
+        if (
+          Math.abs(dx) >= FOLLOW_DEAD_ZONE ||
+          Math.abs(dy) >= FOLLOW_DEAD_ZONE ||
+          Math.abs(dz) >= FOLLOW_DEAD_ZONE
+        ) {
+          const followStiffness = tpsDriving ? TPS_TARGET_FOLLOW_STIFFNESS : FOLLOW_STIFFNESS;
+          const alpha = 1 - Math.exp(-followStiffness * delta);
+          targetRef.current.x += dx * alpha;
+          targetRef.current.y += dy * alpha;
+          targetRef.current.z += dz * alpha;
+        }
       }
     }
 
-    const tpsActive = Boolean(tpsDriving && tpsEnabled && followCharacter && characterPose);
+    const tpsActive = Boolean((mode === "tps" || enteringTps) && tpsEnabled && followCharacter && characterPose);
+    const effectiveSteeringActive = tpsActive && !targetLockActive ? steeringActiveRef.current : false;
+    const effectiveMouseForwardActive = tpsActive && !targetLockActive ? mouseForwardActiveRef.current : false;
     if (tpsCameraStateRef) {
       tpsCameraStateRef.current.active = tpsActive;
       tpsCameraStateRef.current.viewYaw = tpsActive ? viewYawRef.current : null;
-      tpsCameraStateRef.current.steeringActive = tpsActive ? steeringActiveRef.current : false;
-      tpsCameraStateRef.current.mouseForwardActive = tpsActive ? mouseForwardActiveRef.current : false;
+      tpsCameraStateRef.current.steeringActive = effectiveSteeringActive;
+      tpsCameraStateRef.current.mouseForwardActive = effectiveMouseForwardActive;
       if (!tpsActive) {
         tpsCameraStateRef.current.characterOccluded = false;
         tpsCameraStateRef.current.steeringActive = false;

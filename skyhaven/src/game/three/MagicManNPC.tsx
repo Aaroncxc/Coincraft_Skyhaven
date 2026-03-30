@@ -21,6 +21,7 @@ import {
   canNpcPatrolStepBetweenCells,
   getNpcSupportWorldY,
 } from "./islandSurface";
+import type { TargetableSnapshot } from "./targetLock";
 
 Object.values(MAGIC_MAN_MODELS).forEach((p) => useGLTF.preload(p));
 
@@ -43,7 +44,7 @@ type Props = {
   island: IslandMap;
   patrolIslandKey: string;
   isTalking: boolean;
-  npcPosRef: React.MutableRefObject<{ gx: number; gy: number } | null>;
+  npcPosRef: React.MutableRefObject<TargetableSnapshot | null>;
   playerGx: number;
   playerGy: number;
 };
@@ -58,6 +59,12 @@ function findMagicTowerTile(island: IslandMap): { gx: number; gy: number } | nul
 export function MagicManNPC({ island, patrolIslandKey, isTalking, npcPosRef, playerGx, playerGy }: Props) {
   const islandRef = useRef(island);
   islandRef.current = island;
+
+  useEffect(() => {
+    return () => {
+      npcPosRef.current = null;
+    };
+  }, [npcPosRef]);
 
   const baseGltf = useGLTF(MAGIC_MAN_MODELS.base);
   const walkGltf = useGLTF(MAGIC_MAN_MODELS.walk);
@@ -240,8 +247,6 @@ export function MagicManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     if (!outerRef.current || !magicTowerTile || walkableCells.size === 0) return;
     const dt = Math.min(0.05, delta);
 
-    npcPosRef.current = { gx: gxRef.current, gy: gyRef.current };
-
     if (!isAvatarCellValid(walkableCells, patrolBlockedFootprint, gxRef.current, gyRef.current)) {
       const safe = findNearestValidCell(
         magicTowerTile.gx,
@@ -364,8 +369,19 @@ export function MagicManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     pos.z += (tz - pos.z) * sm;
     const rgx = Math.round(gxRef.current);
     const rgy = Math.round(gyRef.current);
-    const targetY = getNpcSupportWorldY(surfaceData, rgx, rgy) + MAGIC_GROUND_OFFSET_Y;
+    const supportY = getNpcSupportWorldY(surfaceData, rgx, rgy);
+    const targetY = supportY + MAGIC_GROUND_OFFSET_Y;
     pos.y += (targetY - pos.y) * sm;
+
+    npcPosRef.current = {
+      id: "magicMan",
+      kind: "npc",
+      alive: true,
+      gx: gxRef.current,
+      gy: gyRef.current,
+      surfaceY: supportY,
+      worldY: pos.y,
+    };
 
     if (modelRef.current) {
       let targetRot = facingAngleRef.current;
