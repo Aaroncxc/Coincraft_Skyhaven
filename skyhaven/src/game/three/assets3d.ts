@@ -30,6 +30,7 @@ export const TILE_3D_MODELS: Record<string, string> = {
   ancientTempleTile: "/ingame_assets/3d/ancientTemple_Tile.glb",
   kaserneTile: "/ingame_assets/3d/Kaserne1_Tile.glb",
   runeTile: "/ingame_assets/3d/Rune_tile.glb",
+  airShipPort: "/ingame_assets/3d/AirCraftShip/AnlegeStelleAirShip.glb",
 };
 
 const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
@@ -95,6 +96,7 @@ const ASSET_KEY_TO_MODEL: Record<AssetKey, string> = {
   ancientTempleTile: "ancientTempleTile",
   kaserneTile: "kaserneTile",
   runeTile: "runeTile",
+  airShipPort: "airShipPort",
 };
 
 export function getModelKeyForAsset(assetKey: AssetKey): string {
@@ -151,6 +153,11 @@ export const FIGHT_MAN_SWORD_MODELS = {
   strafeRunR: `${FIGHT_MAN_SWORD_DIR}/sword and shield run (2).fbx`,
   turn90L: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn.fbx`,
   turn90R: `${FIGHT_MAN_SWORD_DIR}/sword and shield turn (2).fbx`,
+  attack1: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack.fbx`,
+  attack2: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (2).fbx`,
+  attack3: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (3).fbx`,
+  chop: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (4).fbx`,
+  /** Legacy aliases kept so existing references stay valid during migration. */
   attack: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack.fbx`,
   skill: `${FIGHT_MAN_SWORD_DIR}/sword and shield attack (2).fbx`,
   block: `${FIGHT_MAN_SWORD_DIR}/sword and shield block.fbx`,
@@ -161,6 +168,8 @@ export const FIGHT_MAN_SWORD_MODELS = {
   jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
   fallIdle: `${FIGHT_MAN_ADV_DIR}/falling idle.fbx`,
   landing: `${FIGHT_MAN_ADV_DIR}/Falling To Landing.fbx`,
+  climbWall: `${FIGHT_MAN_ADV_DIR}/Climbing Up Wall.fbx`,
+  climbTop: `${FIGHT_MAN_ADV_DIR}/Climbing To Top.fbx`,
   /** TPS RMB look: head-friendly idle (same path as adventure set). */
   rmbLook: `${FIGHT_MAN_ADV_DIR}/idleHeadMove.fbx`,
 } as const;
@@ -187,6 +196,8 @@ export const FIGHT_MAN_ADV_MODELS = {
   jump: `${FIGHT_MAN_ADV_DIR}/jumping up.fbx`,
   fallIdle: `${FIGHT_MAN_ADV_DIR}/falling idle.fbx`,
   landing: `${FIGHT_MAN_ADV_DIR}/Falling To Landing.fbx`,
+  climbWall: `${FIGHT_MAN_ADV_DIR}/Climbing Up Wall.fbx`,
+  climbTop: `${FIGHT_MAN_ADV_DIR}/Climbing To Top.fbx`,
   roll: `${FIGHT_MAN_ADV_DIR}/falling to roll.fbx`,
   spell: `${FIGHT_MAN_ADV_DIR}/stand to cover.fbx`,
 } as const;
@@ -258,6 +269,7 @@ export const ALL_GAME_GLTF_PATHS = Array.from(
     ...Object.values(ENEMY_ROBOT_MODELS),
     ...Object.values(CHAR_3D_MODELS),
     SKULLY_MODEL_PATH,
+    "/ingame_assets/3d/AirCraftShip/AirShipFirst.glb",
     AXE_PROP_GLB,
     SHIELD_PROP_GLB,
     TORCH_PROP_GLB,

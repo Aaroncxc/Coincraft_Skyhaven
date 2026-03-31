@@ -139,6 +139,7 @@ const FIGHT_MAN_FBX_SCALE = CHAR_SCALE * 0.01;
 export const FIGHT_MAN_ORBIT_MESH_SCALE_MULT = 1;
 const JUMP_ARC_HEIGHT = 0.5;
 const JUMP_DURATION_DEFAULT = 0.38;
+const FIGHT_MAN_LANDING_SPEED_MULT = 1.65;
 const SPELL_DURATION_DEFAULT = 1.05;
 const DEFAULT_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("default").visualGroundOffsetY;
 const MINING_GROUND_OFFSET_Y = getPlayableAvatarGroundProfile("mining_man").visualGroundOffsetY;
@@ -745,12 +746,13 @@ function useCharacterFrame(
     const sm = 1 - Math.exp(-12 * delta);
     const isJumping = p.animState === "jump";
     const isRolling = p.animState === "roll";
+    const isClimbing = p.animState === "climbWall" || p.animState === "climbTop";
     const isCombatLocked = p.animState === "chop" || p.animState === "attack";
     if (isJumping && !wasJumping.current) {
       jumpArcTimer.current = 0;
     }
     wasJumping.current = isJumping;
-    if (isJumping || isRolling || isCombatLocked) {
+    if (isJumping || isRolling || isClimbing || isCombatLocked) {
       pos.x = tx;
       pos.z = tz;
     } else {
@@ -1210,6 +1212,8 @@ const FIGHT_MAN_WORLD_CLIP_POLICIES: readonly FightManClipPolicy[] = [
   { prefix: "adv", key: "jump", outName: "jump" },
   { prefix: "adv", key: "fallIdle", outName: "fallIdle" },
   { prefix: "adv", key: "landing", outName: "landing" },
+  { prefix: "adv", key: "climbWall", outName: "climbWall" },
+  { prefix: "adv", key: "climbTop", outName: "climbTop" },
   { prefix: "adv", key: "roll", outName: "roll" },
   { prefix: "adv", key: "spell", outName: "spell" },
   { prefix: "torch", key: "walk", outName: "walk" },
@@ -1229,8 +1233,12 @@ const FIGHT_MAN_WORLD_CLIP_POLICIES: readonly FightManClipPolicy[] = [
   { prefix: "sword", key: "jump", outName: "jump" },
   { prefix: "sword", key: "fallIdle", outName: "fallIdle" },
   { prefix: "sword", key: "landing", outName: "landing" },
-  { prefix: "sword", key: "attack", outName: "attack" },
-  { prefix: "sword", key: "skill", outName: "skill" },
+  { prefix: "sword", key: "climbWall", outName: "climbWall" },
+  { prefix: "sword", key: "climbTop", outName: "climbTop" },
+  { prefix: "sword", key: "attack1", outName: "attack1" },
+  { prefix: "sword", key: "attack2", outName: "attack2" },
+  { prefix: "sword", key: "attack3", outName: "attack3" },
+  { prefix: "sword", key: "chop", outName: "chop" },
   { prefix: "sword", key: "block", outName: "block" },
   { prefix: "sword", key: "blockIdle", outName: "blockIdle" },
   { prefix: "sword", key: "spell", outName: "spell" },
@@ -1545,15 +1553,29 @@ function fightManLocomotionActionName(
   if (animState === "walk") {
     if (s === "left") return `${prefix}_strafeWalkL`;
     if (s === "right") return `${prefix}_strafeWalkR`;
-    if (prefix === "sword" && locomotionBackwards) return `${prefix}_walkBack`;
+    if (locomotionBackwards) return "sword_walkBack";
     if (forwardOverridePrefix) return `${forwardOverridePrefix}_walk`;
     return `${prefix}_walk`;
   }
   if (s === "left") return `${prefix}_strafeL`;
   if (s === "right") return `${prefix}_strafeR`;
-  if (prefix === "sword" && locomotionBackwards) return `${prefix}_runBack`;
+  if (locomotionBackwards) return "sword_runBack";
   if (forwardOverridePrefix) return `${forwardOverridePrefix}_run`;
   return `${prefix}_run`;
+}
+
+function fightManAttackActionName(
+  prefix: string,
+  comboStep: CharacterPose3D["attackComboStep"],
+): string {
+  if (prefix !== "sword") return `${prefix}_attack`;
+  if (comboStep === 2) return "sword_attack2";
+  if (comboStep === 3) return "sword_attack3";
+  return "sword_attack1";
+}
+
+function fightManChopActionName(prefix: string): string {
+  return prefix === "sword" ? "sword_chop" : `${prefix}_skill`;
 }
 
 function pickRandomIdleClipName(
@@ -1976,13 +1998,19 @@ function FightManPlayableModel({
           );
           break;
         case "attack":
-          target = `${prefix}_attack`;
+          target = fightManAttackActionName(prefix, pose.attackComboStep);
           break;
         case "chop":
-          target = `${prefix}_skill`;
+          target = fightManChopActionName(prefix);
           break;
         case "jump":
           target = `${prefix}_jump`;
+          break;
+        case "climbWall":
+          target = `${prefix}_climbWall`;
+          break;
+        case "climbTop":
+          target = `${prefix}_climbTop`;
           break;
         case "spell":
           target = `${prefix}_spell`;
@@ -2015,6 +2043,8 @@ function FightManPlayableModel({
       pose.fightManTurnStep != null ||
       pose.animState === "attack" ||
       pose.animState === "chop" ||
+      pose.animState === "climbWall" ||
+      pose.animState === "climbTop" ||
       fightManAirPhase === "takeoff" ||
       fightManAirPhase === "landing" ||
       (pose.animState === "jump" && fightManAirPhase === null) ||
@@ -2066,7 +2096,8 @@ function FightManPlayableModel({
       nextAction.clampWhenFinished = true;
       let desiredDuration = clipDuration;
       if (fightManAirPhase === "takeoff" || fightManAirPhase === "landing") {
-        desiredDuration = clipDuration;
+        desiredDuration =
+          fightManAirPhase === "landing" ? clipDuration / FIGHT_MAN_LANDING_SPEED_MULT : clipDuration;
       } else if (pose.animState === "jump") {
         /** Airborne: natural takeoff clip; grounded edge case keeps legacy scale. */
         desiredDuration = !(pose.grounded ?? true)
@@ -2076,10 +2107,12 @@ function FightManPlayableModel({
         desiredDuration = pose.rollDuration ?? clipDuration;
       } else if (pose.animState === "chop") {
         desiredDuration = pose.chopDuration ?? AXE_CHOP_PLAYBACK_SEC;
+      } else if (pose.animState === "climbWall" || pose.animState === "climbTop") {
+        desiredDuration = pose.climbDuration ?? clipDuration;
       } else if (pose.animState === "spell") {
         desiredDuration = SPELL_DURATION_DEFAULT;
       } else if (pose.animState === "attack") {
-        desiredDuration = clipDuration;
+        desiredDuration = pose.attackDuration ?? clipDuration;
       } else if (pose.fightManTurnStep) {
         desiredDuration = clipDuration;
       } else if (isBlockEnter) {
@@ -2116,8 +2149,11 @@ function FightManPlayableModel({
     torchSetActive,
     pose.jumpDuration,
     pose.rollDuration,
+    pose.climbDuration,
     pose.chopDuration,
     pose.chopSwingId,
+    pose.attackComboStep,
+    pose.attackDuration,
     pose.tpsRmbLook,
     blockPhase,
   ]);
@@ -2130,6 +2166,8 @@ function FightManPlayableModel({
     if (
       (p.fightManTurnStep && !rmbLook) ||
       p.animState === "jump" ||
+      p.animState === "climbWall" ||
+      p.animState === "climbTop" ||
       fightManAirPhaseHeadRef.current != null ||
       p.animState === "roll" ||
       p.animState === "spell" ||

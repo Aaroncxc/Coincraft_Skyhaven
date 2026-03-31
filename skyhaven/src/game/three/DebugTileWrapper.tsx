@@ -1,6 +1,7 @@
 import { TransformControls, useGLTF } from "@react-three/drei";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import { getTileStackBaseY } from "../tileStack";
 import type { TileDef } from "../types";
 import { getModelKeyForAsset, getModelPath, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
 import { scalePbrRoughness } from "./islandGltfMeshDefaults";
@@ -79,7 +80,7 @@ export function DebugTileWrapper({
   const defaultZ = tile.gy * TILE_UNIT_SIZE + gridOffZ;
 
   const initX = tile.pos3d ? tile.pos3d.x : defaultX;
-  const initY = tile.pos3d ? tile.pos3d.y : 0;
+  const initY = tile.pos3d ? tile.pos3d.y : getTileStackBaseY(tile.stackLevel);
   const initZ = tile.pos3d ? tile.pos3d.z : defaultZ;
 
   const initSX = tile.scale3d ? tile.scale3d.x : 1;
@@ -105,13 +106,16 @@ export function DebugTileWrapper({
     });
   }, [cloned, isTree]);
 
+  /** World Y of tile root = offsetY + stored pos3d.y (same convention as TileModel). */
+  const worldY = offsetY + initY;
+
   useLayoutEffect(() => {
     if (!objRef.current) return;
     if (dragActiveRef.current) return;
-    objRef.current.position.set(initX, initY, initZ);
+    objRef.current.position.set(initX, worldY, initZ);
     objRef.current.scale.set(initSX, initSY, initSZ);
     objRef.current.rotation.set(0, initRotY, 0);
-  }, [tile.id, initX, initY, initZ, initSX, initSY, initSZ, initRotY]);
+  }, [tile.id, initX, worldY, initZ, initSX, initSY, initSZ, initRotY]);
 
   useEffect(() => {
     const ctrl = controlsRef.current;
@@ -127,13 +131,16 @@ export function DebugTileWrapper({
           const ry = objRef.current.rotation.y;
           const clampRange = TILE_UNIT_SIZE * 1.5;
           const cx = gizmoMode === "scale" ? initX : Math.max(defaultX - clampRange, Math.min(defaultX + clampRange, p.x));
-          const cy = gizmoMode === "scale" ? initY : Math.max(-3.0, Math.min(5.0, p.y));
+          const storedY =
+            gizmoMode === "scale" ? initY : Math.max(-3.0, Math.min(5.0, p.y - offsetY));
           const cz = gizmoMode === "scale" ? initZ : Math.max(defaultZ - clampRange, Math.min(defaultZ + clampRange, p.z));
+          const wy = offsetY + storedY;
+          p.set(cx, wy, cz);
           const minS = 0.2, maxS = 3.0;
           const sx = Math.max(minS, Math.min(maxS, s.x));
           const sy = Math.max(minS, Math.min(maxS, s.y));
           const sz = Math.max(minS, Math.min(maxS, s.z));
-          onChange({ x: cx, y: cy, z: cz }, { x: sx, y: sy, z: sz }, ry);
+          onChange({ x: cx, y: storedY, z: cz }, { x: sx, y: sy, z: sz }, ry);
         }
       }
       onDraggingChange?.(event.value);
@@ -143,7 +150,7 @@ export function DebugTileWrapper({
     return () => {
       ctrl.removeEventListener("dragging-changed", handleDraggingChanged);
     };
-  }, [selected, onDraggingChange, onChange, defaultX, defaultZ, gizmoMode, initX, initY, initZ]);
+  }, [selected, onDraggingChange, onChange, defaultX, defaultZ, gizmoMode, initX, initY, initZ, offsetY]);
 
   const handleObjectChange = useCallback(() => {
     if (!objRef.current) return;
@@ -157,11 +164,13 @@ export function DebugTileWrapper({
       cx = initX;
       cy = initY;
       cz = initZ;
+      p.set(initX, offsetY + initY, initZ);
     } else {
       cx = Math.max(defaultX - clampRange, Math.min(defaultX + clampRange, p.x));
-      cy = Math.max(-3.0, Math.min(5.0, p.y));
+      cy = Math.max(-3.0, Math.min(5.0, p.y - offsetY));
       cz = Math.max(defaultZ - clampRange, Math.min(defaultZ + clampRange, p.z));
-      if (cx !== p.x || cy !== p.y || cz !== p.z) p.set(cx, cy, cz);
+      const wy = offsetY + cy;
+      if (cx !== p.x || wy !== p.y || cz !== p.z) p.set(cx, wy, cz);
     }
 
     const minS = 0.2;
@@ -194,7 +203,7 @@ export function DebugTileWrapper({
         ry,
       );
     }
-  }, [onChange, defaultX, defaultZ, uniformScale, gizmoMode, initX, initY, initZ]);
+  }, [onChange, defaultX, defaultZ, uniformScale, gizmoMode, initX, initY, initZ, offsetY]);
 
   const selectedColor = selected ? 0xffdd44 : undefined;
   const showTileGizmo = selected && !editingDecoration && !buildMode && !batchPickMode;
@@ -224,9 +233,7 @@ export function DebugTileWrapper({
           <boxGeometry args={[hitW, hitH, hitD]} />
           <meshBasicMaterial visible={false} />
         </mesh>
-        <group position={[0, offsetY, 0]}>
-          <primitive object={cloned} scale={[normScale, normScale, normScale]} />
-        </group>
+        <primitive object={cloned} scale={[normScale, normScale, normScale]} />
         {selected && (
           <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
             <ringGeometry args={[TILE_UNIT_SIZE * 0.44, TILE_UNIT_SIZE * 0.56, 48]} />

@@ -1,6 +1,7 @@
 import { useGLTF } from "@react-three/drei";
 import { useMemo } from "react";
 import * as THREE from "three";
+import { getTileStackBaseY } from "../tileStack";
 import type { AssetKey } from "../types";
 import { DECORATION_TILES } from "../types";
 import { getModelKeyForAsset, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
@@ -10,6 +11,7 @@ import { stripEmbeddedEmissive } from "./stripGltfEmissive";
 type GhostPreviewProps = {
   gx: number;
   gy: number;
+  stackLevel?: 0 | 1;
   tileType: AssetKey;
 };
 
@@ -31,9 +33,10 @@ const MULTI_CELL: Record<string, { w: number; h: number }> = {
   cottaTile: { w: 2, h: 2 },
   ancientTempleTile: { w: 2, h: 2 },
   kaserneTile: { w: 2, h: 2 },
+  airShipPort: { w: 2, h: 2 },
 };
 
-export function GhostPreview({ gx, gy, tileType }: GhostPreviewProps) {
+export function GhostPreview({ gx, gy, stackLevel = 0, tileType }: GhostPreviewProps) {
   const modelKey = getModelKeyForAsset(tileType);
   const modelPath = getModelPathForAsset(tileType);
   const { scene } = useGLTF(modelPath);
@@ -69,7 +72,7 @@ export function GhostPreview({ gx, gy, tileType }: GhostPreviewProps) {
     if (override) scale *= override;
   }
   const offsetY = -box.min.y * scale;
-  const ghostY = isDecoration ? offsetY + DECO_SURFACE_Y : offsetY;
+  const ghostY = getTileStackBaseY(stackLevel) + (isDecoration ? offsetY + DECO_SURFACE_Y : offsetY);
 
   const offsetX = multi ? ((multi.w - 1) * TILE_UNIT_SIZE) / 2 : 0;
   const offsetZ = multi ? ((multi.h - 1) * TILE_UNIT_SIZE) / 2 : 0;

@@ -27,6 +27,7 @@ import {
 import { buildIslandSurfaceData, canNpcPatrolStepBetweenCells, getNpcSupportWorldY } from "./islandSurface";
 import type { CharacterPose3D, PlayerAttackSnapshot } from "./useCharacterMovement";
 import type { TargetableSnapshot } from "./targetLock";
+import { getComboHitstopSec, type CombatHitConfirmSnapshot } from "./combatFeel";
 
 Object.values(ENEMY_ROBOT_MODELS).forEach((path) => useGLTF.preload(path));
 
@@ -44,7 +45,6 @@ const ATTACK_RANGE = 1.28;
 const ATTACK_COOLDOWN = 1.05;
 const ATTACK_HIT_START_NORM = 0.36;
 const ATTACK_HIT_END_NORM = 0.58;
-const PLAYER_AXE_DAMAGE = 25;
 const ROBOT_ATTACK_DAMAGE = 20;
 const PLAYER_DAMAGE_IFRAME_SEC = 0.6;
 const PLAYER_RESPAWN_IFRAME_SEC = 2.0;
@@ -57,6 +57,11 @@ const FRONTAL_CONE_COS = Math.cos(Math.PI * 0.48);
 const PLAYER_ATTACK_RANGE = 1.48;
 const PLAYER_ATTACK_CONE_COS = Math.cos(Math.PI * 0.42);
 const ENEMY_GROUND_OFFSET_Y = getNpcGroundProfile("enemyRobot").visualGroundOffsetY;
+const FINISHER_KNOCKBACK_SPEED = 5.2;
+const FINISHER_KNOCKBACK_DAMPING = 7.2;
+const FINISHER_KNOCKBACK_DURATION = 0.42;
+const FINISHER_KNOCKBACK_STUN = 0.2;
+const FINISHER_KNOCKBACK_STOP_SPEED = 0.1;
 
 type EnemyState = "patrol_walk" | "patrol_pause" | "chase" | "attack" | "dead";
 
@@ -70,6 +75,7 @@ type Props = {
   onPlayerDamage: (damage: number) => void;
   onAliveChange?: (alive: boolean) => void;
   targetSnapshotRef?: MutableRefObject<TargetableSnapshot | null>;
+  combatHitConfirmRef?: MutableRefObject<CombatHitConfirmSnapshot | null>;
 };
 
 type FadableMaterialEntry = {
@@ -168,6 +174,7 @@ export function EnemyRobot({
   onPlayerDamage,
   onAliveChange,
   targetSnapshotRef,
+  combatHitConfirmRef,
 }: Props) {
   const playerPoseRef = useRef(playerPose);
   playerPoseRef.current = playerPose;
@@ -211,8 +218,13 @@ export function EnemyRobot({
   const hitFlashTimerRef = useRef(0);
   const deathFadeTimerRef = useRef(0);
   const lastPlayerSwingHitRef = useRef(0);
+  const combatHitstopTimerRef = useRef(0);
+  const lastCombatHitConfirmTokenRef = useRef(0);
   const aggroedRef = useRef(false);
   const prevRespawnTokenRef = useRef(respawnToken);
+  const knockbackVelocityRef = useRef({ gx: 0, gy: 0 });
+  const knockbackTimerRef = useRef(0);
+  const knockbackStunTimerRef = useRef(0);
   const fadeMaterialsRef = useRef<FadableMaterialEntry[]>([]);
   const flashMaterialsRef = useRef<Array<THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial>>([]);
 
@@ -319,6 +331,31 @@ export function EnemyRobot({
     onAliveChangeRef.current?.(alive);
   }, []);
 
+  const clearKnockback = useCallback(() => {
+    knockbackVelocityRef.current = { gx: 0, gy: 0 };
+    knockbackTimerRef.current = 0;
+    knockbackStunTimerRef.current = 0;
+  }, []);
+
+  const startFinisherKnockback = useCallback(
+    (swing: PlayerAttackSnapshot) => {
+      const pushAngle =
+        swing.facingAngle ?? getFacingAngle(swing.gx, swing.gy, gxRef.current, gyRef.current);
+      knockbackVelocityRef.current = {
+        gx: Math.sin(pushAngle) * FINISHER_KNOCKBACK_SPEED,
+        gy: Math.cos(pushAngle) * FINISHER_KNOCKBACK_SPEED,
+      };
+      knockbackTimerRef.current = FINISHER_KNOCKBACK_DURATION;
+      knockbackStunTimerRef.current = FINISHER_KNOCKBACK_STUN;
+      attackTimerRef.current = 0;
+      attackHitConsumedRef.current = true;
+      attackCooldownRef.current = Math.max(attackCooldownRef.current, 0.18);
+      stateRef.current = "chase";
+      playClip("walk", true);
+    },
+    [playClip],
+  );
+
   const pickPatrolTarget = useCallback(
     (cx: number, cy: number) => {
       if (!mineTile) return { gx: Math.round(cx), gy: Math.round(cy) };
@@ -353,7 +390,10 @@ export function EnemyRobot({
     hitFlashTimerRef.current = 0;
     deathFadeTimerRef.current = 0;
     lastPlayerSwingHitRef.current = 0;
+    combatHitstopTimerRef.current = 0;
+    lastCombatHitConfirmTokenRef.current = combatHitConfirmRef?.current?.token ?? 0;
     aggroedRef.current = false;
+    clearKnockback();
     stateRef.current = "patrol_walk";
     playClip("walk", true);
     reportAlive(true);
@@ -362,7 +402,7 @@ export function EnemyRobot({
       const y = getNpcSupportWorldY(surfaceData, safe.gx, safe.gy) + ENEMY_GROUND_OFFSET_Y;
       outerRef.current.position.set(safe.gx * TILE_UNIT_SIZE, y, safe.gy * TILE_UNIT_SIZE);
     }
-  }, [blockedFootprint, mineTile, pickPatrolTarget, playClip, reportAlive, surfaceData, walkableCells]);
+  }, [blockedFootprint, clearKnockback, combatHitConfirmRef, mineTile, pickPatrolTarget, playClip, reportAlive, surfaceData, walkableCells]);
 
   const startDeath = useCallback(() => {
     stateRef.current = "dead";
@@ -370,12 +410,13 @@ export function EnemyRobot({
     attackCooldownRef.current = 0;
     attackHitConsumedRef.current = true;
     aggroedRef.current = false;
+    clearKnockback();
     hpRevealTimerRef.current = 0.9;
     hitFlashTimerRef.current = HIT_FLASH_DURATION;
     deathFadeTimerRef.current = DEATH_FADE_DURATION;
     playClip("idle", true);
     reportAlive(false);
-  }, [playClip, reportAlive]);
+  }, [clearKnockback, playClip, reportAlive]);
 
   useLayoutEffect(() => {
     if (!mineLayoutKey) return;
@@ -400,6 +441,15 @@ export function EnemyRobot({
     if (!outer || !model || !mineTile || walkableCells.size === 0) return;
 
     const dt = Math.min(0.05, delta);
+    const hitConfirm = combatHitConfirmRef?.current;
+    if (hitConfirm && hitConfirm.token !== lastCombatHitConfirmTokenRef.current) {
+      lastCombatHitConfirmTokenRef.current = hitConfirm.token;
+      combatHitstopTimerRef.current = Math.max(combatHitstopTimerRef.current, getComboHitstopSec(hitConfirm.comboStep));
+    }
+    if (combatHitstopTimerRef.current > 0) {
+      combatHitstopTimerRef.current = Math.max(0, combatHitstopTimerRef.current - dt);
+      return;
+    }
     const player = playerPoseRef.current;
     const playerDist = Math.hypot(player.gx - gxRef.current, player.gy - gyRef.current);
 
@@ -415,6 +465,9 @@ export function EnemyRobot({
     if (attackCooldownRef.current > 0) attackCooldownRef.current = Math.max(0, attackCooldownRef.current - dt);
     if (playerDamageCooldownRef.current > 0) {
       playerDamageCooldownRef.current = Math.max(0, playerDamageCooldownRef.current - dt);
+    }
+    if (knockbackStunTimerRef.current > 0) {
+      knockbackStunTimerRef.current = Math.max(0, knockbackStunTimerRef.current - dt);
     }
     if (hpRevealTimerRef.current > 0) hpRevealTimerRef.current = Math.max(0, hpRevealTimerRef.current - dt);
     if (hitFlashTimerRef.current > 0) hitFlashTimerRef.current = Math.max(0, hitFlashTimerRef.current - dt);
@@ -438,14 +491,22 @@ export function EnemyRobot({
         )
       ) {
         lastPlayerSwingHitRef.current = swing.swingId;
-        enemyHpRef.current = Math.max(0, enemyHpRef.current - PLAYER_AXE_DAMAGE);
+        enemyHpRef.current = Math.max(0, enemyHpRef.current - Math.max(0, swing.damage));
         hpRevealTimerRef.current = HEALTH_BAR_REVEAL_DURATION;
         hitFlashTimerRef.current = HIT_FLASH_DURATION;
+        if (combatHitConfirmRef) {
+          combatHitConfirmRef.current = {
+            token: (combatHitConfirmRef.current?.token ?? 0) + 1,
+            comboStep: swing.comboStep,
+          };
+        }
         if (!aggroedRef.current) {
           aggroedRef.current = true;
         }
         if (enemyHpRef.current <= 0) {
           startDeath();
+        } else if (swing.comboStep === 3) {
+          startFinisherKnockback(swing);
         } else if (stateRef.current !== "attack") {
           stateRef.current = "chase";
           playClip("walk", true);
@@ -478,7 +539,52 @@ export function EnemyRobot({
         }
       }
 
-      if (stateRef.current === "attack") {
+      const knockbackVelocity = knockbackVelocityRef.current;
+      const knockbackSpeed = Math.hypot(knockbackVelocity.gx, knockbackVelocity.gy);
+      const knockbackActive =
+        knockbackTimerRef.current > 0 && knockbackSpeed > FINISHER_KNOCKBACK_STOP_SPEED;
+
+      if (knockbackActive) {
+        knockbackTimerRef.current = Math.max(0, knockbackTimerRef.current - dt);
+        const next = moveTowardTarget({
+          gx: gxRef.current,
+          gy: gyRef.current,
+          targetGx: gxRef.current + knockbackVelocity.gx * dt,
+          targetGy: gyRef.current + knockbackVelocity.gy * dt,
+          speed: knockbackSpeed,
+          dt,
+          walkableCells,
+          blockedFootprint,
+          surfaceData,
+        });
+        if (next.moved) {
+          gxRef.current = next.gx;
+          gyRef.current = next.gy;
+          facingAngleRef.current = Math.atan2(knockbackVelocity.gx, knockbackVelocity.gy);
+        } else {
+          knockbackVelocityRef.current = { gx: 0, gy: 0 };
+          knockbackTimerRef.current = 0;
+        }
+
+        const damp = Math.exp(-FINISHER_KNOCKBACK_DAMPING * dt);
+        knockbackVelocityRef.current = {
+          gx: knockbackVelocityRef.current.gx * damp,
+          gy: knockbackVelocityRef.current.gy * damp,
+        };
+        if (
+          knockbackTimerRef.current <= 0 ||
+          Math.hypot(knockbackVelocityRef.current.gx, knockbackVelocityRef.current.gy) <= FINISHER_KNOCKBACK_STOP_SPEED
+        ) {
+          knockbackVelocityRef.current = { gx: 0, gy: 0 };
+          knockbackTimerRef.current = 0;
+        }
+        stateRef.current = aggroedRef.current ? "chase" : "patrol_pause";
+        patrolPauseTimerRef.current = Math.max(patrolPauseTimerRef.current, 0.18);
+        playClip("walk", true);
+      } else if (knockbackStunTimerRef.current > 0) {
+        stateRef.current = aggroedRef.current ? "chase" : "patrol_pause";
+        playClip("idle", true);
+      } else if (stateRef.current === "attack") {
         attackTimerRef.current = Math.max(0, attackTimerRef.current - dt);
         facingAngleRef.current = getFacingAngle(gxRef.current, gyRef.current, player.gx, player.gy);
         const elapsed = attackDurationRef.current - attackTimerRef.current;

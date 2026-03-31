@@ -70,7 +70,8 @@ export type AssetKey =
   | "cottaTile"
   | "ancientTempleTile"
   | "kaserneTile"
-  | "runeTile";
+  | "runeTile"
+  | "airShipPort";
 
 export const TREE_TILES: readonly AssetKey[] = ["treeMiddle"];
 export const FARM_TILES: readonly AssetKey[] = ["farm2x2"];
@@ -91,6 +92,7 @@ export const NO_DECORATION_TILES: readonly AssetKey[] = [
   "ancientTempleTile",
   "kaserneTile",
   "runeTile",
+  "airShipPort",
 ];
 
 export type PomodoroPhase = "work" | "break" | "longBreak";
@@ -114,6 +116,9 @@ export type FocusSession = {
   pomodoroPhase?: PomodoroPhase;
 };
 
+export type TileStackLevel = 0 | 1;
+export const TILE_STACK_WORLD_HEIGHT = 1;
+
 export type ProgressionState = {
   level: number;
   expInLevel: number;
@@ -124,6 +129,8 @@ export type TileDef = {
   id: string;
   gx: number;
   gy: number;
+  /** Vertical slot for stacked building: 0 = ground, 1 = upper layer. */
+  stackLevel?: TileStackLevel;
   type: AssetKey;
   /** Override manifest layerOrder for draw order */
   layerOrder?: number;

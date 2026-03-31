@@ -20,6 +20,7 @@ import { CharacterModel } from "./CharacterModel";
 import { SkullyCompanion } from "./SkullyCompanion";
 import { MiningManNPC } from "./MiningManNPC";
 import { MagicManNPC } from "./MagicManNPC";
+import { AirshipDockMageNPC } from "./AirshipDockMageNPC";
 import { FightManNPCWithSuspense } from "./FightManNPC";
 import { EnemyRobot } from "./EnemyRobot";
 import { TargetLockMarker } from "./TargetLockMarker";
@@ -30,12 +31,14 @@ import {
   findNearbyInteractable,
   findNearbyRuneTile,
   findNearbyAncientTempleTile,
+  findNearbyAirShipPortDockReception,
   buildTileTypeMap,
   type CharacterMovementDebugSnapshot,
   type PlayerAttackSnapshot,
   type SpellCastEvent,
   type TpsCameraState,
 } from "./useCharacterMovement";
+import { AirshipAtPort } from "./AirshipAtPort";
 import { InteractPrompt } from "./InteractPrompt";
 import { GhostPreview } from "./GhostPreview";
 import { TilePlaceParticles } from "./TilePlaceParticles";
@@ -52,6 +55,7 @@ import { DebugTileWrapper } from "./DebugTileWrapper";
 import { IslandCloudDeck } from "./IslandCloudDeck";
 import { ALL_GAME_FBX_PATHS, ALL_GAME_GLTF_PATHS, TILE_UNIT_SIZE } from "./assets3d";
 import { FBXLoader } from "./fbxLoader";
+import type { CameraFeedbackSnapshot, CombatHitConfirmSnapshot } from "./combatFeel";
 import type { CameraOccluderEntry } from "./cameraOcclusion";
 import { GltfEmissiveSanitize } from "./GltfEmissiveSanitize";
 import {
@@ -75,7 +79,9 @@ import {
   DEFAULT_WALK_SURFACE_OFFSET_Y,
   getTileCollisionProfile,
   getTileOriginY,
+  getNpcSupportWorldY,
 } from "./islandSurface";
+import { getNpcGroundProfile } from "./avatarGrounding";
 import { MINE_TILES, DECORATION_TILES, NO_DECORATION_TILES } from "../types";
 import type { PlayableCharacterId } from "../playableCharacters";
 import { findNearbyPoiAction, type PoiActionRequest } from "../poiActions";
@@ -93,6 +99,8 @@ const WELL_BUBBLE_COUNT = 56;
 const WELL_BUBBLE_SIZE = 0.085;
 const WELL_BUBBLE_COLOR = 0xb8f8ff;
 const WELL_BUBBLE_LUMINANCE_BOOST = 3.6;
+
+const DOCK_MAGE_VISUAL_GROUND_OFFSET = getNpcGroundProfile("magicMan").visualGroundOffsetY;
 /** Per-well cyan fill; placed at same XZ/Y as bubbling particles (`getParticleTileWorldXZ`, `BUBBLING_DEFAULT_SPAWN_Y`). */
 const WELL_GLOW_POINT_INTENSITY = 2.4;
 const WELL_GLOW_POINT_DISTANCE = 5.5;
@@ -161,7 +169,8 @@ function MouseGroundTracker({
   }, -0.5);
   return null;
 }
-import type { IslandMap, AssetKey, CloneLineState, TileDef } from "../types";
+import { findTileAtStack, findTopTileAtCell } from "../tileStack";
+import type { IslandMap, AssetKey, CloneLineState, TileDef, TileStackLevel } from "../types";
 import type { TileEditAnchor } from "../useSkyhavenLoop";
 import { useThree, useFrame, type ThreeEvent } from "@react-three/fiber";
 
@@ -170,12 +179,15 @@ export type IslandSceneProps = {
   selectedIslandId?: string;
   buildMode?: boolean;
   eraseMode?: boolean;
+  selectedBuildLayer?: TileStackLevel;
   selectedTileType?: AssetKey | null;
-  selectedTileForEdit?: { gx: number; gy: number } | null;
+  selectedTileForEdit?: { gx: number; gy: number; stackLevel: TileStackLevel } | null;
   characterActive?: boolean;
-  onPlaceTile?: (gx: number, gy: number, type: AssetKey) => void;
-  onRemoveTile?: (gx: number, gy: number) => void;
-  onSelectTileForEdit?: (gx: number, gy: number) => void;
+  /** When true, LMB on the world canvas does not start combat or gather swing (custom toolbox). */
+  suppressTpsCanvasPrimaryPointer?: boolean;
+  onPlaceTile?: (gx: number, gy: number, stackLevel: TileStackLevel, type: AssetKey) => void;
+  onRemoveTile?: (gx: number, gy: number, stackLevel: TileStackLevel) => void;
+  onSelectTileForEdit?: (gx: number, gy: number, stackLevel: TileStackLevel) => void;
   onClearTileForEdit?: () => void;
   onTileEditAnchorChange?: (anchor: TileEditAnchor) => void;
   blockedTargetCell?: { gx: number; gy: number } | null;
@@ -240,6 +252,7 @@ export type IslandSceneProps = {
   equippedMainHand?: EquippableItemId | null;
   equippedOffHand?: EquippableItemId | null;
   respawnToken?: number;
+  enemyRespawnToken?: number;
   onPlayerDamage?: (damage: number) => void;
   forceIsoToken?: number;
   /** Lightweight local halo around the player's axe; shared with previews. */
@@ -270,6 +283,12 @@ export type IslandSceneProps = {
   cloudsEnabled?: boolean;
   debugShowFps?: boolean;
   fpsHudRef?: MutableRefObject<{ fps: number }>;
+  /** Block TPS zoom-out exit during airship travel. */
+  airshipTpsExitLocked?: boolean;
+  /** Freeze player locomotion during airship travel. */
+  airshipVoyageInputLocked?: boolean;
+  /** Custom island + TPS: E near dock opens travel UI (App). */
+  onAirshipBoardRequest?: () => void;
 };
 
 ALL_GAME_GLTF_PATHS.forEach((path) => useGLTF.preload(path));
@@ -342,6 +361,7 @@ function GroundInteraction({
   island,
   buildMode,
   eraseMode,
+  selectedBuildLayer,
   selectedTileType,
   selectedIslandId,
   onPlaceTile,
@@ -354,15 +374,17 @@ function GroundInteraction({
   onGhostChange,
   onCloneHoverChange,
   onCloneTarget,
+  suppressEditGroundPointerUntilRef,
 }: {
   island: IslandMap;
   buildMode: boolean;
   eraseMode: boolean;
+  selectedBuildLayer: TileStackLevel;
   selectedTileType: AssetKey | null;
   selectedIslandId: string;
-  onPlaceTile?: (gx: number, gy: number, type: AssetKey) => void;
-  onRemoveTile?: (gx: number, gy: number) => void;
-  onSelectTileForEdit?: (gx: number, gy: number) => void;
+  onPlaceTile?: (gx: number, gy: number, stackLevel: TileStackLevel, type: AssetKey) => void;
+  onRemoveTile?: (gx: number, gy: number, stackLevel: TileStackLevel) => void;
+  onSelectTileForEdit?: (gx: number, gy: number, stackLevel: TileStackLevel) => void;
   onClearTileForEdit?: () => void;
   onEditTileDeselect?: () => void;
   cloneState?: CloneLineState | null;
@@ -370,6 +392,8 @@ function GroundInteraction({
   onGhostChange: (cell: { gx: number; gy: number } | null) => void;
   onCloneHoverChange?: (cell: { gx: number; gy: number } | null) => void;
   onCloneTarget?: (gx: number, gy: number) => void;
+  /** After TransformControls drag end, ignore ground plane clicks until this timestamp (performance.now()). */
+  suppressEditGroundPointerUntilRef?: MutableRefObject<number>;
 }) {
   const { camera, gl } = useThree();
   const hoveredRef = useRef<string | null>(null);
@@ -379,8 +403,13 @@ function GroundInteraction({
 
   const findTile = useCallback(
     (gx: number, gy: number): TileDef | null =>
-      island.tiles.find((t) => t.gx === gx && t.gy === gy) ?? null,
-    [island]
+      findTileAtStack(island, gx, gy, selectedBuildLayer) ?? findTopTileAtCell(island, gx, gy),
+    [island, selectedBuildLayer]
+  );
+
+  const findLayerTile = useCallback(
+    (gx: number, gy: number): TileDef | null => findTileAtStack(island, gx, gy, selectedBuildLayer),
+    [island, selectedBuildLayer]
   );
 
   // Always raycast from pointer through camera onto y=0 plane so grid matches
@@ -438,11 +467,12 @@ function GroundInteraction({
       const grid = getGridFromEvent(e);
       if (!grid) return;
 
-      const tile = findTile(grid.gx, grid.gy);
-      const isEmpty = !tile;
+      const layerTile = findLayerTile(grid.gx, grid.gy);
+      const topTile = findTopTileAtCell(island, grid.gx, grid.gy);
+      const isEmpty = !layerTile;
 
       if (eraseMode) {
-        if (tile) onRemoveTile?.(tile.gx, tile.gy);
+        if (layerTile) onRemoveTile?.(layerTile.gx, layerTile.gy, selectedBuildLayer);
         if (isEmpty) onEditTileDeselect?.();
         return;
       }
@@ -457,26 +487,46 @@ function GroundInteraction({
       if (buildMode && selectedTileType) {
         const isDecoration = (DECORATION_TILES as readonly string[]).includes(selectedTileType);
         if (isDecoration) {
-          if (tile && !(NO_DECORATION_TILES as readonly string[]).includes(tile.type) && !tile.decoration) {
-            onPlaceTile?.(grid.gx, grid.gy, selectedTileType);
+          if (layerTile && !(NO_DECORATION_TILES as readonly string[]).includes(layerTile.type) && !layerTile.decoration) {
+            onPlaceTile?.(grid.gx, grid.gy, selectedBuildLayer, selectedTileType);
           }
-        } else if (isEmpty) {
-          onPlaceTile?.(grid.gx, grid.gy, selectedTileType);
+        } else if (!topTile || selectedBuildLayer === 1 || isEmpty) {
+          onPlaceTile?.(grid.gx, grid.gy, selectedBuildLayer, selectedTileType);
           onEditTileDeselect?.();
         }
         return;
       }
 
       if (selectedIslandId === "custom" && !buildMode && !eraseMode) {
-        if (tile) {
-          onSelectTileForEdit?.(tile.gx, tile.gy);
+        if (suppressEditGroundPointerUntilRef && performance.now() < suppressEditGroundPointerUntilRef.current) {
+          return;
+        }
+        if (layerTile) {
+          onSelectTileForEdit?.(layerTile.gx, layerTile.gy, selectedBuildLayer);
         } else {
           onClearTileForEdit?.();
           onEditTileDeselect?.();
         }
       }
     },
-    [getGridFromEvent, findTile, buildMode, eraseMode, cloneState, selectedTileType, selectedIslandId, onPlaceTile, onRemoveTile, onSelectTileForEdit, onClearTileForEdit, onEditTileDeselect, onCloneTarget]
+    [
+      getGridFromEvent,
+      findLayerTile,
+      buildMode,
+      eraseMode,
+      cloneState,
+      selectedBuildLayer,
+      selectedTileType,
+      selectedIslandId,
+      island,
+      onPlaceTile,
+      onRemoveTile,
+      onSelectTileForEdit,
+      onClearTileForEdit,
+      onEditTileDeselect,
+      onCloneTarget,
+      suppressEditGroundPointerUntilRef,
+    ]
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -561,7 +611,7 @@ function TileEditAnchorEmitter({
   onTileEditAnchorChange,
 }: {
   island: IslandMap;
-  selectedTile: { gx: number; gy: number };
+  selectedTile: { gx: number; gy: number; stackLevel: TileStackLevel };
   onTileEditAnchorChange?: (anchor: TileEditAnchor) => void;
 }) {
   const { camera, gl } = useThree();
@@ -569,9 +619,7 @@ function TileEditAnchorEmitter({
 
   useFrame(() => {
     if (!onTileEditAnchorChange) return;
-    const tile = island.tiles.find(
-      (t) => t.gx === selectedTile.gx && t.gy === selectedTile.gy
-    );
+    const tile = findTileAtStack(island, selectedTile.gx, selectedTile.gy, selectedTile.stackLevel);
     if (!tile) {
       onTileEditAnchorChange({ x: 0, y: 0, centerY: 0, visible: false, zoom: 1 });
       return;
@@ -579,7 +627,7 @@ function TileEditAnchorEmitter({
 
     const worldPos = new THREE.Vector3(
       tile.gx * TILE_UNIT_SIZE,
-      0.5,
+      getTileOriginY(tile) + 0.5,
       tile.gy * TILE_UNIT_SIZE
     );
     worldPos.project(camera);
@@ -666,9 +714,11 @@ export function IslandScene({
   selectedIslandId = "mining",
   buildMode = false,
   eraseMode = false,
+  selectedBuildLayer = 0,
   selectedTileType = null,
   selectedTileForEdit,
   characterActive = false,
+  suppressTpsCanvasPrimaryPointer = false,
   onPlaceTile,
   onRemoveTile,
   onSelectTileForEdit,
@@ -717,6 +767,7 @@ export function IslandScene({
   equippedMainHand = null,
   equippedOffHand = null,
   respawnToken = 0,
+  enemyRespawnToken = 0,
   onPlayerDamage,
   forceIsoToken = 0,
   axeGlowEnabled = true,
@@ -736,6 +787,9 @@ export function IslandScene({
   cloudsEnabled = true,
   debugShowFps = false,
   fpsHudRef,
+  airshipTpsExitLocked = false,
+  airshipVoyageInputLocked = false,
+  onAirshipBoardRequest,
 }: IslandSceneProps) {
   const [hoveredTileId, setHoveredTileId] = useState<string | null>(null);
   const [hoveredOutlineRef, setHoveredOutlineRef] = useState<THREE.Group | null>(null);
@@ -758,6 +812,8 @@ export function IslandScene({
   const magicTalkingRef = useRef(false);
   const fightTalkingRef = useRef(false);
   const playerAttackRef = useRef<PlayerAttackSnapshot | null>(null);
+  const combatHitConfirmRef = useRef<CombatHitConfirmSnapshot | null>(null);
+  const cameraFeedbackRef = useRef<CameraFeedbackSnapshot | null>(null);
   const charPoseRef = useRef({ gx: 0, gy: 0 });
   const activeTargetRef = useRef<TargetableSnapshot | null>(null);
   const enemyRobotTargetRef = useRef<TargetableSnapshot | null>(null);
@@ -857,7 +913,7 @@ export function IslandScene({
 
   useEffect(() => {
     setEnemyRobotAlive(true);
-  }, [npcPatrolIslandKey, respawnToken, selectedIslandId]);
+  }, [enemyRespawnToken, npcPatrolIslandKey, respawnToken, selectedIslandId]);
 
   const wellTiles = useMemo(
     () =>
@@ -906,9 +962,11 @@ export function IslandScene({
         setFightManSpeech(pickRandomLuxFightLine());
         setFightManTalking(true);
         scheduleNpcTalkEnd("fight", setFightManTalking);
+      } else if (npcId.startsWith("airshipDockMage:")) {
+        onAirshipBoardRequest?.();
       }
     },
-    [scheduleNpcTalkEnd],
+    [onAirshipBoardRequest, scheduleNpcTalkEnd],
   );
 
   const setLockedTarget = useCallback((snapshot: TargetableSnapshot | null) => {
@@ -1032,8 +1090,20 @@ export function IslandScene({
     equippedMainHand,
     equippedOffHand,
     combatAttackEnabled: enemyCombatEnabled && enemyRobotAlive,
+    climbEnabled:
+      characterActive &&
+      !debugMode &&
+      !editMode &&
+      !buildMode &&
+      !eraseMode &&
+      cloneState == null,
+    suppressTpsCanvasPrimaryPointer,
+    voyageInputLocked: airshipVoyageInputLocked,
+    onAirshipBoardRequest,
     respawnToken,
     attackSwingRef: playerAttackRef,
+    combatHitConfirmRef,
+    cameraFeedbackRef,
     movementDebugRef,
     activeTargetRef,
     onTargetCycleRequest: handleTargetCycleRequest,
@@ -1097,6 +1167,26 @@ export function IslandScene({
       npcMap.set(fightPos.id, fightPos);
       targetRegistry.set(fightPos.id, fightPos);
     }
+    if (selectedIslandId === "custom" && airShipPortTiles.length > 0) {
+      const span = SKYHAVEN_SPRITE_MANIFEST.tile.airShipPort?.gridSpan ?? { w: 2, h: 2 };
+      for (const t of airShipPortTiles) {
+        const cx = t.gx + (span.w - 1) * 0.5;
+        const cy = t.gy + (span.h - 1) * 0.5;
+        const rgx = Math.round(cx);
+        const rgy = Math.round(cy);
+        const supportY = getNpcSupportWorldY(surfaceData, rgx, rgy);
+        const id = `airshipDockMage:${t.id}`;
+        npcMap.set(id, {
+          id,
+          kind: "npc",
+          alive: true,
+          gx: cx,
+          gy: cy,
+          surfaceY: supportY,
+          worldY: supportY + DOCK_MAGE_VISUAL_GROUND_OFFSET,
+        });
+      }
+    }
     const enemyPos = enemyRobotPresent ? enemyRobotTargetRef.current : null;
     if (enemyPos?.alive) {
       targetRegistry.set(enemyPos.id, enemyPos);
@@ -1154,10 +1244,29 @@ export function IslandScene({
         : null,
     [debugMode, debugSelectedTileId, island],
   );
+  const selectedEditTile = useMemo(
+    () =>
+      selectedTileForEdit
+        ? findTileAtStack(island, selectedTileForEdit.gx, selectedTileForEdit.gy, selectedTileForEdit.stackLevel)
+        : null,
+    [island, selectedTileForEdit],
+  );
   const getCellSurfaceY = useCallback(
     (gx: number, gy: number) => getSurfaceYAtCell(surfaceData, gx, gy),
     [surfaceData],
   );
+  const airShipPortTiles = useMemo(
+    () => island.tiles.filter((tile) => tile.type === "airShipPort"),
+    [island.tiles],
+  );
+
+  const suppressMagicPatrolForAirshipDock =
+    selectedIslandId === "custom" && airShipPortTiles.length > 0;
+  const showPatrolMagicManNpc =
+    hasMagicTower && playableVariant !== "magic_man" && !suppressMagicPatrolForAirshipDock;
+  const showAirshipDockMage =
+    selectedIslandId === "custom" && airShipPortTiles.length > 0 && playableVariant !== "magic_man";
+
   const magicTowerTiles = useMemo(
     () =>
       island.tiles
@@ -1195,6 +1304,30 @@ export function IslandScene({
     () => (isMiniActionActive || poiMenuOpen || activePoiSession ? null : findNearbyAncientTempleTile(charPose.gx, charPose.gy, island)),
     [activePoiSession, charPose.gx, charPose.gy, island, isMiniActionActive, poiMenuOpen],
   );
+
+  const nearbyAirshipPort = useMemo(() => {
+    if (
+      selectedIslandId !== "custom" ||
+      !tpsModeActive ||
+      airshipVoyageInputLocked ||
+      isMiniActionActive ||
+      poiMenuOpen ||
+      activePoiSession
+    ) {
+      return null;
+    }
+    return findNearbyAirShipPortDockReception(charPose.gx, charPose.gy, island);
+  }, [
+    activePoiSession,
+    airshipVoyageInputLocked,
+    charPose.gx,
+    charPose.gy,
+    island,
+    isMiniActionActive,
+    poiMenuOpen,
+    selectedIslandId,
+    tpsModeActive,
+  ]);
 
   const nearbyNpc = useMemo(() => {
     if (isMiniActionActive || poiMenuOpen || activePoiSession) return null;
@@ -1236,8 +1369,13 @@ export function IslandScene({
     onDebugDraggingChange?.(dragging);
   }, [onDebugDraggingChange]);
 
+  const suppressEditGroundPointerUntilRef = useRef(0);
+
   const handleEditDraggingChange = useCallback((dragging: boolean) => {
     setGizmoDragging(dragging);
+    if (!dragging) {
+      suppressEditGroundPointerUntilRef.current = performance.now() + 240;
+    }
     onEditDraggingChange?.(dragging);
   }, [onEditDraggingChange]);
 
@@ -1372,7 +1510,10 @@ export function IslandScene({
         tpsCameraStateRef={tpsCameraStateRef}
         lockedTargetRef={activeTargetRef}
         cameraOccludersRef={cameraOccludersRef}
+        combatHitConfirmRef={combatHitConfirmRef}
+        cameraFeedbackRef={cameraFeedbackRef}
         forceIsoToken={forceIsoToken}
+        tpsExitLocked={airshipTpsExitLocked}
         tpsEnabled={
           characterActive &&
           !debugMode &&
@@ -1468,6 +1609,7 @@ export function IslandScene({
           island={island}
           buildMode={buildMode}
           eraseMode={eraseMode}
+          selectedBuildLayer={selectedBuildLayer}
           selectedTileType={selectedTileType}
           selectedIslandId={selectedIslandId}
           onPlaceTile={onPlaceTile}
@@ -1487,6 +1629,7 @@ export function IslandScene({
           island={island}
           buildMode={buildMode}
           eraseMode={eraseMode}
+          selectedBuildLayer={selectedBuildLayer}
           selectedTileType={selectedTileType}
           selectedIslandId={selectedIslandId}
           onPlaceTile={onPlaceTile}
@@ -1499,6 +1642,7 @@ export function IslandScene({
           onGhostChange={setGhostCell}
           onCloneHoverChange={onCloneHoverChange}
           onCloneTarget={onCloneTarget}
+          suppressEditGroundPointerUntilRef={suppressEditGroundPointerUntilRef}
         />
       )}
 
@@ -1637,13 +1781,14 @@ export function IslandScene({
                 playerPose={charPose}
                 combatEnabled={enemyCombatEnabled}
                 playerAttackRef={playerAttackRef}
-                respawnToken={respawnToken}
+                combatHitConfirmRef={combatHitConfirmRef}
+                respawnToken={enemyRespawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
                 targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
-            {hasMagicTower && playableVariant !== "magic_man" && (
+            {showPatrolMagicManNpc && (
               <MagicManNPC
                 island={island}
                 patrolIslandKey={npcPatrolIslandKey}
@@ -1662,6 +1807,24 @@ export function IslandScene({
                 playerGx={charPose.gx}
                 playerGy={charPose.gy}
               />
+            )}
+            {selectedIslandId === "custom" && airShipPortTiles.length > 0 && (
+              <Suspense fallback={null}>
+                <AirshipAtPort island={island} portTiles={airShipPortTiles} surfaceData={surfaceData} />
+              </Suspense>
+            )}
+            {showAirshipDockMage && (
+              <Suspense fallback={null}>
+                {airShipPortTiles.map((t) => (
+                  <AirshipDockMageNPC
+                    key={`dock-mage-${t.id}`}
+                    portTile={t}
+                    surfaceData={surfaceData}
+                    playerGx={charPose.gx}
+                    playerGy={charPose.gy}
+                  />
+                ))}
+              </Suspense>
             )}
           </>
         ) : editMode ? (
@@ -1766,13 +1929,14 @@ export function IslandScene({
                 playerPose={charPose}
                 combatEnabled={enemyCombatEnabled}
                 playerAttackRef={playerAttackRef}
-                respawnToken={respawnToken}
+                combatHitConfirmRef={combatHitConfirmRef}
+                respawnToken={enemyRespawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
                 targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
-            {hasMagicTower && playableVariant !== "magic_man" && (
+            {showPatrolMagicManNpc && (
               <MagicManNPC
                 island={island}
                 patrolIslandKey={npcPatrolIslandKey}
@@ -1792,10 +1956,28 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
+            {selectedIslandId === "custom" && airShipPortTiles.length > 0 && (
+              <Suspense fallback={null}>
+                <AirshipAtPort island={island} portTiles={airShipPortTiles} surfaceData={surfaceData} />
+              </Suspense>
+            )}
+            {showAirshipDockMage && (
+              <Suspense fallback={null}>
+                {airShipPortTiles.map((t) => (
+                  <AirshipDockMageNPC
+                    key={`dock-mage-${t.id}`}
+                    portTile={t}
+                    surfaceData={surfaceData}
+                    playerGx={charPose.gx}
+                    playerGy={charPose.gy}
+                  />
+                ))}
+              </Suspense>
+            )}
             </FloatingBob>
 
             {ghostCell && selectedTileType && (
-              <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} tileType={selectedTileType} />
+              <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} stackLevel={selectedBuildLayer} tileType={selectedTileType} />
             )}
           </>
         ) : (
@@ -1884,13 +2066,14 @@ export function IslandScene({
                 playerPose={charPose}
                 combatEnabled={enemyCombatEnabled}
                 playerAttackRef={playerAttackRef}
-                respawnToken={respawnToken}
+                combatHitConfirmRef={combatHitConfirmRef}
+                respawnToken={enemyRespawnToken}
                 onPlayerDamage={(damage) => onPlayerDamage?.(damage)}
                 onAliveChange={setEnemyRobotAlive}
                 targetSnapshotRef={enemyRobotTargetRef}
               />
             )}
-            {hasMagicTower && playableVariant !== "magic_man" && (
+            {showPatrolMagicManNpc && (
               <MagicManNPC
                 island={island}
                 patrolIslandKey={npcPatrolIslandKey}
@@ -1910,6 +2093,24 @@ export function IslandScene({
                 playerGy={charPose.gy}
               />
             )}
+            {selectedIslandId === "custom" && airShipPortTiles.length > 0 && (
+              <Suspense fallback={null}>
+                <AirshipAtPort island={island} portTiles={airShipPortTiles} surfaceData={surfaceData} />
+              </Suspense>
+            )}
+            {showAirshipDockMage && (
+              <Suspense fallback={null}>
+                {airShipPortTiles.map((t) => (
+                  <AirshipDockMageNPC
+                    key={`dock-mage-${t.id}`}
+                    portTile={t}
+                    surfaceData={surfaceData}
+                    playerGx={charPose.gx}
+                    playerGy={charPose.gy}
+                  />
+                ))}
+              </Suspense>
+            )}
             </FloatingBob>
         )}
 
@@ -1920,7 +2121,7 @@ export function IslandScene({
         )}
 
         {!debugMode && !editMode && ghostCell && selectedTileType && (
-          <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} tileType={selectedTileType} />
+          <GhostPreview gx={ghostCell.gx} gy={ghostCell.gy} stackLevel={selectedBuildLayer} tileType={selectedTileType} />
         )}
 
         {!debugMode &&
@@ -1936,11 +2137,17 @@ export function IslandScene({
 
         {!debugMode && !editMode && !tpsModeActive && hoveredTileId && !buildMode && !eraseMode && (() => {
           const tile = island.tiles.find((t) => t.id === hoveredTileId);
-          return tile ? <TileHighlight gx={tile.gx} gy={tile.gy} color="#88ccff" /> : null;
+          return tile ? <TileHighlight gx={tile.gx} gy={tile.gy} y={getTileOriginY(tile) + 0.025} color="#88ccff" /> : null;
         })()}
 
-        {!debugMode && !editMode && selectedTileForEdit && (
-          <TileHighlight gx={selectedTileForEdit.gx} gy={selectedTileForEdit.gy} color="#ffdd44" pulse />
+        {!debugMode && !editMode && selectedEditTile && (
+          <TileHighlight
+            gx={selectedEditTile.gx}
+            gy={selectedEditTile.gy}
+            y={getTileOriginY(selectedEditTile) + 0.025}
+            color="#ffdd44"
+            pulse
+          />
         )}
 
         {!debugMode && !editMode && blockedTargetCell && (
@@ -1991,10 +2198,25 @@ export function IslandScene({
           />
         )}
 
+        {nearbyAirshipPort &&
+          !nearbyPoi &&
+          !nearbyInteract &&
+          !nearbyRune &&
+          !debugMode &&
+          !editMode &&
+          tpsModeActive && (
+          <InteractPrompt
+            tileGx={nearbyAirshipPort.gx}
+            tileGy={nearbyAirshipPort.gy}
+            surfaceY={getCellSurfaceY(nearbyAirshipPort.gx, nearbyAirshipPort.gy)}
+          />
+        )}
+
         {nearbyTemple &&
           !nearbyPoi &&
           !nearbyInteract &&
           !nearbyRune &&
+          !nearbyAirshipPort &&
           !debugMode &&
           !editMode && (
           <InteractPrompt
@@ -2008,6 +2230,7 @@ export function IslandScene({
           !nearbyPoi &&
           !nearbyInteract &&
           !nearbyRune &&
+          !nearbyAirshipPort &&
           !nearbyTemple &&
           !debugMode &&
           !editMode &&

@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { canAfford, type Inventory } from "../game/inventory";
 import { getTileRecipe } from "../game/resources";
-import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types";
+import type { AssetKey, CloneLineState, IslandId, TileDef, TileStackLevel } from "../game/types";
 
 const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   base: "/ingame_assets/expanded/toolbox/thumb_base.png",
@@ -38,6 +38,7 @@ const TOOLBOX_THUMBS: Partial<Record<AssetKey, string>> = {
   ancientTempleTile: "/ingame_assets/3d/Temple_Tile.png",
   kaserneTile: "/ingame_assets/3d/Kaserne_Tile.png",
   runeTile: "/ingame_assets/3d/Rune_Tile.png",
+  airShipPort: "/ingame_assets/3d/Magic_Tower.png",
 };
 
 type BaukastenPanelProps = {
@@ -48,6 +49,8 @@ type BaukastenPanelProps = {
   onSelectTile: (type: AssetKey | null) => void;
   eraseMode: boolean;
   onEraseModeChange: (value: boolean) => void;
+  selectedBuildLayer: TileStackLevel;
+  onBuildLayerChange: (value: TileStackLevel) => void;
   selectedIslandId: IslandId;
   windowMode: "expanded" | "compact";
   editSelectedTile?: TileDef | null;
@@ -158,6 +161,7 @@ export const BAUKASTEN_CATEGORIES: BaukastenCategory[] = [
       { type: "ancientTempleTile", label: "Ancient Temple" },
       { type: "kaserneTile", label: "Kaserne" },
       { type: "runeTile", label: "Rune" },
+      { type: "airShipPort", label: "Airship Dock" },
     ],
   },
   {
@@ -196,6 +200,8 @@ export function BaukastenPanel({
   onSelectTile,
   eraseMode,
   onEraseModeChange,
+  selectedBuildLayer,
+  onBuildLayerChange,
   selectedIslandId,
   windowMode,
   onUndo,
@@ -276,6 +282,29 @@ export function BaukastenPanel({
         ))}
       </div>
 
+      <div className="baukasten-layer-block">
+        <div className="baukasten-layer-header">
+          <span className="baukasten-layer-label">Layer</span>
+          <span className="baukasten-layer-hint">{selectedBuildLayer === 0 ? "Ground slot" : "Upper slot"}</span>
+        </div>
+        <div className="baukasten-layer-toggle" role="group" aria-label="Tile layer">
+          <button
+            type="button"
+            className={`baukasten-layer-btn${selectedBuildLayer === 0 ? " is-active" : ""}`}
+            onClick={() => onBuildLayerChange(0)}
+          >
+            Ground
+          </button>
+          <button
+            type="button"
+            className={`baukasten-layer-btn${selectedBuildLayer === 1 ? " is-active" : ""}`}
+            onClick={() => onBuildLayerChange(1)}
+          >
+            Upper
+          </button>
+        </div>
+      </div>
+
       <div
         className="baukasten-palette"
         role="tabpanel"
@@ -325,8 +354,8 @@ export function BaukastenPanel({
         <div className="baukasten-params">
           <div className="baukasten-mode-hint">
             {eraseMode
-              ? "Delete mode active. Click a tile on canvas."
-              : `Build mode active: ${selectedTileType ?? "Tile"}`}
+              ? `Delete mode active on ${selectedBuildLayer === 0 ? "ground" : "upper"} layer.`
+              : `Build mode active on ${selectedBuildLayer === 0 ? "ground" : "upper"} layer: ${selectedTileType ?? "Tile"}`}
           </div>
           <button
             type="button"

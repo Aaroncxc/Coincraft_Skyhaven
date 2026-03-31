@@ -2,6 +2,7 @@ import { useGLTF } from "@react-three/drei";
 import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { getTileStackBaseY } from "../tileStack";
 import { DECORATION_VFX_TYPES, type TileDef } from "../types";
 import { getModelKeyForAsset, getModelPath, getModelPathForAsset, TILE_UNIT_SIZE } from "./assets3d";
 import { isTileFadeEligible, type CameraOccluderEntry } from "./cameraOcclusion";
@@ -113,7 +114,7 @@ export function TileModel({
   const basePosX = tile.gx * TILE_UNIT_SIZE + gridOffsetX;
   const basePosZ = tile.gy * TILE_UNIT_SIZE + gridOffsetZ;
   const posX = tile.pos3d ? tile.pos3d.x : basePosX;
-  const posY3d = tile.pos3d ? tile.pos3d.y : 0;
+  const posY3d = tile.pos3d ? tile.pos3d.y : getTileStackBaseY(tile.stackLevel);
   const posZ = tile.pos3d ? tile.pos3d.z : basePosZ;
   const scaleX = tile.scale3d ? scale * tile.scale3d.x : scale;
   const scaleY = tile.scale3d ? scale * tile.scale3d.y : scale;

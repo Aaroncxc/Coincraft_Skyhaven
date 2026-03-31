@@ -1,5 +1,6 @@
 import type { AssetKey, IslandMap, TileDef } from "../types";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../assets";
+import { getTileStackBaseY, getTileStackLevel } from "../tileStack";
 import { TILE_UNIT_SIZE, getModelKeyForAsset } from "./assets3d";
 import { buildBlockedFootprintSet } from "./islandWalkability";
 
@@ -180,7 +181,14 @@ function isOutsideNeighbor(outsideEmptyCells: Set<string>, gx: number, gy: numbe
 function buildOccupiedCellSet(island: IslandMap): Set<string> {
   const set = new Set<string>();
   for (const tile of island.tiles) {
-    set.add(cellKey(tile.gx, tile.gy));
+    const span = SKYHAVEN_SPRITE_MANIFEST.tile[tile.type]?.gridSpan;
+    const w = span?.w ?? 1;
+    const h = span?.h ?? 1;
+    for (let iy = 0; iy < h; iy += 1) {
+      for (let ix = 0; ix < w; ix += 1) {
+        set.add(cellKey(tile.gx + ix, tile.gy + iy));
+      }
+    }
   }
   for (const key of buildBlockedFootprintSet(island)) {
     set.add(key);
@@ -388,7 +396,7 @@ export function getTileCollisionProfile(tile: TileDef): AssetCollisionProfile {
 }
 
 export function getTileOriginY(tile: TileDef): number {
-  return tile.pos3d?.y ?? 0;
+  return tile.pos3d?.y ?? getTileStackBaseY(tile.stackLevel);
 }
 
 export function getTileWalkSurfaceOffsetY(tile: TileDef): number {
@@ -412,15 +420,33 @@ export function buildIslandSurfaceData(island: IslandMap): IslandSurfaceData {
     if (tile.blocked) continue;
     const profile = getTileCollisionProfile(tile);
     const topY = getTileOriginY(tile) + profile.topSurfaceY;
-    const key = cellKey(tile.gx, tile.gy);
-    walkableCells.set(key, {
-      gx: tile.gx,
-      gy: tile.gy,
-      tile,
-      profile,
-      topY,
-      bounds: getBaseCellBounds(tile.gx, tile.gy, profile.edgeInset),
-    });
+    const span = SKYHAVEN_SPRITE_MANIFEST.tile[tile.type]?.gridSpan;
+    const spanW = span?.w ?? 1;
+    const spanH = span?.h ?? 1;
+    for (let iy = 0; iy < spanH; iy += 1) {
+      for (let ix = 0; ix < spanW; ix += 1) {
+        const ngx = tile.gx + ix;
+        const ngy = tile.gy + iy;
+        const key = cellKey(ngx, ngy);
+        const nextCell: WalkableCell = {
+          gx: ngx,
+          gy: ngy,
+          tile,
+          profile,
+          topY,
+          bounds: getBaseCellBounds(ngx, ngy, profile.edgeInset),
+        };
+        const previousCell = walkableCells.get(key);
+        const shouldReplace =
+          !previousCell ||
+          topY > previousCell.topY + 1e-4 ||
+          (Math.abs(topY - previousCell.topY) <= 1e-4 &&
+            getTileStackLevel(tile) >= getTileStackLevel(previousCell.tile));
+        if (shouldReplace) {
+          walkableCells.set(key, nextCell);
+        }
+      }
+    }
     if (topY < minSurfaceY) minSurfaceY = topY;
     if (topY > maxSurfaceY) maxSurfaceY = topY;
   }

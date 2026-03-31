@@ -6,11 +6,12 @@ import { TILE_UNIT_SIZE } from "./assets3d";
 type TileHighlightProps = {
   gx: number;
   gy: number;
+  y?: number;
   color?: string;
   pulse?: boolean;
 };
 
-export function TileHighlight({ gx, gy, color = "#ffdd44", pulse = true }: TileHighlightProps) {
+export function TileHighlight({ gx, gy, y = 0.02, color = "#ffdd44", pulse = true }: TileHighlightProps) {
   const meshRef = useRef<THREE.Mesh>(null);
 
   useFrame(({ clock }) => {
@@ -25,7 +26,7 @@ export function TileHighlight({ gx, gy, color = "#ffdd44", pulse = true }: TileH
     <mesh
       ref={meshRef}
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[gx * TILE_UNIT_SIZE, 0.02, gy * TILE_UNIT_SIZE]}
+      position={[gx * TILE_UNIT_SIZE, y, gy * TILE_UNIT_SIZE]}
     >
       <planeGeometry args={[TILE_UNIT_SIZE * 0.9, TILE_UNIT_SIZE * 0.9]} />
       <meshBasicMaterial color={color} transparent opacity={0.3} side={THREE.DoubleSide} />

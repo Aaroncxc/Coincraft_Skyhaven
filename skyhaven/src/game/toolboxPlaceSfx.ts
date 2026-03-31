@@ -1,6 +1,7 @@
 const POPS_MENU_WAV_URL = "/ingame_assets/3d/" + encodeURIComponent("Pops Menu.wav");
 const DECORATION_PLACE_WAV_URL =
   "/ingame_assets/3d/" + encodeURIComponent("FOODTware_Teacup Place Down On Small_GENHD1-09327.wav");
+const TILE_DELETE_WAV_URL = "/ingame_assets/sfx/Tile_Delete.wav";
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -21,4 +22,9 @@ export function playToolboxTilePlaceSfx(volume01: number): void {
 /** Successful toolbox placement of a decoration on an existing or auto-created base tile. */
 export function playToolboxDecorationPlaceSfx(volume01: number): void {
   playOneShot(DECORATION_PLACE_WAV_URL, volume01);
+}
+
+/** Tile removed (erase mode, edit delete, or debug). */
+export function playToolboxTileDeleteSfx(volume01: number): void {
+  playOneShot(TILE_DELETE_WAV_URL, volume01);
 }

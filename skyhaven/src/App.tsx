@@ -26,6 +26,7 @@ import {
   removeTile,
   updateTile,
 } from "./game/customIsland";
+import { DEFAULT_TILE_STACK_LEVEL, findTileAtStack, findTopTileAtCell, isUpperLayerTileEligible } from "./game/tileStack";
 import islandFarming from "./game/island.farming.json";
 import islandMining from "./game/island.mining.json";
 import {
@@ -64,8 +65,9 @@ import type {
   ProgressionState,
   ResourceAmount,
   TileDef,
+  TileStackLevel,
 } from "./game/types";
-import { DECORATION_TILES, DECORATION_VFX_TYPES } from "./game/types";
+import { DECORATION_TILES, DECORATION_VFX_TYPES, NO_DECORATION_TILES } from "./game/types";
 import { ClockOverlay } from "./ui/ClockOverlay";
 import { DebugDock, type DebugSurfaceScope, type DebugSurfaceVizMode } from "./ui/DebugDock";
 import { Hud } from "./ui/Hud";
@@ -76,9 +78,14 @@ import { ProfileOverlay } from "./ui/ProfileOverlay";
 import { WindowChrome } from "./ui/WindowChrome";
 import { CanvasGizmoSheet } from "./ui/CanvasGizmoSheet";
 import { PoiActionOverlay } from "./ui/PoiActionOverlay";
+import { AirshipDestinationModal } from "./ui/AirshipDestinationModal";
 import { useIslandMusic, MUSIC_PLAYLIST_LENGTH } from "./game/useIslandMusic";
 import { useWorldAmbience } from "./game/useWorldAmbience";
-import { playToolboxDecorationPlaceSfx, playToolboxTilePlaceSfx } from "./game/toolboxPlaceSfx";
+import {
+  playToolboxDecorationPlaceSfx,
+  playToolboxTileDeleteSfx,
+  playToolboxTilePlaceSfx,
+} from "./game/toolboxPlaceSfx";
 import { addActionTime, hydrateActionStats, persistActionStats, type ActionStats } from "./game/actionStats";
 import { hydrateProfile, type PlayerProfile } from "./game/profile";
 import { hydrateQuests, persistQuests, type DailyQuest } from "./game/dailyQuests";
@@ -116,6 +123,10 @@ const APP_ENTRANCE_DURATION_MS = 1500;
 const XP_GAIN_PULSE_MS = 900;
 const PLAYER_MAX_HP = 100;
 const RESPAWN_FADE_MS = 780;
+const AIRSHIP_TRAVEL_MS = 1500;
+
+type SelectedTileCell = { gx: number; gy: number; stackLevel: TileStackLevel };
+type AirshipUiPhase = "idle" | "picking" | "in_transit";
 
 function MovementDebugHud({
   snapshotRef,
@@ -266,14 +277,18 @@ export default function App() {
   const [playerHp, setPlayerHp] = useState(PLAYER_MAX_HP);
   const playerHpRef = useRef(PLAYER_MAX_HP);
   const [combatRespawnToken, setCombatRespawnToken] = useState(0);
+  const [enemyRespawnToken, setEnemyRespawnToken] = useState(0);
   const [respawnFadeKey, setRespawnFadeKey] = useState(0);
   const [respawnFadeVisible, setRespawnFadeVisible] = useState(false);
   const respawnFadeTimerRef = useRef<number | null>(null);
+  const airshipTravelTimerRef = useRef<number | null>(null);
+  const [airshipUiPhase, setAirshipUiPhase] = useState<AirshipUiPhase>("idle");
   const [progression, setProgression] = useState<ProgressionState>(() => hydrateProgression());
   const [expGainPulse, setExpGainPulse] = useState(false);
   const [selectedTileType, setSelectedTileType] = useState<AssetKey | null>(null);
   const [eraseMode, setEraseMode] = useState(false);
-  const [selectedTileForEdit, setSelectedTileForEdit] = useState<{ gx: number; gy: number } | null>(null);
+  const [selectedBuildLayer, setSelectedBuildLayer] = useState<TileStackLevel>(DEFAULT_TILE_STACK_LEVEL);
+  const [selectedTileForEdit, setSelectedTileForEdit] = useState<SelectedTileCell | null>(null);
   const [, setTileEditAnchor] = useState<TileEditAnchor | null>(null);
   const [blockedTargetCell, setBlockedTargetCell] = useState<{ gx: number; gy: number } | null>(null);
   const [cloneState, setCloneState] = useState<CloneLineState | null>(null);
@@ -398,10 +413,16 @@ export default function App() {
     setDebugCanRedo(debugRedoStackRef.current.length > 0);
   }, []);
   const customIslandRef = useRef<IslandMap>(customIsland);
-  const selectedTileForEditRef = useRef<{ gx: number; gy: number } | null>(selectedTileForEdit);
+  const selectedTileForEditRef = useRef<SelectedTileCell | null>(selectedTileForEdit);
   const blockedTargetTimerRef = useRef<number | null>(null);
   const expGainPulseTimerRef = useRef<number | null>(null);
-  const miniActionTileRef = useRef<{ gx: number; gy: number; originalType: AssetKey; islandId: IslandId } | null>(null);
+  const miniActionTileRef = useRef<{
+    gx: number;
+    gy: number;
+    stackLevel: TileStackLevel;
+    originalType: AssetKey;
+    islandId: IslandId;
+  } | null>(null);
   const regrowTimerRef = useRef<number | null>(null);
   const buildUndoStackRef = useRef<Array<{ island: IslandMap; inventory: Inventory }>>([]);
   const [buildCanUndo, setBuildCanUndo] = useState(false);
@@ -518,6 +539,10 @@ export default function App() {
     }
   }, [handlePlayerDefeat]);
 
+  const handleDebugRespawnEnemy = useCallback(() => {
+    setEnemyRespawnToken((prev) => prev + 1);
+  }, []);
+
   const triggerNoResourcesHint = useCallback(() => {
     setNoResourcesHint(true);
     if (noResourcesTimerRef.current !== null) {
@@ -540,15 +565,29 @@ export default function App() {
   }, [clearClonePreview]);
 
   const handlePlaceTile = useCallback(
-    (gx: number, gy: number, type: AssetKey) => {
+    (gx: number, gy: number, stackLevel: TileStackLevel, type: AssetKey) => {
       try {
         if (selectedIslandId !== "custom") return;
+        const targetTile = findTileAtStack(customIslandRef.current, gx, gy, stackLevel);
         const recipe = getTileRecipe(type);
         if (!recipe || !canAfford(inventory, recipe)) {
           if (recipe && !canAfford(inventory, recipe)) {
             triggerNoResourcesHint();
           }
           return;
+        }
+        const isDecoration = (DECORATION_TILES as readonly string[]).includes(type);
+        if (isDecoration) {
+          if (!targetTile || (NO_DECORATION_TILES as readonly string[]).includes(targetTile.type) || targetTile.decoration) {
+            return;
+          }
+        } else if (stackLevel === 0) {
+          if (targetTile) return;
+        } else {
+          const baseTile = findTileAtStack(customIslandRef.current, gx, gy, 0);
+          if (!baseTile || targetTile || !isUpperLayerTileEligible(type)) {
+            return;
+          }
         }
         const nextInv = spendResources(inventory, recipe);
         if (!nextInv) return;
@@ -560,11 +599,10 @@ export default function App() {
         setBuildCanUndo(true);
 
         let nextIsland: IslandMap;
-        const isDecoration = (DECORATION_TILES as readonly string[]).includes(type);
         if (isDecoration) {
-          nextIsland = updateTile(customIslandRef.current, gx, gy, { decoration: type });
+          nextIsland = updateTile(customIslandRef.current, gx, gy, { decoration: type }, stackLevel);
         } else {
-          nextIsland = addTile(customIslandRef.current, gx, gy, type);
+          nextIsland = addTile(customIslandRef.current, gx, gy, type, undefined, stackLevel);
         }
 
         customIslandRef.current = nextIsland;
@@ -579,15 +617,20 @@ export default function App() {
           playToolboxTilePlaceSfx(sfx01);
         }
       } catch (error) {
-        console.error("Skyhaven: failed to place toolbox tile.", { gx, gy, type, error });
+        console.error("Skyhaven: failed to place toolbox tile.", { gx, gy, stackLevel, type, error });
       }
     },
     [selectedIslandId, inventory, sfxVolume, triggerNoResourcesHint]
   );
 
   const handleRemoveTile = useCallback(
-    (gx: number, gy: number) => {
+    (gx: number, gy: number, stackLevel: TileStackLevel) => {
       if (selectedIslandId !== "custom") return;
+      const targetTile = findTileAtStack(customIslandRef.current, gx, gy, stackLevel);
+      if (!targetTile) return;
+      if (stackLevel === 0 && findTileAtStack(customIslandRef.current, gx, gy, 1)) {
+        return;
+      }
 
       buildUndoStackRef.current = [
         ...buildUndoStackRef.current.slice(-49),
@@ -595,7 +638,7 @@ export default function App() {
       ];
       setBuildCanUndo(true);
 
-      const nextIsland = removeTile(customIslandRef.current, gx, gy);
+      const nextIsland = removeTile(customIslandRef.current, gx, gy, stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       setSelectedTileForEdit((previous) => {
@@ -603,13 +646,16 @@ export default function App() {
           selectedTileForEditRef.current = previous;
           return previous;
         }
-        const next = previous.gx === gx && previous.gy === gy ? null : previous;
+        const next =
+          previous.gx === gx && previous.gy === gy && previous.stackLevel === stackLevel ? null : previous;
         selectedTileForEditRef.current = next;
         return next;
       });
       persistCustomIsland(nextIsland);
+      const sfx01 = Math.max(0, Math.min(100, sfxVolume)) / 100;
+      playToolboxTileDeleteSfx(sfx01);
     },
-    [selectedIslandId, inventory]
+    [selectedIslandId, inventory, sfxVolume]
   );
 
   const handleBuildUndo = useCallback(() => {
@@ -634,10 +680,11 @@ export default function App() {
   }, [inventory]);
 
   const handleSelectTileForEdit = useCallback(
-    (gx: number, gy: number) => {
+    (gx: number, gy: number, stackLevel: TileStackLevel) => {
       if (selectedIslandId !== "custom") return;
-      selectedTileForEditRef.current = { gx, gy };
-      setSelectedTileForEdit({ gx, gy });
+      const next = { gx, gy, stackLevel };
+      selectedTileForEditRef.current = next;
+      setSelectedTileForEdit(next);
     },
     [selectedIslandId]
   );
@@ -671,7 +718,7 @@ export default function App() {
       if (!src) return;
       const tile = src.tiles.find((t) => t.id === tileId);
       if (tile) {
-        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY });
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY }, tile.stackLevel);
         debugIslandRef.current = nextIsland;
         setDebugIsland(nextIsland);
       }
@@ -726,13 +773,18 @@ export default function App() {
     if (!debugSelectedTileId || !debugIslandRef.current) return;
     const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
     if (tile) {
+      if (tile.stackLevel !== 1 && findTileAtStack(debugIslandRef.current, tile.gx, tile.gy, 1)) {
+        return;
+      }
       debugPushUndo();
-      const nextIsland = removeTile(debugIslandRef.current, tile.gx, tile.gy);
+      const nextIsland = removeTile(debugIslandRef.current, tile.gx, tile.gy, tile.stackLevel);
       debugIslandRef.current = nextIsland;
       setDebugIsland(nextIsland);
+      const sfx01 = Math.max(0, Math.min(100, sfxVolume)) / 100;
+      playToolboxTileDeleteSfx(sfx01);
     }
     setDebugSelectedTileId(null);
-  }, [debugSelectedTileId, debugPushUndo]);
+  }, [debugSelectedTileId, debugPushUndo, sfxVolume]);
 
   const handleDebugRotateTile = useCallback(() => {
     if (!debugSelectedTileId || !debugIslandRef.current) return;
@@ -741,7 +793,7 @@ export default function App() {
       debugPushUndo();
       const currentRotY = tile.rotY ?? 0;
       const nextRotY = currentRotY + Math.PI / 2;
-      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY });
+      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY }, tile.stackLevel);
       debugIslandRef.current = nextIsland;
       setDebugIsland(nextIsland);
     }
@@ -752,7 +804,7 @@ export default function App() {
     const tile = debugIslandRef.current.tiles.find((t) => t.id === debugSelectedTileId);
     if (tile) {
       debugPushUndo();
-      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked });
+      const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked }, tile.stackLevel);
       debugIslandRef.current = nextIsland;
       setDebugIsland(nextIsland);
     }
@@ -835,7 +887,7 @@ export default function App() {
     const updates: { scale3d?: { x: number; y: number; z: number }; rotY?: number } = {};
     if (debugClipboard.scale3d) updates.scale3d = { ...debugClipboard.scale3d };
     if (debugClipboard.rotY != null) updates.rotY = debugClipboard.rotY;
-    const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, updates);
+    const nextIsland = updateTile(debugIslandRef.current, tile.gx, tile.gy, updates, tile.stackLevel);
     debugIslandRef.current = nextIsland;
     setDebugIsland(nextIsland);
   }, [debugClipboard, debugSelectedTileId, debugPushUndo]);
@@ -930,11 +982,12 @@ export default function App() {
     selectedSection === "Toolbox" &&
     windowMode === "expanded" &&
     !debugMode;
+  /** Keep gizmo/edit mesh path while a tile stays selected, even with a place-brush active — avoids TileModel ↔ DebugTileWrapper Y jump. */
   const sceneEditMode =
     isCustomEditing &&
-    selectedTileType === null &&
     !eraseMode &&
-    cloneState === null;
+    cloneState === null &&
+    (selectedTileType === null || editSelectedTileId !== null);
 
   const activeEditTile = useMemo<TileDef | null>(() => {
     if (!editSelectedTileId || !isCustomEditing) {
@@ -1073,7 +1126,7 @@ export default function App() {
       const src = customIslandRef.current;
       const tile = src.tiles.find((t) => t.id === tileId);
       if (tile) {
-        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY });
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { pos3d, scale3d, rotY: rotY ?? tile.rotY }, tile.stackLevel);
         customIslandRef.current = nextIsland;
         setCustomIsland(nextIsland);
         persistCustomIsland(nextIsland);
@@ -1087,7 +1140,7 @@ export default function App() {
       const src = customIslandRef.current;
       const tile = src.tiles.find((t) => t.id === tileId);
       if (tile) {
-        const nextIsland = updateTile(src, tile.gx, tile.gy, { decoPos3d, decoScale3d, decoRotY });
+        const nextIsland = updateTile(src, tile.gx, tile.gy, { decoPos3d, decoScale3d, decoRotY }, tile.stackLevel);
         customIslandRef.current = nextIsland;
         setCustomIsland(nextIsland);
         persistCustomIsland(nextIsland);
@@ -1107,14 +1160,19 @@ export default function App() {
     if (!editSelectedTileId) return;
     const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
     if (tile) {
+      if (tile.stackLevel !== 1 && findTileAtStack(customIslandRef.current, tile.gx, tile.gy, 1)) {
+        return;
+      }
       pushBuildUndoSnapshot();
-      const nextIsland = removeTile(customIslandRef.current, tile.gx, tile.gy);
+      const nextIsland = removeTile(customIslandRef.current, tile.gx, tile.gy, tile.stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
+      const sfx01 = Math.max(0, Math.min(100, sfxVolume)) / 100;
+      playToolboxTileDeleteSfx(sfx01);
     }
     setEditSelectedTileId(null);
-  }, [editSelectedTileId, pushBuildUndoSnapshot]);
+  }, [editSelectedTileId, pushBuildUndoSnapshot, sfxVolume]);
 
   const handleEditRotateTile = useCallback(() => {
     if (!editSelectedTileId) return;
@@ -1123,7 +1181,7 @@ export default function App() {
       pushBuildUndoSnapshot();
       const currentRotY = tile.rotY ?? 0;
       const nextRotY = currentRotY + Math.PI / 2;
-      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY });
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { rotY: nextRotY }, tile.stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
@@ -1135,7 +1193,7 @@ export default function App() {
     const tile = customIslandRef.current.tiles.find((t) => t.id === editSelectedTileId);
     if (tile) {
       pushBuildUndoSnapshot();
-      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked });
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, { blocked: !tile.blocked }, tile.stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
@@ -1152,7 +1210,7 @@ export default function App() {
       if (tile.type === "runeTile") {
         updates.runeVfxLit = false;
       }
-      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, updates);
+      const nextIsland = updateTile(customIslandRef.current, tile.gx, tile.gy, updates, tile.stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
@@ -1163,9 +1221,9 @@ export default function App() {
     (gx: number, gy: number) => {
       if (selectedIslandId !== "custom") return;
       const src = customIslandRef.current;
-      const tile = src.tiles.find((t) => t.gx === gx && t.gy === gy && t.type === "runeTile");
-      if (!tile || tile.vfxEnabled !== true) return;
-      const nextIsland = updateTile(src, gx, gy, { runeVfxLit: !tile.runeVfxLit });
+      const tile = findTopTileAtCell(src, gx, gy);
+      if (!tile || tile.type !== "runeTile" || tile.vfxEnabled !== true) return;
+      const nextIsland = updateTile(src, gx, gy, { runeVfxLit: !tile.runeVfxLit }, tile.stackLevel);
       customIslandRef.current = nextIsland;
       setCustomIsland(nextIsland);
       persistCustomIsland(nextIsland);
@@ -1325,14 +1383,14 @@ export default function App() {
         (session.actionType === "woodcutting" || session.actionType === "harvesting") &&
         miniActionTileRef.current
       ) {
-        const { gx, gy, originalType, islandId } = miniActionTileRef.current;
+        const { gx, gy, stackLevel, originalType, islandId } = miniActionTileRef.current;
         const setter =
           islandId === "mining" ? setMiningIsland :
           islandId === "farming" ? setFarmingIsland :
           setCustomIsland;
 
         setter((prev) => {
-          const next = updateTile(prev, gx, gy, { type: "dirt" });
+          const next = updateTile(prev, gx, gy, { type: "dirt" }, stackLevel);
           if (islandId === "custom") persistCustomIsland(next);
           else persistIslandOverride(islandId, next);
           return next;
@@ -1344,7 +1402,7 @@ export default function App() {
         regrowTimerRef.current = window.setTimeout(() => {
           regrowTimerRef.current = null;
           setter((prev) => {
-            const next = updateTile(prev, gx, gy, { type: originalType });
+            const next = updateTile(prev, gx, gy, { type: originalType }, stackLevel);
             if (islandId === "custom") persistCustomIsland(next);
             else persistIslandOverride(islandId, next);
             return next;
@@ -1573,9 +1631,15 @@ export default function App() {
   const handleTileAction = useCallback(
     (actionType: "woodcutting" | "harvesting", tileGx: number, tileGy: number) => {
       if (session) return;
-      const tile = island.tiles.find((t) => t.gx === tileGx && t.gy === tileGy);
+      const tile = findTopTileAtCell(island, tileGx, tileGy);
       if (!tile) return;
-      miniActionTileRef.current = { gx: tileGx, gy: tileGy, originalType: tile.type, islandId: selectedIslandId };
+      miniActionTileRef.current = {
+        gx: tileGx,
+        gy: tileGy,
+        stackLevel: tile.stackLevel ?? 0,
+        originalType: tile.type,
+        islandId: selectedIslandId,
+      };
       const now = Date.now();
       const DEV_DURATION_MS = 5_000; // 5 seconds for testing
       const newSession: FocusSession = {
@@ -1639,8 +1703,57 @@ export default function App() {
     });
   }, []);
 
+  const handleAirshipBoardRequest = useCallback(() => {
+    if (selectedIslandId !== "custom" || airshipUiPhase !== "idle") return;
+    setAirshipUiPhase("picking");
+  }, [selectedIslandId, airshipUiPhase]);
+
+  const handleAirshipCancelPicking = useCallback(() => {
+    setAirshipUiPhase("idle");
+  }, []);
+
+  const handleAirshipTravelTo = useCallback(
+    (toId: Extract<IslandId, "mining" | "farming">) => {
+      setAirshipUiPhase("in_transit");
+      setRespawnFadeKey((k) => k + 1);
+      setRespawnFadeVisible(true);
+      if (airshipTravelTimerRef.current != null) {
+        window.clearTimeout(airshipTravelTimerRef.current);
+      }
+      airshipTravelTimerRef.current = window.setTimeout(() => {
+        airshipTravelTimerRef.current = null;
+        selectedTileForEditRef.current = null;
+        setSelectedTileForEdit(null);
+        handleBlockedTarget(null);
+        setSelectedIslandId(toId);
+        setCombatRespawnToken((t) => t + 1);
+        setAirshipUiPhase("idle");
+        setRespawnFadeVisible(false);
+      }, AIRSHIP_TRAVEL_MS);
+    },
+    [handleBlockedTarget],
+  );
+
+  useEffect(() => {
+    if (airshipUiPhase !== "picking") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAirshipUiPhase("idle");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [airshipUiPhase]);
+
+  useEffect(() => {
+    return () => {
+      if (airshipTravelTimerRef.current != null) {
+        window.clearTimeout(airshipTravelTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleCycleIsland = useCallback(
     (direction: -1 | 1): void => {
+      if (airshipUiPhase !== "idle") return;
       selectedTileForEditRef.current = null;
       setSelectedTileForEdit(null);
       handleBlockedTarget(null);
@@ -1654,7 +1767,7 @@ export default function App() {
       });
       setIsInventoryOverlayOpen(false);
     },
-    [islandOrder, handleBlockedTarget]
+    [airshipUiPhase, islandOrder, handleBlockedTarget]
   );
 
   const handleCloseWindow = (): void => {
@@ -1768,9 +1881,14 @@ export default function App() {
               selectedIslandId={selectedIslandId}
               buildMode={selectedIslandId === "custom" && selectedTileType !== null}
               eraseMode={selectedIslandId === "custom" && eraseMode}
+              selectedBuildLayer={selectedBuildLayer}
               selectedTileType={selectedTileType}
               selectedTileForEdit={selectedTileForEdit}
               characterActive={true}
+              suppressTpsCanvasPrimaryPointer={isCustomEditing}
+              airshipTpsExitLocked={airshipUiPhase === "in_transit"}
+              airshipVoyageInputLocked={airshipUiPhase === "in_transit"}
+              onAirshipBoardRequest={handleAirshipBoardRequest}
               onPlaceTile={handlePlaceTile}
               onRemoveTile={handleRemoveTile}
               onSelectTileForEdit={handleSelectTileForEdit}
@@ -1819,6 +1937,7 @@ export default function App() {
               equippedMainHand={equipment.equipped.mainHand}
               equippedOffHand={equipment.equipped.offHand}
               respawnToken={combatRespawnToken}
+              enemyRespawnToken={enemyRespawnToken}
               onPlayerDamage={handlePlayerDamage}
               forceIsoToken={combatRespawnToken}
               axeGlowEnabled={axeGlowEnabled}
@@ -1907,6 +2026,8 @@ export default function App() {
             onAutoDayNightCycleChange={setAutoDayNightCycle}
             debugShowFps={debugShowFps}
             onDebugShowFpsChange={setDebugShowFps}
+            enemyRespawnAvailable={selectedIslandId === "mining"}
+            onEnemyRespawn={handleDebugRespawnEnemy}
           />
         )}
 
@@ -2076,6 +2197,12 @@ export default function App() {
           onStart={handleStartPoiAction}
         />
 
+        <AirshipDestinationModal
+          open={airshipUiPhase === "picking"}
+          onSelect={handleAirshipTravelTo}
+          onCancel={handleAirshipCancelPicking}
+        />
+
         <Hud
           playerHp={playerHp}
           playerMaxHp={PLAYER_MAX_HP}
@@ -2097,12 +2224,15 @@ export default function App() {
             islandPreviewById={islandPreviewById}
             islandNameById={islandNameById}
             onCycleIsland={handleCycleIsland}
+            islandCycleDisabled={airshipUiPhase !== "idle"}
             windowMode={windowMode}
             inventory={inventory}
             selectedTileType={selectedTileType}
             onSelectTile={setSelectedTileType}
             eraseMode={eraseMode}
             onEraseModeChange={setEraseMode}
+            selectedBuildLayer={selectedBuildLayer}
+            onBuildLayerChange={setSelectedBuildLayer}
             onInventoryReset={() => setInventory(resetInventoryToStarter())}
             onDebugAddResources={() => setInventory(addDebugResources(inventory))}
             isDragging={debugGizmoDragging || editGizmoDragging}

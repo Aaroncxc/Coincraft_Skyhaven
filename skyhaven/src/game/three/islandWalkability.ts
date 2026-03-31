@@ -1,12 +1,29 @@
 import type { AssetKey, IslandMap } from "../types";
 import { MINE_TILES } from "../types";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../assets";
+import { findTopTileAtCell } from "../tileStack";
 
 export function buildWalkableCellSet(island: IslandMap): Set<string> {
   const set = new Set<string>();
   for (const t of island.tiles) {
     if (t.blocked) continue;
-    set.add(`${t.gx},${t.gy}`);
+    const top = findTopTileAtCell(island, t.gx, t.gy);
+    if (top?.blocked) continue;
+    const span = SKYHAVEN_SPRITE_MANIFEST.tile[t.type]?.gridSpan;
+    const w = span?.w ?? 1;
+    const h = span?.h ?? 1;
+    if (w > 1 || h > 1) {
+      if (top?.id !== t.id) continue;
+      for (let gy = t.gy; gy < t.gy + h; gy += 1) {
+        for (let gx = t.gx; gx < t.gx + w; gx += 1) {
+          const ct = findTopTileAtCell(island, gx, gy);
+          if (ct?.blocked) continue;
+          set.add(`${gx},${gy}`);
+        }
+      }
+    } else {
+      set.add(`${t.gx},${t.gy}`);
+    }
   }
   return set;
 }

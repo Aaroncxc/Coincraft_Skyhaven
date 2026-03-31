@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { SKYHAVEN_SPRITE_MANIFEST } from "../game/assets";
-import type { AssetKey, CloneLineState, IslandId, TileDef } from "../game/types";
+import type { AssetKey, CloneLineState, IslandId, TileDef, TileStackLevel } from "../game/types";
 import type { Inventory } from "../game/inventory";
 import type { GraphicsSettings } from "../game/graphicsSettings";
 import { useMenuSfx } from "../game/useMenuSfx";
@@ -15,12 +15,16 @@ type SidebarProps = {
   islandPreviewById: Record<IslandId, string>;
   islandNameById: Record<IslandId, string>;
   onCycleIsland: (direction: -1 | 1) => void;
+  /** When true, island prev/next arrows are disabled (e.g. airship travel). */
+  islandCycleDisabled?: boolean;
   windowMode: "expanded" | "compact";
   inventory: Inventory;
   selectedTileType: AssetKey | null;
   onSelectTile: (type: AssetKey | null) => void;
   eraseMode: boolean;
   onEraseModeChange: (v: boolean) => void;
+  selectedBuildLayer: TileStackLevel;
+  onBuildLayerChange: (v: TileStackLevel) => void;
   onInventoryReset?: () => void;
   onDebugAddResources?: () => void;
   isDragging?: boolean;
@@ -80,12 +84,15 @@ export function Sidebar({
   islandPreviewById,
   islandNameById,
   onCycleIsland,
+  islandCycleDisabled = false,
   windowMode,
   inventory,
   selectedTileType,
   onSelectTile,
   eraseMode,
   onEraseModeChange,
+  selectedBuildLayer,
+  onBuildLayerChange,
   onInventoryReset,
   onDebugAddResources,
   isDragging = false,
@@ -178,6 +185,8 @@ export function Sidebar({
                 onSelectTile={onSelectTile}
                 eraseMode={eraseMode}
                 onEraseModeChange={onEraseModeChange}
+                selectedBuildLayer={selectedBuildLayer}
+                onBuildLayerChange={onBuildLayerChange}
                 selectedIslandId={selectedIslandId}
                 windowMode={windowMode}
                 editSelectedTile={editSelectedTile}
@@ -277,7 +286,9 @@ export function Sidebar({
                       <button
                         type="button"
                         className="islands-arrow-btn is-left"
+                        disabled={islandCycleDisabled}
                         onClick={() => {
+                          if (islandCycleDisabled) return;
                           menuSfx.playSlide();
                           onCycleIsland(-1);
                         }}
@@ -294,7 +305,9 @@ export function Sidebar({
                       <button
                         type="button"
                         className="islands-arrow-btn is-right"
+                        disabled={islandCycleDisabled}
                         onClick={() => {
+                          if (islandCycleDisabled) return;
                           menuSfx.playSlide();
                           onCycleIsland(1);
                         }}
@@ -314,6 +327,8 @@ export function Sidebar({
                       onSelectTile={onSelectTile}
                       eraseMode={eraseMode}
                       onEraseModeChange={onEraseModeChange}
+                      selectedBuildLayer={selectedBuildLayer}
+                      onBuildLayerChange={onBuildLayerChange}
                       selectedIslandId={selectedIslandId}
                       windowMode={windowMode}
                       editSelectedTile={editSelectedTile}

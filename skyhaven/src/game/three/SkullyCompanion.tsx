@@ -14,11 +14,18 @@ useGLTF.preload(SKULLY_MODEL_PATH);
 const SKULLY_SCALE = 0.04;
 const FOLLOW_OFFSET = { x: -0.3, z: 0.3 };
 const HOVER_OFFSET_Y = 0.33;
-const HOVER_AMPLITUDE = 0.035;
-const HOVER_PERIOD = 3.2;
-const FOLLOW_SMOOTHING = 3.8;
+const HOVER_AMPLITUDE = 0.042;
+const HOVER_PERIOD = 3.45;
+/** Phase offset vs. a “default” bob so Skully feels out of sync with the world tick. */
+const HOVER_PHASE_OFFSET = Math.PI * 0.82;
+/** Slower XZ follow = more delay behind the character. */
+const FOLLOW_POSITION_SMOOTHING = 1.45;
+/** Catch up floor height without killing the hover sine. */
+const FOLLOW_HEIGHT_SMOOTHING = 2.6;
 const MOMENTUM_DECAY = 0.94;
-const MOMENTUM_STRENGTH = 0.08;
+const MOMENTUM_STRENGTH = 0.05;
+/** Was 6; lower = less lead, reads as more lag behind the player. */
+const FOLLOW_EXTRAPOLATION = 1.2;
 
 const BASE_ROT_Y = -Math.PI / 4;
 const IDLE_LOOK_AMPLITUDE = 0.45;
@@ -35,6 +42,7 @@ export function SkullyCompanion({ pose }: Props) {
   const modelRef = useRef<THREE.Group>(null);
   const velocityRef = useRef(new THREE.Vector3());
   const prevTargetRef = useRef(new THREE.Vector3());
+  const smoothedBaseYRef = useRef<number | null>(null);
   const timeRef = useRef(0);
   const isMovingRef = useRef(false);
 
@@ -67,8 +75,13 @@ export function SkullyCompanion({ pose }: Props) {
     const targetX = pose.gx * TILE_UNIT_SIZE + FOLLOW_OFFSET.x;
     const targetZ = pose.gy * TILE_UNIT_SIZE + FOLLOW_OFFSET.z;
     const baseSurfaceY = pose.worldY ?? pose.surfaceY ?? DEFAULT_WALK_SURFACE_OFFSET_Y;
-    const hoverY =
-      baseSurfaceY + HOVER_OFFSET_Y + Math.sin((timeRef.current / HOVER_PERIOD) * Math.PI * 2) * HOVER_AMPLITUDE;
+    const baseYTarget = baseSurfaceY + HOVER_OFFSET_Y;
+    if (smoothedBaseYRef.current == null) smoothedBaseYRef.current = baseYTarget;
+    const ySmH = 1 - Math.exp(-FOLLOW_HEIGHT_SMOOTHING * delta);
+    smoothedBaseYRef.current += (baseYTarget - smoothedBaseYRef.current) * ySmH;
+
+    const bob =
+      Math.sin((timeRef.current / HOVER_PERIOD) * Math.PI * 2 + HOVER_PHASE_OFFSET) * HOVER_AMPLITUDE;
 
     const prevTarget = prevTargetRef.current;
     const targetDx = targetX - prevTarget.x;
@@ -84,13 +97,13 @@ export function SkullyCompanion({ pose }: Props) {
     isMovingRef.current = moving;
 
     const pos = groupRef.current.position;
-    const lagX = targetX + vel.x * 6;
-    const lagZ = targetZ + vel.z * 6;
+    const lagX = targetX + vel.x * FOLLOW_EXTRAPOLATION;
+    const lagZ = targetZ + vel.z * FOLLOW_EXTRAPOLATION;
 
-    const sm = 1 - Math.exp(-FOLLOW_SMOOTHING * delta);
-    pos.x += (lagX - pos.x) * sm;
-    pos.y += (hoverY - pos.y) * sm;
-    pos.z += (lagZ - pos.z) * sm;
+    const smPos = 1 - Math.exp(-FOLLOW_POSITION_SMOOTHING * delta);
+    pos.x += (lagX - pos.x) * smPos;
+    pos.z += (lagZ - pos.z) * smPos;
+    pos.y = smoothedBaseYRef.current + bob;
 
     const baseRot = pose.direction === "right" ? BASE_ROT_Y + Math.PI : BASE_ROT_Y;
     let targetRotY: number;
@@ -114,8 +127,8 @@ export function SkullyCompanion({ pose }: Props) {
 
     const tiltX = -vel.z * 1.8;
     const tiltZ = vel.x * 1.8;
-    groupRef.current.rotation.x += (tiltX - groupRef.current.rotation.x) * sm * 0.5;
-    groupRef.current.rotation.z += (tiltZ - groupRef.current.rotation.z) * sm * 0.5;
+    groupRef.current.rotation.x += (tiltX - groupRef.current.rotation.x) * smPos * 0.5;
+    groupRef.current.rotation.z += (tiltZ - groupRef.current.rotation.z) * smPos * 0.5;
   });
 
   return (

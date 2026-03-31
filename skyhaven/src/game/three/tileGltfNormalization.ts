@@ -15,6 +15,7 @@ export const MULTI_CELL: Record<string, { w: number; h: number }> = {
   cottaTile: { w: 2, h: 2 },
   ancientTempleTile: { w: 2, h: 2 },
   kaserneTile: { w: 2, h: 2 },
+  airShipPort: { w: 2, h: 2 },
 };
 
 /**

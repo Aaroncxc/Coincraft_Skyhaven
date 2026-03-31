@@ -105,6 +105,7 @@ export const TILE_RECIPES: Array<{ tileType: AssetKey; cost: ResourceAmount[] }>
   { tileType: "ancientTempleTile", cost: [{ resourceId: "ore", amount: 15 }, { resourceId: "wood", amount: 8 }, { resourceId: "wheat", amount: 4 }] },
   { tileType: "kaserneTile", cost: [{ resourceId: "ore", amount: 12 }, { resourceId: "wood", amount: 14 }, { resourceId: "wheat", amount: 6 }] },
   { tileType: "runeTile", cost: [{ resourceId: "ore", amount: 7 }, { resourceId: "wood", amount: 5 }, { resourceId: "wheat", amount: 3 }] },
+  { tileType: "airShipPort", cost: [{ resourceId: "ore", amount: 14 }, { resourceId: "wood", amount: 18 }, { resourceId: "wheat", amount: 10 }] },
 ];
 
 export function getSessionRewards(

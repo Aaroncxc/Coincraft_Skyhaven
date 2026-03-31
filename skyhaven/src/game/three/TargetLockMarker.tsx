@@ -10,6 +10,10 @@ const INNER_RING_INNER_RADIUS = TILE_UNIT_SIZE * 0.24;
 const INNER_RING_OUTER_RADIUS = TILE_UNIT_SIZE * 0.31;
 const MARKER_Y_OFFSET = 0.038;
 const GLOW_SIZE = TILE_UNIT_SIZE * 1.42;
+const HEAD_MARKER_NPC_Y = 2.02;
+const HEAD_MARKER_ENEMY_Y = 2.16;
+const HEAD_RING_RADIUS = TILE_UNIT_SIZE * 0.12;
+const HEAD_CORE_SIZE = TILE_UNIT_SIZE * 0.085;
 
 type TargetLockMarkerProps = {
   targetRef: MutableRefObject<TargetableSnapshot | null>;
@@ -21,6 +25,9 @@ export function TargetLockMarker({ targetRef }: TargetLockMarkerProps) {
   const innerRingRef = useRef<THREE.Mesh>(null);
   const glowRef = useRef<THREE.Mesh>(null);
   const lightRef = useRef<THREE.PointLight>(null);
+  const headGroupRef = useRef<THREE.Group>(null);
+  const headRingRef = useRef<THREE.Mesh>(null);
+  const headCoreRef = useRef<THREE.Mesh>(null);
 
   const outerMaterial = useMemo(
     () =>
@@ -56,6 +63,29 @@ export function TargetLockMarker({ targetRef }: TargetLockMarkerProps) {
       }),
     [],
   );
+  const headRingMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color("#ffe8a6"),
+        transparent: true,
+        opacity: 0.94,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      }),
+    [],
+  );
+  const headCoreMaterial = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color("#fff8d4"),
+        transparent: true,
+        opacity: 0.98,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    [],
+  );
 
   useFrame(({ clock }) => {
     const group = groupRef.current;
@@ -70,6 +100,8 @@ export function TargetLockMarker({ targetRef }: TargetLockMarkerProps) {
     const pulse = 1 + Math.sin(elapsed * 5.4) * 0.1;
     const spin = elapsed * 0.9;
     const groundY = snapshot.surfaceY ?? snapshot.worldY ?? 0;
+    const worldY = snapshot.worldY ?? groundY;
+    const headMarkerBaseY = snapshot.kind === "enemy" ? HEAD_MARKER_ENEMY_Y : HEAD_MARKER_NPC_Y;
 
     group.visible = true;
     group.position.set(snapshot.gx * TILE_UNIT_SIZE, groundY + MARKER_Y_OFFSET, snapshot.gy * TILE_UNIT_SIZE);
@@ -89,6 +121,19 @@ export function TargetLockMarker({ targetRef }: TargetLockMarkerProps) {
     }
     if (lightRef.current) {
       lightRef.current.intensity = 0.95 + (Math.sin(elapsed * 4.8) * 0.5 + 0.5) * 0.45;
+    }
+    if (headGroupRef.current) {
+      headGroupRef.current.position.y = worldY - groundY + headMarkerBaseY + Math.sin(elapsed * 4) * 0.05;
+      headGroupRef.current.scale.setScalar(0.96 + Math.sin(elapsed * 6.6) * 0.04);
+    }
+    if (headRingRef.current) {
+      headRingRef.current.rotation.z = -spin * 1.9;
+      headRingMaterial.opacity = 0.78 + (Math.sin(elapsed * 7) * 0.5 + 0.5) * 0.16;
+    }
+    if (headCoreRef.current) {
+      headCoreRef.current.rotation.y = spin * 2.3;
+      headCoreRef.current.rotation.x = Math.sin(elapsed * 3.2) * 0.3;
+      headCoreMaterial.opacity = 0.84 + (Math.sin(elapsed * 6) * 0.5 + 0.5) * 0.14;
     }
   });
 
@@ -114,6 +159,16 @@ export function TargetLockMarker({ targetRef }: TargetLockMarkerProps) {
         distance={3.4}
         decay={2}
       />
+      <group ref={headGroupRef} position={[0, HEAD_MARKER_NPC_Y, 0]}>
+        <mesh ref={headRingRef} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[HEAD_RING_RADIUS, TILE_UNIT_SIZE * 0.017, 12, 32]} />
+          <primitive object={headRingMaterial} attach="material" />
+        </mesh>
+        <mesh ref={headCoreRef}>
+          <octahedronGeometry args={[HEAD_CORE_SIZE, 0]} />
+          <primitive object={headCoreMaterial} attach="material" />
+        </mesh>
+      </group>
     </group>
   );
 }

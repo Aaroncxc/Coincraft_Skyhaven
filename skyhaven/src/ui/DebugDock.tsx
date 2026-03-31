@@ -59,6 +59,8 @@ export type DebugDockProps = {
   onAutoDayNightCycleChange?: (enabled: boolean) => void;
   debugShowFps?: boolean;
   onDebugShowFpsChange?: (show: boolean) => void;
+  enemyRespawnAvailable?: boolean;
+  onEnemyRespawn?: () => void;
   isDragging?: boolean;
 };
 
@@ -331,6 +333,8 @@ export function DebugDock({
   onAutoDayNightCycleChange,
   debugShowFps = false,
   onDebugShowFpsChange,
+  enemyRespawnAvailable = false,
+  onEnemyRespawn,
   isDragging = false,
 }: DebugDockProps) {
   const [openSection, setOpenSection] = useState<DebugDockSection | null>(null);
@@ -758,6 +762,15 @@ export function DebugDock({
                   </button>
                 </div>
               </div>
+
+              {enemyRespawnAvailable && onEnemyRespawn ? (
+                <div style={sectionStyle}>
+                  <div style={sectionTitleStyle}>Combat Debug</div>
+                  <button type="button" onClick={onEnemyRespawn} style={warningButtonStyle}>
+                    Respawn Enemy
+                  </button>
+                </div>
+              ) : null}
 
               <div style={sectionStyle}>
                 <div style={sectionTitleStyle}>Session</div>

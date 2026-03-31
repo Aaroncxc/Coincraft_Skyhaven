@@ -13,7 +13,6 @@ import * as THREE from "three";
 import {
   TILE_UNIT_SIZE,
   FIGHT_MAN_SWORD_MODELS,
-  FIGHT_MAN_SWORD_FBX_URLS,
   FIGHT_MAN_ALBEDO_MAP,
 } from "./assets3d";
 import { FBXLoader } from "./fbxLoader";
@@ -50,6 +49,14 @@ const TALK_DURATION_FALLBACK = 6;
 const NPC_TILE_DWELL_RESET_SEC = 4;
 const FIGHT_NPC_GROUND_OFFSET_Y = getNpcGroundProfile("fightMan").visualGroundOffsetY;
 const ROOT_TRANSLATION_TRACK_NPC = /(^|[.:])(armature|root|hips|mixamorighips)\.position$/i;
+const FIGHT_MAN_NPC_FBX_URLS = Array.from(
+  new Set([
+    FIGHT_MAN_SWORD_MODELS.base,
+    FIGHT_MAN_SWORD_MODELS.walk,
+    FIGHT_MAN_SWORD_MODELS.run,
+    FIGHT_MAN_SWORD_MODELS.idle0,
+  ]),
+);
 
 type NpcState = "walk" | "pause" | "talk";
 
@@ -100,11 +107,12 @@ export function FightManNPC({ island, patrolIslandKey, isTalking, npcPosRef, pla
     };
   }, [npcPosRef]);
 
-  const fbxRoots = useLoader(FBXLoader, FIGHT_MAN_SWORD_FBX_URLS) as THREE.Group[];
+  /** Keep the NPC on a tiny FBX set; the full pack was already unstable in the WebView. */
+  const fbxRoots = useLoader(FBXLoader, FIGHT_MAN_NPC_FBX_URLS) as THREE.Group[];
   const fbxByUrl = useMemo(() => {
     const m = new Map<string, THREE.Group>();
-    for (let i = 0; i < FIGHT_MAN_SWORD_FBX_URLS.length; i++) {
-      m.set(FIGHT_MAN_SWORD_FBX_URLS[i], fbxRoots[i]);
+    for (let i = 0; i < FIGHT_MAN_NPC_FBX_URLS.length; i++) {
+      m.set(FIGHT_MAN_NPC_FBX_URLS[i], fbxRoots[i]);
     }
     return m;
   }, [fbxRoots]);

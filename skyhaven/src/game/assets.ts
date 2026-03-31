@@ -437,6 +437,16 @@ export const SKYHAVEN_SPRITE_MANIFEST: SpriteManifest = {
       layerOrder: 200,
       localYOffset: 50,
     },
+    airShipPort: {
+      src: "/ingame_assets/3d/Magic_Tower.png",
+      drawW: 444,
+      drawH: 444,
+      anchorX: 0.5,
+      anchorY: 0.65,
+      layerOrder: 300,
+      localYOffset: 80,
+      gridSpan: { w: 2, h: 2 },
+    },
   },
   poi: {
     mine: {

@@ -1,6 +1,7 @@
 import { SKYHAVEN_SPRITE_MANIFEST } from "./assets";
+import { DEFAULT_TILE_STACK_LEVEL, getTileSlotKey, getTileStackBaseY, getTileStackLevel, normalizeTileStackLevel } from "./tileStack";
 import { TILE_UNIT_SIZE } from "./three/assets3d";
-import { VFX_TILE_TYPES, type AssetKey, type CloneDirection, type IslandMap, type TileDef } from "./types";
+import { VFX_TILE_TYPES, type AssetKey, type CloneDirection, type IslandMap, type TileDef, type TileStackLevel } from "./types";
 
 export const CUSTOM_ISLAND_STORAGE_KEY = "skyhaven.customIsland.v1";
 
@@ -8,6 +9,7 @@ export type GridCoord = { gx: number; gy: number };
 
 export type VisualCloneTemplate = {
   type: AssetKey;
+  stackLevel?: TileStackLevel;
   layerOrder?: number;
   localYOffset?: number;
   anchorY?: number;
@@ -40,6 +42,18 @@ const CLONE_DIRECTION_STEPS: Record<CloneDirection, GridCoord> = {
 };
 
 const CLONE_DIRECTION_ENTRIES = Object.entries(CLONE_DIRECTION_STEPS) as Array<[CloneDirection, GridCoord]>;
+const VALID_TILE_TYPES = new Set<AssetKey>(Object.keys(SKYHAVEN_SPRITE_MANIFEST.tile) as AssetKey[]);
+const MAX_SANITIZED_TILE_COUNT = 4096;
+const MAX_SANITIZED_POI_COUNT = 256;
+const MAX_GRID_COORD_ABS = 512;
+const MAX_WORLD_POS_ABS = TILE_UNIT_SIZE * MAX_GRID_COORD_ABS * 2;
+const MAX_SURFACE_OFFSET_ABS = 32;
+const MAX_LAYER_ORDER_ABS = 10_000;
+const MAX_PIXEL_OFFSET_ABS = 4_096;
+const MAX_ANCHOR_Y = 4;
+const MIN_SCALE_COMPONENT = 0.05;
+const MAX_SCALE_COMPONENT = 20;
+const MAX_ROTATION_ABS = Math.PI * 16;
 
 function makeDefaultCustomIsland(): IslandMap {
   const tiles: TileDef[] = [];
@@ -63,32 +77,265 @@ function makeDefaultCustomIsland(): IslandMap {
   };
 }
 
-function isValidIslandMap(value: unknown): value is IslandMap {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  if (typeof v.tileW !== "number" || typeof v.tileH !== "number") return false;
-  if (!Array.isArray(v.tiles)) return false;
-  for (const t of v.tiles as unknown[]) {
-    if (!t || typeof t !== "object") return false;
-    const tile = t as Record<string, unknown>;
-    if (typeof tile.id !== "string" || typeof tile.gx !== "number" || typeof tile.gy !== "number") return false;
-    if (typeof tile.type !== "string") return false;
+function sanitizeFiniteNumber(
+  value: unknown,
+  options: { min?: number; max?: number; integer?: boolean } = {},
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY, integer = false } = options;
+  const normalized = integer ? Math.round(value) : value;
+  if (normalized < min || normalized > max) return undefined;
+  return normalized;
+}
+
+function sanitizeAssetKey(value: unknown): AssetKey | undefined {
+  if (typeof value !== "string") return undefined;
+  return VALID_TILE_TYPES.has(value as AssetKey) ? (value as AssetKey) : undefined;
+}
+
+function sanitizeVector3(
+  value: unknown,
+  axisOptions: {
+    x: { min: number; max: number };
+    y: { min: number; max: number };
+    z: { min: number; max: number };
+  },
+): { x: number; y: number; z: number } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const vector = value as Record<string, unknown>;
+  const x = sanitizeFiniteNumber(vector.x, axisOptions.x);
+  const y = sanitizeFiniteNumber(vector.y, axisOptions.y);
+  const z = sanitizeFiniteNumber(vector.z, axisOptions.z);
+  if (x === undefined || y === undefined || z === undefined) return undefined;
+  return { x, y, z };
+}
+
+function sanitizeScale3(value: unknown): { x: number; y: number; z: number } | undefined {
+  return sanitizeVector3(value, {
+    x: { min: MIN_SCALE_COMPONENT, max: MAX_SCALE_COMPONENT },
+    y: { min: MIN_SCALE_COMPONENT, max: MAX_SCALE_COMPONENT },
+    z: { min: MIN_SCALE_COMPONENT, max: MAX_SCALE_COMPONENT },
+  });
+}
+
+function makeSafeTileId(value: unknown, gx: number, gy: number, stackLevel: TileStackLevel): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
   }
-  if (!Array.isArray(v.poi)) return false;
-  if (!v.spawn || typeof (v.spawn as { gx?: number }).gx !== "number" || typeof (v.spawn as { gy?: number }).gy !== "number") return false;
-  return true;
+  return `c-${gx}-${gy}-${stackLevel}`;
+}
+
+function sanitizeTile(value: unknown): TileDef | null {
+  if (!value || typeof value !== "object") return null;
+  const tile = value as Record<string, unknown>;
+  const gx = sanitizeFiniteNumber(tile.gx, { min: -MAX_GRID_COORD_ABS, max: MAX_GRID_COORD_ABS, integer: true });
+  const gy = sanitizeFiniteNumber(tile.gy, { min: -MAX_GRID_COORD_ABS, max: MAX_GRID_COORD_ABS, integer: true });
+  const type = sanitizeAssetKey(tile.type);
+  if (gx === undefined || gy === undefined || !type) return null;
+
+  const stackLevel = normalizeTileStackLevel(
+    sanitizeFiniteNumber(tile.stackLevel, { min: 0, max: 1, integer: true }),
+  );
+  const nextTile: TileDef = {
+    id: makeSafeTileId(tile.id, gx, gy, stackLevel),
+    gx,
+    gy,
+    type,
+  };
+
+  if (stackLevel !== DEFAULT_TILE_STACK_LEVEL) nextTile.stackLevel = stackLevel;
+
+  const layerOrder = sanitizeFiniteNumber(tile.layerOrder, {
+    min: -MAX_LAYER_ORDER_ABS,
+    max: MAX_LAYER_ORDER_ABS,
+    integer: true,
+  });
+  if (layerOrder !== undefined) nextTile.layerOrder = layerOrder;
+
+  const localYOffset = sanitizeFiniteNumber(tile.localYOffset, {
+    min: -MAX_PIXEL_OFFSET_ABS,
+    max: MAX_PIXEL_OFFSET_ABS,
+    integer: true,
+  });
+  if (localYOffset !== undefined) nextTile.localYOffset = localYOffset;
+
+  const anchorY = sanitizeFiniteNumber(tile.anchorY, { min: 0, max: MAX_ANCHOR_Y });
+  if (anchorY !== undefined) nextTile.anchorY = anchorY;
+
+  const offsetX = sanitizeFiniteNumber(tile.offsetX, { min: -MAX_PIXEL_OFFSET_ABS, max: MAX_PIXEL_OFFSET_ABS });
+  if (offsetX !== undefined) nextTile.offsetX = offsetX;
+
+  const offsetY = sanitizeFiniteNumber(tile.offsetY, { min: -MAX_PIXEL_OFFSET_ABS, max: MAX_PIXEL_OFFSET_ABS });
+  if (offsetY !== undefined) nextTile.offsetY = offsetY;
+
+  const walkSurfaceOffsetY = sanitizeFiniteNumber(tile.walkSurfaceOffsetY, {
+    min: -MAX_SURFACE_OFFSET_ABS,
+    max: MAX_SURFACE_OFFSET_ABS,
+  });
+  if (walkSurfaceOffsetY !== undefined) nextTile.walkSurfaceOffsetY = walkSurfaceOffsetY;
+
+  const pos3d = sanitizeVector3(tile.pos3d, {
+    x: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+    y: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+    z: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+  });
+  if (pos3d) nextTile.pos3d = pos3d;
+
+  const scale3d = sanitizeScale3(tile.scale3d);
+  if (scale3d) nextTile.scale3d = scale3d;
+
+  const rotY = sanitizeFiniteNumber(tile.rotY, { min: -MAX_ROTATION_ABS, max: MAX_ROTATION_ABS });
+  if (rotY !== undefined) nextTile.rotY = rotY;
+
+  if (typeof tile.blocked === "boolean") nextTile.blocked = tile.blocked;
+
+  const decoration = sanitizeAssetKey(tile.decoration);
+  if (decoration) nextTile.decoration = decoration;
+
+  const decoPos3d = sanitizeVector3(tile.decoPos3d, {
+    x: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+    y: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+    z: { min: -MAX_WORLD_POS_ABS, max: MAX_WORLD_POS_ABS },
+  });
+  if (decoPos3d) nextTile.decoPos3d = decoPos3d;
+
+  const decoScale3d = sanitizeScale3(tile.decoScale3d);
+  if (decoScale3d) nextTile.decoScale3d = decoScale3d;
+
+  const decoRotY = sanitizeFiniteNumber(tile.decoRotY, { min: -MAX_ROTATION_ABS, max: MAX_ROTATION_ABS });
+  if (decoRotY !== undefined) nextTile.decoRotY = decoRotY;
+
+  if (typeof tile.vfxEnabled === "boolean") nextTile.vfxEnabled = tile.vfxEnabled;
+  if (typeof tile.runeVfxLit === "boolean") nextTile.runeVfxLit = tile.runeVfxLit;
+
+  return nextTile;
+}
+
+function sanitizeIslandMap(value: unknown, fallback: IslandMap): { island: IslandMap; changed: boolean } | null {
+  if (!value || typeof value !== "object") return null;
+  const island = value as Record<string, unknown>;
+
+  const tileW = sanitizeFiniteNumber(island.tileW, { min: 1, max: MAX_PIXEL_OFFSET_ABS }) ?? fallback.tileW;
+  const tileH = sanitizeFiniteNumber(island.tileH, { min: 1, max: MAX_PIXEL_OFFSET_ABS }) ?? fallback.tileH;
+  if (!Array.isArray(island.tiles)) return null;
+
+  let changed = tileW !== island.tileW || tileH !== island.tileH;
+  const tileSlots = new Map<string, TileDef>();
+  for (const rawTile of island.tiles.slice(0, MAX_SANITIZED_TILE_COUNT)) {
+    const safeTile = sanitizeTile(rawTile);
+    if (!safeTile) {
+      changed = true;
+      continue;
+    }
+    const slotKey = getTileSlotKey(safeTile.gx, safeTile.gy, safeTile.stackLevel);
+    if (tileSlots.has(slotKey)) {
+      changed = true;
+    }
+    tileSlots.set(slotKey, safeTile);
+  }
+  if ((island.tiles as unknown[]).length > MAX_SANITIZED_TILE_COUNT) {
+    changed = true;
+  }
+
+  const usedIds = new Set<string>();
+  const safeTiles = Array.from(tileSlots.values()).map((tile) => {
+    let nextId = tile.id;
+    if (usedIds.has(nextId)) {
+      changed = true;
+      let suffix = 2;
+      while (usedIds.has(`${tile.id}-${suffix}`)) suffix += 1;
+      nextId = `${tile.id}-${suffix}`;
+    }
+    usedIds.add(nextId);
+    return nextId === tile.id ? tile : { ...tile, id: nextId };
+  });
+  if (safeTiles.length === 0) return null;
+
+  let safePoi: IslandMap["poi"] = [];
+  if (Array.isArray(island.poi)) {
+    safePoi = island.poi.slice(0, MAX_SANITIZED_POI_COUNT).flatMap((rawPoi, index) => {
+      if (!rawPoi || typeof rawPoi !== "object") {
+        changed = true;
+        return [];
+      }
+      const poi = rawPoi as Record<string, unknown>;
+      const gx = sanitizeFiniteNumber(poi.gx, { min: -MAX_GRID_COORD_ABS, max: MAX_GRID_COORD_ABS, integer: true });
+      const gy = sanitizeFiniteNumber(poi.gy, { min: -MAX_GRID_COORD_ABS, max: MAX_GRID_COORD_ABS, integer: true });
+      const interactRadius = sanitizeFiniteNumber(poi.interactRadius, { min: 0.1, max: 10 });
+      if (gx === undefined || gy === undefined || interactRadius === undefined || poi.kind !== "mine") {
+        changed = true;
+        return [];
+      }
+      const id = typeof poi.id === "string" && poi.id.trim().length > 0 ? poi.id.trim() : `poi-${index}`;
+      if (id !== poi.id) changed = true;
+      return [{ id, gx, gy, kind: "mine" as const, interactRadius }];
+    });
+    if ((island.poi as unknown[]).length > MAX_SANITIZED_POI_COUNT) {
+      changed = true;
+    }
+  } else {
+    changed = true;
+  }
+
+  const spawnObject =
+    island.spawn && typeof island.spawn === "object" ? (island.spawn as Record<string, unknown>) : null;
+  const safeSpawnGx = sanitizeFiniteNumber(spawnObject?.gx, {
+    min: -MAX_GRID_COORD_ABS,
+    max: MAX_GRID_COORD_ABS,
+    integer: true,
+  });
+  const safeSpawnGy = sanitizeFiniteNumber(spawnObject?.gy, {
+    min: -MAX_GRID_COORD_ABS,
+    max: MAX_GRID_COORD_ABS,
+    integer: true,
+  });
+  const tileCellSet = new Set(safeTiles.map((tile) => `${tile.gx},${tile.gy}`));
+  let spawn =
+    safeSpawnGx !== undefined && safeSpawnGy !== undefined
+      ? { gx: safeSpawnGx, gy: safeSpawnGy }
+      : { ...fallback.spawn };
+  if (safeSpawnGx === undefined || safeSpawnGy === undefined) {
+    changed = true;
+  }
+  if (!tileCellSet.has(`${spawn.gx},${spawn.gy}`)) {
+    changed = true;
+    const firstTile = safeTiles[0];
+    spawn = tileCellSet.has(`${fallback.spawn.gx},${fallback.spawn.gy}`)
+      ? { ...fallback.spawn }
+      : { gx: firstTile.gx, gy: firstTile.gy };
+  }
+
+  return {
+    changed,
+    island: {
+      tileW,
+      tileH,
+      tiles: safeTiles,
+      poi: safePoi,
+      spawn,
+    },
+  };
 }
 
 export function hydrateCustomIsland(): IslandMap {
-  if (typeof window === "undefined") return makeDefaultCustomIsland();
+  const fallback = makeDefaultCustomIsland();
+  if (typeof window === "undefined") return fallback;
   const raw = window.localStorage.getItem(CUSTOM_ISLAND_STORAGE_KEY);
-  if (!raw) return makeDefaultCustomIsland();
+  if (!raw) return fallback;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!isValidIslandMap(parsed)) return makeDefaultCustomIsland();
-    return parsed;
+    const sanitized = sanitizeIslandMap(parsed, fallback);
+    if (!sanitized) {
+      persistCustomIsland(fallback);
+      return fallback;
+    }
+    if (sanitized.changed) {
+      persistCustomIsland(sanitized.island);
+    }
+    return sanitized.island;
   } catch {
-    return makeDefaultCustomIsland();
+    persistCustomIsland(fallback);
+    return fallback;
   }
 }
 
@@ -122,9 +369,17 @@ export function hydrateIslandOverride(islandId: string, fallback: IslandMap): Is
   if (!raw) return fallback;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!isValidIslandMap(parsed)) return fallback;
-    return parsed;
+    const sanitized = sanitizeIslandMap(parsed, fallback);
+    if (!sanitized) {
+      persistIslandOverride(islandId, fallback);
+      return fallback;
+    }
+    if (sanitized.changed) {
+      persistIslandOverride(islandId, sanitized.island);
+    }
+    return sanitized.island;
   } catch {
+    persistIslandOverride(islandId, fallback);
     return fallback;
   }
 }
@@ -171,6 +426,10 @@ export function getDirectionalCloneDisabledReason(tile: TileDef | null | undefin
     return "Select a tile first.";
   }
 
+  if (getTileStackLevel(tile) !== DEFAULT_TILE_STACK_LEVEL) {
+    return "Upper-layer tiles cannot be cloned yet.";
+  }
+
   const spriteMeta = SKYHAVEN_SPRITE_MANIFEST.tile[tile.type];
   if (spriteMeta?.gridSpan) {
     return "2x2 tiles cannot be cloned yet.";
@@ -193,6 +452,7 @@ export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
 
   return {
     type: tile.type,
+    stackLevel: getTileStackLevel(tile),
     layerOrder: tile.layerOrder,
     localYOffset: tile.localYOffset,
     anchorY: tile.anchorY,
@@ -202,7 +462,7 @@ export function createVisualCloneTemplate(tile: TileDef): VisualCloneTemplate {
     pos3dOffset: tile.pos3d
       ? {
           x: tile.pos3d.x - basePosX,
-          y: tile.pos3d.y,
+          y: tile.pos3d.y - getTileStackBaseY(tile.stackLevel),
           z: tile.pos3d.z - basePosZ,
         }
       : undefined,
@@ -220,16 +480,18 @@ export function instantiateVisualCloneTile(
 ): Partial<
   Pick<
     TileDef,
-    "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
+    "type" | "stackLevel" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
   >
 > {
+  const stackLevel = template.stackLevel ?? DEFAULT_TILE_STACK_LEVEL;
   const nextTile: Partial<
     Pick<
       TileDef,
-      "type" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
+      "type" | "stackLevel" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "vfxEnabled"
     >
   > = {
     type: template.type,
+    stackLevel,
     layerOrder: template.layerOrder,
     localYOffset: template.localYOffset,
     anchorY: template.anchorY,
@@ -245,7 +507,7 @@ export function instantiateVisualCloneTile(
   if (template.pos3dOffset) {
     nextTile.pos3d = {
       x: gx * TILE_UNIT_SIZE + template.pos3dOffset.x,
-      y: template.pos3dOffset.y,
+      y: getTileStackBaseY(stackLevel) + template.pos3dOffset.y,
       z: gy * TILE_UNIT_SIZE + template.pos3dOffset.z,
     };
   }
@@ -284,12 +546,18 @@ export function getLineClonePreview(
   const targetOnRay = snappedTarget.gx === target.gx && snappedTarget.gy === target.gy;
 
   const cells: GridCoord[] = [];
+  const sourceStackLevel = getTileStackLevel(sourceTile);
   for (let index = 1; index <= steps; index += 1) {
     const nextCoord = {
       gx: sourceTile.gx + step.gx * index,
       gy: sourceTile.gy + step.gy * index,
     };
-    const occupied = island.tiles.some((tile) => tile.gx === nextCoord.gx && tile.gy === nextCoord.gy);
+    const occupied = island.tiles.some(
+      (tile) =>
+        tile.gx === nextCoord.gx &&
+        tile.gy === nextCoord.gy &&
+        getTileStackLevel(tile) === sourceStackLevel,
+    );
     if (occupied) {
       return {
         validTarget: false,
@@ -317,20 +585,22 @@ export function addTile(
   overrides?: Partial<
     Pick<
       TileDef,
-      "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
+      "stackLevel" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "pos3d" | "scale3d" | "rotY" | "blocked"
     >
-  >
+  >,
+  stackLevel: TileStackLevel | undefined = DEFAULT_TILE_STACK_LEVEL,
 ): IslandMap {
-  const key = coordKey(gx, gy);
-  const existing = island.tiles.find((t) => coordKey(t.gx, t.gy) === key);
-  const id = existing ? existing.id : `c-${gx}-${gy}`;
-  const nextTiles = island.tiles.filter((t) => coordKey(t.gx, t.gy) !== key);
+  const key = getTileSlotKey(gx, gy, stackLevel);
+  const existing = island.tiles.find((tile) => getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) === key);
+  const id = existing ? existing.id : `c-${gx}-${gy}-${stackLevel}`;
+  const nextTiles = island.tiles.filter((tile) => getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) !== key);
   const vfxDefault =
     (VFX_TILE_TYPES as readonly string[]).includes(type) ? ({ vfxEnabled: true } as const) : {};
   nextTiles.push({
     id,
     gx,
     gy,
+    stackLevel,
     type,
     ...vfxDefault,
     ...overrides,
@@ -341,11 +611,16 @@ export function addTile(
   };
 }
 
-export function removeTile(island: IslandMap, gx: number, gy: number): IslandMap {
-  const key = coordKey(gx, gy);
+export function removeTile(
+  island: IslandMap,
+  gx: number,
+  gy: number,
+  stackLevel: TileStackLevel | undefined = DEFAULT_TILE_STACK_LEVEL,
+): IslandMap {
+  const key = getTileSlotKey(gx, gy, stackLevel);
   return {
     ...island,
-    tiles: island.tiles.filter((t) => coordKey(t.gx, t.gy) !== key),
+    tiles: island.tiles.filter((tile) => getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) !== key),
   };
 }
 
@@ -353,14 +628,15 @@ export function updateTile(
   island: IslandMap,
   gx: number,
   gy: number,
-  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY" | "vfxEnabled" | "runeVfxLit">>
+  updates: Partial<Pick<TileDef, "type" | "gx" | "gy" | "stackLevel" | "layerOrder" | "localYOffset" | "anchorY" | "offsetX" | "offsetY" | "walkSurfaceOffsetY" | "pos3d" | "scale3d" | "rotY" | "blocked" | "decoration" | "decoPos3d" | "decoScale3d" | "decoRotY" | "vfxEnabled" | "runeVfxLit">>,
+  stackLevel: TileStackLevel | undefined = DEFAULT_TILE_STACK_LEVEL,
 ): IslandMap {
-  const key = coordKey(gx, gy);
+  const key = getTileSlotKey(gx, gy, stackLevel);
   return {
     ...island,
-    tiles: island.tiles.map((t) => {
-      if (coordKey(t.gx, t.gy) !== key) return t;
-      return { ...t, ...updates };
+    tiles: island.tiles.map((tile) => {
+      if (getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) !== key) return tile;
+      return { ...tile, ...updates };
     }),
   };
 }
@@ -375,21 +651,24 @@ export type MoveTileResult =
 
 export function moveTile(
   island: IslandMap,
-  from: { gx: number; gy: number },
+  from: { gx: number; gy: number; stackLevel?: TileStackLevel },
   to: { gx: number; gy: number }
 ): MoveTileResult {
   if (from.gx === to.gx && from.gy === to.gy) {
     return { moved: false, reason: "same_cell", attemptedCoord: { gx: to.gx, gy: to.gy } };
   }
 
-  const fromKey = coordKey(from.gx, from.gy);
-  const toKey = coordKey(to.gx, to.gy);
-  const source = island.tiles.find((tile) => coordKey(tile.gx, tile.gy) === fromKey);
+  const fromKey = getTileSlotKey(from.gx, from.gy, from.stackLevel);
+  const source = island.tiles.find((tile) => getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) === fromKey);
   if (!source) {
     return { moved: false, reason: "source_missing", attemptedCoord: { gx: to.gx, gy: to.gy } };
   }
 
-  const targetOccupied = island.tiles.some((tile) => coordKey(tile.gx, tile.gy) === toKey);
+  const targetOccupied = island.tiles.some(
+    (tile) =>
+      getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) ===
+      getTileSlotKey(to.gx, to.gy, source.stackLevel),
+  );
   if (targetOccupied) {
     return { moved: false, reason: "target_occupied", attemptedCoord: { gx: to.gx, gy: to.gy } };
   }
@@ -397,7 +676,7 @@ export function moveTile(
   const nextIsland: IslandMap = {
     ...island,
     tiles: island.tiles.map((tile) => {
-      if (coordKey(tile.gx, tile.gy) !== fromKey) {
+      if (getTileSlotKey(tile.gx, tile.gy, tile.stackLevel) !== fromKey) {
         return tile;
       }
       return {
